@@ -43,6 +43,10 @@ export interface Identity {
   product?: string | null;
   logged_in?: boolean | null;
   snapshot_at?: string | null;
+  // 下面三项只有解密登录态成功时才有。
+  uid?: string | null;
+  expires_at?: string | null;
+  refresh_expires_at?: string | null;
 }
 
 export interface Member {

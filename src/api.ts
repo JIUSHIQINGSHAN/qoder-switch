@@ -35,6 +35,14 @@ export const api = {
     listen<string>("switch-progress", (e) => cb(e.payload)),
 };
 
+/// 剩余天数。解析不了就返回 null，界面显示 "-"，不猜。
+export function daysLeft(iso?: string | null): number | null {
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return null;
+  return Math.floor((t - Date.now()) / 86_400_000);
+}
+
 /// 把 hosted 的三种 serde 形状收成一句人话。
 export function hostedText(h: AxisStatus["hosted"]): { text: string; level: "ok" | "warn" | "bad" } {
   if (h === "No") return { text: "可安全终止目标", level: "ok" };

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, hostedText } from "./api";
+import { api, daysLeft, hostedText } from "./api";
 import type {
   AxisStatus,
   Bundle,
@@ -77,6 +77,15 @@ export default function App() {
   }, [refresh, log]);
 
   const chosen = useMemo(() => bundles.find((b) => key(b) === selected) ?? null, [bundles, selected]);
+
+  // 临期优先排列：token 快过期的账号排前面，无到期信息的落到最后。
+  const ordered = useMemo(() => {
+    const rank = (b: Bundle) => {
+      const d = daysLeft(b.identity.expires_at);
+      return d === null ? Number.MAX_SAFE_INTEGER : d;
+    };
+    return [...bundles].sort((a, b) => rank(a) - rank(b));
+  }, [bundles]);
 
   useEffect(() => {
     if (!chosen) {
@@ -212,6 +221,7 @@ export default function App() {
                 <th>账号名</th>
                 <th>版本·目标</th>
                 <th>身份</th>
+                <th>token 到期</th>
                 <th>文件</th>
                 <th>认领时间</th>
               </tr>
@@ -219,12 +229,14 @@ export default function App() {
             <tbody>
               {bundles.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="hint">
+                  <td colSpan={6} className="hint">
                     还没有任何账号包。先在 Qoder 里登录一个账号，再点「认领当前登录态」。
                   </td>
                 </tr>
               )}
-              {bundles.map((b) => (
+              {ordered.map((b) => {
+                const d = daysLeft(b.identity.expires_at);
+                return (
                 <tr
                   key={key(b)}
                   className={key(b) === selected ? "sel" : ""}
@@ -235,10 +247,19 @@ export default function App() {
                     {VARIANT_CN[b.variant]}·{TARGET_CN[b.target]}
                   </td>
                   <td>{b.identity.email ?? b.identity.name ?? "-"}</td>
+                  <td
+                    className={
+                      d === null ? "hint" : d <= 7 ? "lvl-bad" : d <= 21 ? "lvl-warn" : ""
+                    }
+                    title={b.identity.expires_at ?? "未解密，无到期时间"}
+                  >
+                    {d === null ? "—" : `${d} 天`}
+                  </td>
                   <td>{b.members.length}</td>
                   <td className="mono">{b.created_at}</td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
 

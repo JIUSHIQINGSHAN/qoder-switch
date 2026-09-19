@@ -31,7 +31,7 @@ pub struct Member {
     pub critical: bool,
 }
 
-/// 从明文回显读出的账号身份，用于列表展示；不含任何密文。
+/// 从明文回显或解密后的登录态读出的账号身份，用于列表展示；不含任何 token。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Identity {
     #[serde(default)]
@@ -46,6 +46,46 @@ pub struct Identity {
     pub logged_in: Option<bool>,
     #[serde(default)]
     pub snapshot_at: Option<String>,
+    /// 以下三项只有成功解密 `auth.v1.dat` 时才有 —— 明文回显里没有 uid 与到期时间。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_expires_at: Option<String>,
+}
+
+/// ISO8601（`2026-10-19T06:19:41Z`）到"还剩几天"。解析不了返回 None，不猜。
+pub fn days_until(iso: &str) -> Option<i64> {
+    let then = chrono::DateTime::parse_from_rfc3339(iso)
+        .map(|t| t.with_timezone(&chrono::Utc))
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(iso, "%Y-%m-%dT%H:%M:%SZ")
+                .map(|t| t.and_utc())
+        })
+        .ok()?;
+    Some((then - chrono::Utc::now()).num_days())
+}
+
+impl Identity {
+    /// 用解密出来的登录态补齐身份。已有字段不覆盖成空串。
+    pub fn merge_auth(&mut self, a: &crate::modules::auth_codec::DesktopAuth) {
+        self.uid = Some(a.user.id.clone());
+        self.expires_at = Some(a.expires_at.clone());
+        self.refresh_expires_at = Some(a.refresh_expires_at.clone());
+        if !a.user.name.trim().is_empty() {
+            self.name = Some(a.user.name.clone());
+        }
+        if !a.user.email.trim().is_empty() {
+            self.email = Some(a.user.email.clone());
+        }
+        self.logged_in = Some(true);
+    }
+
+    /// token 剩余天数（无解密结果时 None）。
+    pub fn token_days_left(&self) -> Option<i64> {
+        self.expires_at.as_deref().and_then(days_until)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,6 +177,14 @@ pub fn capture(
             size: bytes.len() as u64,
             critical: f.critical,
         });
+    }
+
+    // 桌面目标还能解出 uid 与到期时间。解不开（沙箱假文件、跨 Windows 用户、
+    // DPAPI 不可用）就退回明文回显 —— 认领本身绝不该因此失败。
+    if target == QoderTarget::Desktop {
+        if let Ok(auth) = crate::modules::auth_codec::read_desktop_auth(roots, variant) {
+            identity.merge_auth(&auth);
+        }
     }
 
     let bundle = Bundle {
@@ -456,6 +504,8 @@ pub fn read_identity(path: &Path) -> Option<Identity> {
         product: get("product"),
         logged_in: v.get("logged_in").and_then(|x| x.as_bool()),
         snapshot_at: get("snapshot_at"),
+        // uid 与到期时间只能从解密后的登录态拿，明文回显里没有。
+        ..Identity::default()
     })
 }
 
@@ -604,6 +654,60 @@ mod tests {
         assert_eq!(live(&roots, "auth.v1.dat"), b"authB");
         // 哈希校验必须在备份之前就拦住，否则会留下空备份目录。
         assert!(!store.join("backups").join("bk").exists());
+        std::fs::remove_dir_all(tmp).ok();
+    }
+
+    #[test]
+    fn days_until_and_merge_auth_fill_expiry_view() {
+        assert!(days_until("不是时间").is_none());
+        assert!(days_until("2099-01-01T00:00:00Z").unwrap() > 0);
+
+        let mut id = Identity::default();
+        id.name = Some("回显名".into());
+        let mut doc = serde_json::Map::new();
+        doc.insert("schemaVersion".into(), 1.into());
+        doc.insert("token".into(), "t".repeat(27).into());
+        doc.insert("refreshToken".into(), "r".repeat(28).into());
+        doc.insert("expiresAt".into(), "2099-01-01T00:00:00Z".into());
+        doc.insert("refreshTokenExpiresAt".into(), "2099-09-01T00:00:00Z".into());
+        let mut u = serde_json::Map::new();
+        u.insert("id".into(), "019f0000-0000-7000-8000-000000000001".into());
+        u.insert("name".into(), "解密名".into());
+        doc.insert("user".into(), u.into());
+        let text = serde_json::to_vec(&serde_json::Value::Object(doc)).unwrap();
+        let auth = crate::modules::auth_codec::parse_auth(&text).unwrap();
+        id.merge_auth(&auth);
+
+        assert_eq!(
+            id.uid.as_deref(),
+            Some("019f0000-0000-7000-8000-000000000001")
+        );
+        assert_eq!(id.name.as_deref(), Some("解密名"), "解密结果更权威");
+        assert!(id.token_days_left().unwrap() > 0);
+    }
+
+    /// 真机：认领 CN 桌面账号必须带出 uid 与到期时间。
+    #[test]
+    #[cfg(windows)]
+    fn capture_on_real_machine_carries_expiry() {
+        let tmp =
+            std::env::temp_dir().join(format!("qs-cap-real-{}", uuid::Uuid::new_v4().simple()));
+        let store = tmp.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let roots = PathRoots::real();
+        if desktop_dir(&roots, QoderVariant::Cn)
+            .join("auth.v1.dat")
+            .is_file()
+        {
+            let b =
+                capture(&roots, &store, "real-cn", QoderVariant::Cn, QoderTarget::Desktop).unwrap();
+            assert!(b.identity.uid.is_some(), "真机应能解出 uid");
+            assert!(b.identity.expires_at.is_some(), "真机应能解出到期时间");
+            assert!(
+                b.identity.token_days_left().unwrap_or(0) > 0,
+                "到期时间应在未来"
+            );
+        }
         std::fs::remove_dir_all(tmp).ok();
     }
 

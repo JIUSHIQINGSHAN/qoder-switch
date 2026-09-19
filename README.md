@@ -70,6 +70,27 @@ qoder-switch.exe --self-check && echo OK
 它覆盖的是 core 单元测试覆盖不到的那半边：command 接线、serde 形状、真实路径解析、
 账号库读写。输出逐行 `OK`/`FAIL`，末尾 `SELF-CHECK OK` 且退出码 0 才算通过。
 
+## 凭据编解码（`auth_codec`）
+
+本机实测确认的方案，代码在 `crates/qs-switch-core/src/modules/auth_codec.rs`，
+探针脚本在 `scripts/probe-auth-codec.py`（只读，输出全脱敏）：
+
+```
+%APPDATA%\<app>\Local State
+  → os_crypt.encrypted_key = base64( "DPAPI" + DPAPI(CURRENT_USER) blob )
+  → DPAPI 解出 32 字节 AES-256 主密钥
+
+%APPDATA%\<app>\auth.v1.dat
+  = b"v10" + 12 字节 IV + AES-256-GCM 密文（末尾 16 字节 tag）
+  明文 JSON: { schemaVersion:1, token, refreshToken, expiresAt,
+               refreshTokenExpiresAt, user:{id,name,email,phone,avatarUrl} }
+```
+
+`token` 只有 27 字符，是不透明串而不是 JWT —— 所以到期时间只能靠 `expiresAt` 字段，
+不能从 token 里解。DPAPI 通过 PowerShell 子进程调用（要先
+`Add-Type -AssemblyName System.Security`，否则 `ProtectedData` 类型找不到），
+这样不必为一次系统调用拖进整个 `windows` crate；主密钥只在内存里以 base64 中转，不落盘。
+
 ## 安全模型
 
 四条硬规则，都有对应测试：
@@ -97,6 +118,9 @@ qoder-switch.exe --self-check && echo OK
 
 - 现场探针：每个 (版本·目标) 的在跑进程、凭据文件存在性、exe 路径、托管判定
 - 账号包：认领当前登录态 → 列表 → 逐角色查看 → 删除（手工删目录即可）
+- 身份与到期：认领时用 DPAPI + AES-256-GCM 解开 `auth.v1.dat`，取出 `user.id` 与
+  `expiresAt` / `refreshTokenExpiresAt`，界面临期高亮并按到期升序排列（解不开时退回
+  明文回显，认领本身不会失败）
 - 切换：预览（含逐角色「此刻/本次写回」）→ 终止目标 → 整组备份 → 写回 → 读回校验 → 重启
 - 崩溃恢复：启动时列出未收尾的 journal，一键退回切换前现场
 - 账号包导出 / 导入（JSON + base64，默认不覆盖，哈希不符整体中止）
@@ -107,8 +131,9 @@ qoder-switch.exe --self-check && echo OK
 - 会话历史不按账号隔离：桌面 `main.sqlite` 的 `chat_sessions` 无 `account_id` 列，
   `~/.qoder*/projects/` 按工作目录命名。换号后两个账号会互见历史，界面上会提示。
 - DPAPI 按 Windows 用户生效：账号包只在同一 Windows 用户内可复用，跨机器或跨用户无效。
-- 未实现（相对参考实现仍缺）：device flow 扫码添加账号与 PAT 旁路、token 保活与到期提醒、
-  额度/积分查询、会话跨账号迁移、自动轮换、托盘菜单里的快捷切换、webui/npm 双形态、自动更新。
+- 未实现（相对参考实现仍缺）：device flow 扫码添加账号与 PAT 旁路、**主动刷新 token**
+  （到期时间只做到期展示，刷新接口尚未取证）、额度/积分用量查询、会话跨账号迁移、
+  自动轮换、托盘菜单里的快捷切换、webui/npm 双形态、自动更新。
 - WorkBuddy 的每日签到与 Buddy 旅行在 Qoder 无对应接口，不移植。
 
 ## 许可

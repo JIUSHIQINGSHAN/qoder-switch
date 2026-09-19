@@ -124,6 +124,26 @@ pub fn run() -> i32 {
         });
     }
 
+    r.step("auth_codec", || {
+        use qs_switch_core::modules::{auth_codec, variant::QoderVariant};
+        let mut parts = Vec::new();
+        for v in [QoderVariant::Cn, QoderVariant::Global] {
+            match auth_codec::read_current(v) {
+                Ok(a) => parts.push(format!(
+                    "{v:?}:{} 到期{}",
+                    a.label(),
+                    a.expires_at
+                )),
+                Err(e) => parts.push(format!(
+                    "{v:?}:不可解({})",
+                    e.lines().next().unwrap_or("").trim()
+                )),
+            }
+        }
+        // 只报标签与到期时间：token 值任何时候都不该进日志。
+        Ok(parts.join(" | "))
+    });
+
     r.step("unfinished", || {
         Ok(format!("{} 条未收尾切换", commands::unfinished()?.len()))
     });
