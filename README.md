@@ -25,21 +25,26 @@ Qoder 家族（桌面客户端 / QoderWork / CLI）的多账号切换桌面 App�
 
 ## 构建
 
-本机没有预装 Rust，工具链与构建产物全部钉在 E:（C: 盘余量不足）：
+本机没有预装 Rust，工具链与构建产物全部钉在 E:（C: 盘余量不足，一次 release target
+实测吃掉约 7GB）。这些位置由 `.cargo/config.toml` 的 `target-dir` 与本仓库脚本兜底：
 
 ```bash
-export RUSTUP_HOME='E:/rustup' CARGO_HOME='E:/cargo' \
-       CARGO_TARGET_DIR='E:/qs-target' PATH="/e/cargo/bin:$PATH"
-
-npm install                         # registry 走 npmmirror
-npx tauri icon public/app-icon.png  # Windows 资源编译要求 icons/ 真实存在
-npm run build                       # tsc --noEmit && vite build → dist/
-cargo build -p qoder-switch         # 调试产物 E:/qs-target/debug/qoder-switch.exe
-npx tauri build                     # 安装包（nsis）
+bash scripts/build.sh deps      # npm install（registry 走 npmmirror）
+bash scripts/build.sh icons     # 由 public/app-icon.png 生成 src-tauri/icons/
+bash scripts/build.sh test      # cargo test --workspace
+bash scripts/build.sh release   # npx tauri build → release exe + NSIS 安装包
+bash scripts/build.sh all       # deps → icons → test → release
 ```
 
-`E:/cargo/config.toml` 已配 rsproxy.cn 的 sparse index 源替换；`RUSTUP_DIST_SERVER`
-同样指 rsproxy，否则装工具链会超时。
+`RUSTUP_HOME` / `CARGO_HOME` 若不在默认位置，脚本会读环境变量或按 `E:/rustup`、
+`E:/cargo` 取值。`E:/cargo/config.toml` 需配 rsproxy.cn 的 sparse index 源替换，
+否则拉索引会超时。
+
+产物落在 `E:/qs-target/`：
+
+- `debug/qoder-switch.exe` —— 开发调试
+- `release/qoder-switch.exe` —— 免安装单文件
+- `release/bundle/nsis/qoder-switch_<版本>_x64-setup.exe` —— Windows 安装包
 
 ## 命令行工具（examples）
 
@@ -49,8 +54,21 @@ cargo run --example qs-snapshot -- take      # 凭据文件快照（只读）
 cargo run --example qs-snapshot -- diff      # 比对最近两张快照
 cargo run --example qs-account  -- capture <名字> [cn|global] [desktop|cli|work]
 cargo run --example qs-account  -- list
-cargo test -p qs-switch-core                  # 33 项
+cargo test -p qs-switch-core                  # 37 项
 ```
+
+## 无头自检
+
+主程序带 `--self-check`：不开窗口，直接把宿主层的 command 逐个跑一遍（绝不调用
+`switch_now`，所以不会真换号）。GUI 版本没有控制台，报告同时写进
+`~/.qs-switch/selfcheck.log`。
+
+```bash
+qoder-switch.exe --self-check && echo OK
+```
+
+它覆盖的是 core 单元测试覆盖不到的那半边：command 接线、serde 形状、真实路径解析、
+账号库读写。输出逐行 `OK`/`FAIL`，末尾 `SELF-CHECK OK` 且退出码 0 才算通过。
 
 ## 安全模型
 
@@ -72,6 +90,17 @@ cargo test -p qs-switch-core                  # 33 项
 账号库存于 `~/.qs-switch/`：`accounts/<名>/<版本>.<目标>/{bundle.json, 凭据副本…}`、
 `backups/`、`journal/`、`snapshots/`。副本是**真实凭据的密文文件**， `.gitignore` 已把
 `accounts-export/` 与 `.qs-switch/` 挡在库外，不要把包目录提交或同步出去。
+
+## 当前能力
+
+已可用：
+
+- 现场探针：每个 (版本·目标) 的在跑进程、凭据文件存在性、exe 路径、托管判定
+- 账号包：认领当前登录态 → 列表 → 逐角色查看 → 删除（手工删目录即可）
+- 切换：预览（含逐角色「此刻/本次写回」）→ 终止目标 → 整组备份 → 写回 → 读回校验 → 重启
+- 崩溃恢复：启动时列出未收尾的 journal，一键退回切换前现场
+- 账号包导出 / 导入（JSON + base64，默认不覆盖，哈希不符整体中止）
+- 凭据快照与差分；托盘常驻，关窗只隐藏
 
 ## 已知边界
 

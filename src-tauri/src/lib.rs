@@ -1,5 +1,11 @@
 mod commands;
+mod selfcheck;
 mod tray;
+
+/// `qoder-switch --self-check` 的入口：无头跑一遍宿主层。
+pub fn self_check() -> i32 {
+    selfcheck::run()
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

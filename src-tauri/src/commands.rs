@@ -154,7 +154,7 @@ pub fn export_account_text(account_id: String) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|e| format!("导出结果不是合法 UTF-8: {e}"))
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct ImportResult {
     pub written: Vec<String>,
     pub skipped: Vec<String>,
