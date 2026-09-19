@@ -1,0 +1,17 @@
+[package]
+name = "qs-switch-server"
+version = "0.1.0"
+edition = "2021"
+description = "Qoder Switch 的 HTTP 宿主：与桌面端复用同一个 qs-switch-core"
+
+[[bin]]
+name = "qs-switch-server"
+path = "src/main.rs"
+
+[dev-dependencies]
+uuid = { version = "1", features = ["v4"] }
+
+[dependencies]
+qs-switch-core = { path = "../qs-switch-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -2825,6 +2825,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "qs-switch-server"
+version = "0.1.0"
+dependencies = [
+ "qs-switch-core",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "quick-xml"
 version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
