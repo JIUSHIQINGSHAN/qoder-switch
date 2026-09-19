@@ -1,0 +1,550 @@
+//! 凭据包（bundle）：一个账号在某个目标上的**文件级副本**，外加明文回显里读出的标签。
+//!
+//! 这是与参考实现最关键的差异。workbuddy-switch 的账号记录存的是 token 明文
+//! （`~/.wb-switch/accounts.json` 里 `access_token` / `refresh_token`），因为它的
+//! 目标接受 token 注入；而 Qoder 的三处登录态分别是 safeStorage(DPAPI+AES-256-GCM)
+//! 与 WASM AES 密文文件。存 token 就得先复刻那两套加密，存**整组文件副本**则完全
+//! 不需要知道密码学细节 —— 因此本模块只做字节搬移，加密逆向留到"从 token 造文件"
+//! 这条可选支线上。
+//!
+//! 账号标签取自 `StatusEcho`（明文，含 name/email/plan/avatar），同样零解密。
+
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::modules::config::{
+    atomic_write_bytes, now_ts, read_bytes, sha256_hex, PathRoots,
+};
+use crate::modules::variant::{
+    bundle_prefix, credentials, FileRole, QoderTarget, QoderVariant,
+};
+use crate::Result;
+
+/// 包内一个文件成员。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Member {
+    pub role: FileRole,
+    /// bundle 目录内的扁平文件名。
+    pub file_name: String,
+    pub sha256: String,
+    pub size: u64,
+    /// 捕获时它在真实路径上是否 critical（决定 restore 是否强制要求存在）。
+    pub critical: bool,
+}
+
+/// 从明文回显读出的账号身份，用于列表展示；不含任何密文。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Identity {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub plan: Option<String>,
+    #[serde(default)]
+    pub product: Option<String>,
+    #[serde(default)]
+    pub logged_in: Option<bool>,
+    #[serde(default)]
+    pub snapshot_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Bundle {
+    pub account_id: String,
+    pub variant: QoderVariant,
+    pub target: QoderTarget,
+    pub created_at: String,
+    pub members: Vec<Member>,
+    pub identity: Identity,
+}
+
+impl Bundle {
+    /// bundle 在 store 下的实际目录。store 由调用方显式给出，避免测试依赖
+    /// 进程级环境变量而在并行时互相踩。
+    pub fn dir_in(&self, store: &Path) -> PathBuf {
+        bundle_dir_in(store, &self.account_id, self.variant, self.target)
+    }
+
+    /// 该包是否真的有料（CLI 目标在 CN 版上可能一个凭据文件都没有）。
+    pub fn is_empty(&self) -> bool {
+        self.members.is_empty()
+    }
+
+    pub fn member(&self, role: FileRole) -> Option<&Member> {
+        self.members.iter().find(|m| m.role == role)
+    }
+
+    pub fn display_label(&self) -> String {
+        if let Some(e) = &self.identity.email {
+            return e.clone();
+        }
+        if let Some(n) = &self.identity.name {
+            return n.clone();
+        }
+        format!("{}·{}", self.variant.label(), self.target.label())
+    }
+}
+
+pub fn accounts_root_in(store: &Path) -> PathBuf {
+    store.join("accounts")
+}
+
+pub fn bundle_dir_in(
+    store: &Path,
+    account_id: &str,
+    variant: QoderVariant,
+    target: QoderTarget,
+) -> PathBuf {
+    accounts_root_in(store)
+        .join(account_id)
+        .join(bundle_prefix(variant, target))
+}
+
+/// 把某个 (版本,目标) 当前真实存在的凭据文件收进 bundle。
+/// 只读产品目录，写只发生在 `store/accounts/` 下。
+pub fn capture(
+    roots: &PathRoots,
+    store: &Path,
+    account_id: &str,
+    variant: QoderVariant,
+    target: QoderTarget,
+) -> Result<Bundle> {
+    let files = credentials(roots, variant, target);
+    let dir = bundle_dir_in(store, account_id, variant, target);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("创建 {} 失败: {e}", dir.display()))?;
+
+    let mut members = Vec::new();
+    let mut identity = Identity::default();
+    for f in &files {
+        if f.role == FileRole::StatusEcho {
+            identity = read_identity(&f.path).unwrap_or_default();
+        }
+        if !f.exists() {
+            continue;
+        }
+        let bytes = read_bytes(&f.path).map_err(|e| {
+            format!("读取 {:?} 失败（进程占用或权限不足）: {e}", f.path)
+        })?;
+        let file_name = f.stored_name();
+        atomic_write_bytes(&dir.join(&file_name), &bytes)
+            .map_err(|e| format!("写入包内文件 {file_name} 失败: {e}"))?;
+        members.push(Member {
+            role: f.role,
+            file_name,
+            // 用刚读到的字节算，避免二次读盘时撞上进程占用而写入空摘要。
+            sha256: sha256_of(&bytes),
+            size: bytes.len() as u64,
+            critical: f.critical,
+        });
+    }
+
+    let bundle = Bundle {
+        account_id: account_id.to_string(),
+        variant,
+        target,
+        created_at: now_ts(),
+        members,
+        identity,
+    };
+    write_meta(store, &bundle)?;
+    Ok(bundle)
+}
+
+fn write_meta(store: &Path, bundle: &Bundle) -> Result<()> {
+    let path = bundle.dir_in(store).join("bundle.json");
+    let json = serde_json::to_vec_pretty(bundle).map_err(|e| e.to_string())?;
+    atomic_write_bytes(&path, &json).map_err(|e| format!("写 bundle.json 失败: {e}"))
+}
+
+/// 读回一个已存在的 bundle；目录或元数据缺失返回 Err。
+pub fn load(
+    store: &Path,
+    account_id: &str,
+    variant: QoderVariant,
+    target: QoderTarget,
+) -> Result<Bundle> {
+    let path = bundle_dir_in(store, account_id, variant, target).join("bundle.json");
+    let bytes = read_bytes(&path).map_err(|e| format!("读 {:?} 失败: {e}", path))?;
+    serde_json::from_slice(&bytes).map_err(|e| format!("{path:?} 解析失败: {e}"))
+}
+
+/// 把 bundle 写回真实路径。调用方负责在此之前终止目标进程 —— 本模块不杀进程，
+/// 因为发起方可能正是目标进程的子进程（见 `process::self_is_descendant_of_target`）。
+///
+/// 流程：整组先备份 → 逐个原子写 → 全部读回比对 sha256 → 任一不符则整组回滚。
+/// 参考实现只备份不回滚，这里补上回滚，因为 Qoder 桌面端会持续重写 auth 文件。
+pub fn restore(roots: &PathRoots, store: &Path, bundle: &Bundle) -> Result<RestoreOutcome> {
+    let files = credentials(roots, bundle.variant, bundle.target);
+
+    // 覆盖性检查：现场存在、但包里缺位的 critical 文件会造成"半换号"（例如只换了
+    // auth.v1.dat 却没换 Local State），这种包宁可不写。
+    let uncovered: Vec<String> = files
+        .iter()
+        .filter(|f| f.critical && f.exists() && bundle.member(f.role).is_none())
+        .map(|f| format!("{:?}({})", f.role, f.path.display()))
+        .collect();
+    if !uncovered.is_empty() {
+        return Err(format!(
+            "bundle {} 缺少现场存在的 critical 文件，拒绝写入以避免半换号: {}",
+            bundle.account_id,
+            uncovered.join(", ")
+        ));
+    }
+
+    let dir = bundle.dir_in(store);
+    let mut staging: Vec<(CredentialTarget, Vec<u8>)> = Vec::new();
+    for m in &bundle.members {
+        let f = files
+            .iter()
+            .find(|f| f.role == m.role)
+            .ok_or_else(|| format!("布局里找不到角色 {:?}", m.role))?;
+        let bytes = read_bytes(&dir.join(&m.file_name))
+            .map_err(|e| format!("读包内文件 {:?} 失败: {e}", m.file_name))?;
+        let actual = sha256_of(&bytes);
+        if actual != m.sha256 {
+            return Err(format!(
+                "包内 {:?} 哈希不符（期望 {}.. 实际 {}..），拒绝写入",
+                m.file_name,
+                &m.sha256[..8.min(m.sha256.len())],
+                &actual[..8.min(actual.len())]
+            ));
+        }
+        staging.push((
+            CredentialTarget {
+                role: m.role,
+                path: f.path.clone(),
+                want_sha: m.sha256.clone(),
+            },
+            bytes,
+        ));
+    }
+    if staging.is_empty() {
+        return Err("bundle 是空的，没有可写入的文件".into());
+    }
+
+    let backup_dir = store
+        .join("backups")
+        .join(bundle_prefix(bundle.variant, bundle.target) + "." + &now_ts());
+    std::fs::create_dir_all(&backup_dir)
+        .map_err(|e| format!("创建备份目录 {:?} 失败: {e}", backup_dir))?;
+
+    // 1) 备份现场。原本不存在的记为 None，回滚时按"应删除"处理。
+    let mut backups: Vec<BackupItem> = Vec::new();
+    for (t, _) in &staging {
+        let saved_name = if t.path.exists() {
+            let bytes = read_bytes(&t.path)
+                .map_err(|e| format!("备份读取 {:?} 失败（回滚中止）: {e}", t.path))?;
+            let name = t.role_file_name();
+            atomic_write_bytes(&backup_dir.join(&name), &bytes)
+                .map_err(|e| format!("备份写入失败: {e}"))?;
+            Some(name)
+        } else {
+            None
+        };
+        backups.push(BackupItem {
+            path: t.path.clone(),
+            saved_name,
+        });
+    }
+    write_json(&backup_dir.join("_meta.json"), bundle)?;
+
+    // 2) 写入。
+    for (t, bytes) in &staging {
+        if let Some(parent) = t.path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("创建 {:?} 失败: {e}", parent))?;
+        }
+        if let Err(e) = atomic_write_bytes(&t.path, bytes) {
+            let detail = rollback(&backup_dir, &backups);
+            return Err(format!("写入 {:?} 失败: {e}；回滚{detail}", t.path));
+        }
+    }
+
+    // 3) 读回比对。Qoder 桌面端会在会话期持续重写 auth 文件，这一步是唯一能
+    //    发现"写完就被覆盖"的手段。
+    let mut mismatches = Vec::new();
+    for (t, _) in &staging {
+        match sha256_hex(&t.path) {
+            Ok(h) if h == t.want_sha => {}
+            Ok(h) => mismatches.push(format!(
+                "{:?} 期望 {}.. 实际 {}..",
+                t.role,
+                &t.want_sha[..8],
+                &h[..8]
+            )),
+            Err(e) => mismatches.push(format!("{:?} 读回失败: {e}", t.role)),
+        }
+    }
+    if !mismatches.is_empty() {
+        let detail = rollback(&backup_dir, &backups);
+        return Err(format!(
+            "写入后校验未通过（目标进程很可能还在覆盖写入）: {}；回滚{detail}",
+            mismatches.join("; ")
+        ));
+    }
+
+    Ok(RestoreOutcome {
+        written: staging.iter().map(|(t, _)| t.role).collect(),
+        backup_dir,
+        backups,
+    })
+}
+
+#[derive(Debug, Clone)]
+struct CredentialTarget {
+    role: FileRole,
+    path: PathBuf,
+    want_sha: String,
+}
+
+impl CredentialTarget {
+    fn role_file_name(&self) -> String {
+        format!("{:?}", self.role).to_lowercase()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BackupItem {
+    path: PathBuf,
+    /// Some(name) = 备份前现场存在，文件存于备份目录下的 `name`；
+    /// None = 备份前不存在，回滚时应删除我们创建出来的文件。
+    saved_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RestoreOutcome {
+    pub written: Vec<FileRole>,
+    pub backup_dir: PathBuf,
+    backups: Vec<BackupItem>,
+}
+
+impl RestoreOutcome {
+    /// 用户反悔时把现场退回 restore 之前。
+    pub fn undo(&self) -> Result<()> {
+        restore_from_backup(&self.backup_dir, &self.backups)
+    }
+}
+
+fn restore_from_backup(backup_dir: &Path, backups: &[BackupItem]) -> Result<()> {
+    let mut errs = Vec::new();
+    for b in backups {
+        if let Some(name) = &b.saved_name {
+            match read_bytes(&backup_dir.join(name)).and_then(|bytes| {
+                atomic_write_bytes(&b.path, &bytes)
+            }) {
+                Ok(()) => {}
+                Err(e) => errs.push(format!("{:?}: {e}", b.path)),
+            }
+        } else if b.path.exists() {
+            // 这个文件是我们这次才创建出来的，删掉才算退回原状。
+            if let Err(e) = std::fs::remove_file(&b.path) {
+                errs.push(format!("{:?}: {e}", b.path));
+            }
+        }
+    }
+    if errs.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("回滚不完整: {}", errs.join(" | ")))
+    }
+}
+
+/// 回滚并生成可直接拼进错误信息的说明。
+fn rollback(backup_dir: &Path, backups: &[BackupItem]) -> String {
+    match restore_from_backup(backup_dir, backups) {
+        Ok(()) => "成功".to_string(),
+        Err(e) => format!("失败: {e}（现场可能处于半换号状态，备份在 {backup_dir:?}）"),
+    }
+}
+
+fn sha256_of(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    hex::encode(h.finalize())
+}
+
+fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    let json = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
+    atomic_write_bytes(path, &json).map_err(|e| format!("写 {path:?} 失败: {e}"))
+}
+
+/// 读明文登录回显拿账号身份。字段缺失或文件不存在都返回 None（不是错误）。
+pub fn read_identity(path: &Path) -> Option<Identity> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let get = |k: &str| {
+        v.get(k)
+            .and_then(|x| x.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    Some(Identity {
+        name: get("name"),
+        email: get("email"),
+        plan: get("plan"),
+        product: get("product"),
+        logged_in: v.get("logged_in").and_then(|x| x.as_bool()),
+        snapshot_at: get("snapshot_at"),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::variant::{cli_dir, desktop_dir};
+
+    fn fixture() -> (PathRoots, PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "qs-bundle-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let roots = PathRoots::sandbox(&root);
+        let store = root.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        (roots, store, root)
+    }
+
+    /// 造一个假的"已登录"现场：桌面三件套 + CLI 明文回显。
+    fn seed(roots: &PathRoots, auth: &[u8], key: &[u8], machine: &[u8], email: &str) {
+        let d = desktop_dir(roots, QoderVariant::Cn);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("auth.v1.dat"), auth).unwrap();
+        std::fs::write(d.join("Local State"), key).unwrap();
+        std::fs::write(d.join("auth.machine-id"), machine).unwrap();
+        let cli = cli_dir(roots, QoderVariant::Cn);
+        std::fs::create_dir_all(&cli).unwrap();
+        std::fs::write(
+            cli.join(".qoder-app-status.json"),
+            format!("{{\"email\":\"{email}\",\"name\":\"n\",\"plan\":\"Free\",\"product\":\"qodercn\",\"logged_in\":true}}"),
+        )
+        .unwrap();
+    }
+
+    fn live(roots: &PathRoots, name: &str) -> Vec<u8> {
+        std::fs::read(desktop_dir(roots, QoderVariant::Cn).join(name)).unwrap()
+    }
+
+    #[test]
+    fn capture_grabs_every_existing_file_and_reads_identity() {
+        let (roots, store, tmp) = fixture();
+        seed(&roots, b"authA", b"keyA", b"m1", "a@x.com");
+        let b = capture(&roots, &store, "acct-a", QoderVariant::Cn, QoderTarget::Desktop).unwrap();
+
+        assert_eq!(b.members.len(), 4, "应收到 auth/LocalState/machineId/回显");
+        assert!(b.member(FileRole::AuthMain).is_some());
+        assert!(b.member(FileRole::StatusEcho).is_some(), "回显属桌面目标");
+        assert!(b.member(FileRole::ProfileOverlays).is_none(), "不存在的不该收");
+        assert_eq!(b.identity.email.as_deref(), Some("a@x.com"));
+        assert_eq!(b.identity.plan.as_deref(), Some("Free"));
+        assert_eq!(b.display_label(), "a@x.com");
+        assert!(b.dir_in(&store).join("bundle.json").is_file());
+        std::fs::remove_dir_all(tmp).ok();
+    }
+
+    #[test]
+    fn empty_bundle_is_reported_not_silently_accepted() {
+        let (roots, store, tmp) = fixture();
+        // CN CLI 本机不落盘凭据 → 捕获结果应为空包。
+        std::fs::create_dir_all(cli_dir(&roots, QoderVariant::Cn).join(".auth")).unwrap();
+        let b = capture(&roots, &store, "acct-cli", QoderVariant::Cn, QoderTarget::Cli).unwrap();
+        assert!(b.is_empty());
+        std::fs::remove_dir_all(tmp).ok();
+    }
+
+    #[test]
+    fn restore_swaps_whole_group_and_undo_puts_it_back() {
+        let (roots, store, tmp) = fixture();
+        // 先登录 A 并认领，再在客户端里换成 B —— 现场与包不再是同一份内容，
+        // 这样 restore 才算真的"换号"，undo 也有东西可退。
+        seed(&roots, b"authA", b"keyA", b"mA", "a@x.com");
+        let a = capture(&roots, &store, "acct-a", QoderVariant::Cn, QoderTarget::Desktop).unwrap();
+
+        seed(&roots, b"authB", b"keyB", b"mB", "b@x.com");
+        let b = capture(&roots, &store, "acct-b", QoderVariant::Cn, QoderTarget::Desktop).unwrap();
+        assert_eq!(b.display_label(), "b@x.com", "包标签取自当时的明文回显");
+        assert_eq!(live(&roots, "auth.v1.dat"), b"authB", "现场应是 B");
+
+        let out = restore(&roots, &store, &a).unwrap();
+        assert_eq!(live(&roots, "auth.v1.dat"), b"authA");
+        assert_eq!(live(&roots, "Local State"), b"keyA", "主密钥必须成组换");
+        assert_eq!(live(&roots, "auth.machine-id"), b"mA");
+        assert!(out.backup_dir.is_dir());
+
+        out.undo().unwrap();
+        assert_eq!(live(&roots, "auth.v1.dat"), b"authB", "undo 应退回切换前现场");
+        assert_eq!(live(&roots, "Local State"), b"keyB");
+
+        // 备份目录里四个成员都该在，供事后人工恢复。
+        assert!(out.backup_dir.join("authmain").is_file());
+        assert!(out.backup_dir.join("localstate").is_file());
+        std::fs::remove_dir_all(tmp).ok();
+    }
+
+    #[test]
+    fn restore_refuses_half_swap() {
+        let (roots, store, tmp) = fixture();
+        seed(&roots, b"authA", b"keyA", b"mA", "a@x.com");
+        let mut b =
+            capture(&roots, &store, "acct-a", QoderVariant::Cn, QoderTarget::Desktop).unwrap();
+        // 模拟"包只带了 auth.v1.dat，没带 Local State"。
+        b.members.retain(|m| m.role != FileRole::LocalState);
+
+        let err = restore(&roots, &store, &b).unwrap_err();
+        assert!(err.contains("半换号"), "错误信息该说明拒写原因: {err}");
+        assert_eq!(live(&roots, "auth.v1.dat"), b"authA", "拒写后现场不该被动过");
+        std::fs::remove_dir_all(tmp).ok();
+    }
+
+    #[test]
+    fn restore_refuses_corrupt_member_bytes() {
+        let (roots, store, tmp) = fixture();
+        seed(&roots, b"authA", b"keyA", b"mA", "a@x.com");
+        let b = capture(&roots, &store, "acct-a", QoderVariant::Cn, QoderTarget::Desktop).unwrap();
+
+        // 包外篡改：直接改 bundle 目录里的副本字节。
+        std::fs::write(b.dir_in(&store).join("authmain"), b"tampered").unwrap();
+        seed(&roots, b"authB", b"keyB", b"mB", "b@x.com");
+
+        let err = restore(&roots, &store, &b).unwrap_err();
+        assert!(err.contains("哈希不符"), "应检出包内损坏: {err}");
+        assert_eq!(live(&roots, "auth.v1.dat"), b"authB");
+        std::fs::remove_dir_all(tmp).ok();
+    }
+
+    #[test]
+    fn rollback_restores_saved_and_removes_files_we_created() {
+        let (_roots, _store, tmp) = fixture();
+        let dir = tmp.join("bk");
+        std::fs::create_dir_all(&dir).unwrap();
+        let pre = dir.join("saved");
+        std::fs::write(&pre, b"original").unwrap();
+
+        let restored_path = tmp.join("live.dat");
+        let created_path = tmp.join("created.dat");
+        std::fs::write(&restored_path, b"swapped").unwrap();
+        std::fs::write(&created_path, b"we-made-this").unwrap();
+
+        restore_from_backup(
+            &dir,
+            &[
+                BackupItem {
+                    path: restored_path.clone(),
+                    saved_name: Some("saved".into()),
+                },
+                BackupItem {
+                    path: created_path.clone(),
+                    saved_name: None,
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(&restored_path).unwrap(), b"original");
+        assert!(!created_path.exists(), "原本不存在的文件回滚时应删除");
+        std::fs::remove_dir_all(tmp).ok();
+    }
+}

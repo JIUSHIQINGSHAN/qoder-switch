@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/qs-switch-core"]
+resolver = "2"
