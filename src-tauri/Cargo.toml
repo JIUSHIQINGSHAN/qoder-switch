@@ -1,0 +1,29 @@
+[package]
+name = "qoder-switch"
+version = "0.1.0"
+description = "Qoder Switch —— Qoder 多账号切换桌面 App（Tauri 版）"
+authors = ["JIUSHIQINGSHAN"]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/JIUSHIQINGSHAN/qoder-switch"
+
+[lib]
+# `_lib` 后缀避免与 bin 同名，Windows 下必需。
+name = "qoder_switch_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+# 不开 custom-protocol 的 cargo build 会产出加载 devUrl 的开发态 exe。
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+qs-switch-core = { path = "../crates/qs-switch-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

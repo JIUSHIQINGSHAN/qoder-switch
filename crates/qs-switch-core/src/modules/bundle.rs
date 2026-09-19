@@ -415,6 +415,30 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     atomic_write_bytes(path, &json).map_err(|e| format!("写 {path:?} 失败: {e}"))
 }
 
+/// 列出 store 下所有已认领的包（含每个 (版本·目标) 分片）。
+pub fn list_all(store: &Path) -> Vec<Bundle> {
+    let root = accounts_root_in(store);
+    let Ok(read) = std::fs::read_dir(&root) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for acc in read.flatten() {
+        if !acc.path().is_dir() {
+            continue;
+        }
+        let id = acc.file_name().to_string_lossy().to_string();
+        for (v, t) in crate::modules::variant::all_axes() {
+            if let Ok(b) = load(store, &id, v, t) {
+                if !b.is_empty() {
+                    out.push(b);
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| a.account_id.cmp(&b.account_id).then_with(|| a.target.cmp(&b.target)));
+    out
+}
+
 /// 读明文登录回显拿账号身份。字段缺失或文件不存在都返回 None（不是错误）。
 pub fn read_identity(path: &Path) -> Option<Identity> {
     let text = std::fs::read_to_string(path).ok()?;

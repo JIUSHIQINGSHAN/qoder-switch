@@ -1,0 +1,3 @@
+# tauri-build 生成的能力 schema 与增量产物
+/gen/schemas/
+/target/
