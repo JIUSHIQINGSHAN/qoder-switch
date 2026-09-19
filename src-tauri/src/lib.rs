@@ -1,8 +1,6 @@
 mod commands;
 mod tray;
 
-use tauri::Manager;
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -31,7 +29,9 @@ pub fn run() {
             commands::unfinished,
             commands::recover,
             commands::snapshot_now,
-            commands::store_dir
+            commands::store_dir,
+            commands::export_account_text,
+            commands::import_account_text
         ])
         .run(tauri::generate_context!())
         .expect("Qoder Switch 启动失败");

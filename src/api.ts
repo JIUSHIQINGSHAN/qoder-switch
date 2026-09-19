@@ -28,6 +28,9 @@ export const api = {
   recover: (journal: Journal) => invoke<string>("recover", { journal }),
   snapshotNow: () => invoke<SnapshotReport>("snapshot_now"),
   storeDir: () => invoke<string>("store_dir"),
+  exportText: (account_id: string) => invoke<string>("export_account_text", { account_id }),
+  importText: (text: string, overwrite: boolean) =>
+    invoke<{ written: string[]; skipped: string[] }>("import_account_text", { text, overwrite }),
   onSwitchProgress: (cb: (msg: string) => void): Promise<UnlistenFn> =>
     listen<string>("switch-progress", (e) => cb(e.payload)),
 };

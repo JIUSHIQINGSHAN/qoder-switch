@@ -38,6 +38,9 @@ export default function App() {
   const [forced, setForced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [exportText, setExportText] = useState("");
+  const [importText, setImportText] = useState("");
+  const [importOverwrite, setImportOverwrite] = useState(false);
 
   const log = useCallback((m: string) => {
     setLogs((prev) => [...prev.slice(-199), `${new Date().toLocaleTimeString()} ${m}`]);
@@ -238,6 +241,76 @@ export default function App() {
               ))}
             </tbody>
           </table>
+
+          <h2>导出 / 导入账号包</h2>
+          <div className="row">
+            <button
+              disabled={busy || !chosen}
+              onClick={() => {
+                if (!chosen) return;
+                void run(
+                  `已导出 ${chosen.account_id} 的账号包`,
+                  () => api.exportText(chosen.account_id),
+                  setExportText,
+                );
+              }}
+            >
+              导出所选账号
+            </button>
+            <button
+              disabled={!exportText}
+              onClick={() => {
+                navigator.clipboard
+                  ?.writeText(exportText)
+                  .then(() => log("导出文本已复制到剪贴板"))
+                  .catch(() => log("复制失败，请手动全选文本框内容"));
+              }}
+            >
+              复制
+            </button>
+          </div>
+          {exportText && (
+            <textarea
+              className="io"
+              rows={4}
+              readOnly
+              value={exportText}
+              onFocus={(e) => e.currentTarget.select()}
+            />
+          )}
+          <textarea
+            className="io"
+            rows={3}
+            placeholder="把另一台机器导出的 JSON 粘到这里"
+            value={importText}
+            onChange={(e) => setImportText(e.target.value)}
+          />
+          <div className="row">
+            <label>
+              <input
+                type="checkbox"
+                checked={importOverwrite}
+                onChange={(e) => setImportOverwrite(e.target.checked)}
+              />
+              允许覆盖同名分片
+            </label>
+            <button
+              disabled={busy || !importText.trim()}
+              onClick={() =>
+                run("账号包导入完成", () => api.importText(importText, importOverwrite), (r) => {
+                  r.written.forEach((w) => log(`导入 · ${w}`));
+                  r.skipped.forEach((s) => log(`跳过 · ${s}`));
+                  if (r.written.length) setImportText("");
+                })
+              }
+            >
+              导入
+            </button>
+          </div>
+          <p className="hint">
+            导出的是凭据文件的密文副本，受 DPAPI（按 Windows 用户）保护：换机器或换
+            Windows 账号后导入会静默变成未登录，只能在同一 Windows 用户内搬运。
+          </p>
 
           {stranded.length > 0 && (
             <>

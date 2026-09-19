@@ -151,7 +151,7 @@ pub fn capture(
     Ok(bundle)
 }
 
-fn write_meta(store: &Path, bundle: &Bundle) -> Result<()> {
+pub(crate) fn write_meta(store: &Path, bundle: &Bundle) -> Result<()> {
     let path = bundle.dir_in(store).join("bundle.json");
     let json = serde_json::to_vec_pretty(bundle).map_err(|e| e.to_string())?;
     atomic_write_bytes(&path, &json).map_err(|e| format!("写 bundle.json 失败: {e}"))

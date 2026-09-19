@@ -462,6 +462,18 @@ mod tests {
     }
 }
 
+/// 角色是否属于"换号必须成组替换"集合。
+///
+/// 真相仍然只在 `credentials()` 的表里：这里取该角色在所有 (版本·目标) 下出现过的
+/// critical 标记的并集，避免调用方各自复制一份判断。
+pub fn role_is_critical(role: FileRole) -> bool {
+    let roots = PathRoots::real();
+    all_axes()
+        .into_iter()
+        .flat_map(|(v, t)| credentials(&roots, v, t))
+        .any(|f| f.role == role && f.critical)
+}
+
 /// 供上层按 `(版本,目标)` 组合遍历。
 pub fn all_axes() -> Vec<(QoderVariant, QoderTarget)> {
     let mut out = Vec::new();

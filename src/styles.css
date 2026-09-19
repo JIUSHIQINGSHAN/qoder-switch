@@ -126,6 +126,19 @@ input[type="checkbox"] {
   width: auto;
 }
 
+textarea.io {
+  width: 100%;
+  margin: 8px 0;
+  background: var(--panel);
+  color: var(--dim);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 7px 9px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px;
+  resize: vertical;
+}
+
 label {
   display: flex;
   gap: 6px;
