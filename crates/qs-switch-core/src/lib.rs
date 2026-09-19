@@ -4,7 +4,7 @@
 
 pub mod modules;
 
-pub use modules::{bundle, config, snapshot, variant};
+pub use modules::{bundle, config, process, snapshot, switch, variant};
 
 /// 核心层统一错误类型。面向 UI 的中文消息，不做错误码分类。
 pub type Result<T> = std::result::Result<T, String>;

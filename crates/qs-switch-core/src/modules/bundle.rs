@@ -16,9 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::modules::config::{
     atomic_write_bytes, now_ts, read_bytes, sha256_hex, PathRoots,
 };
-use crate::modules::variant::{
-    bundle_prefix, credentials, FileRole, QoderTarget, QoderVariant,
-};
+use crate::modules::variant::{bundle_prefix, credentials, FileRole, QoderTarget, QoderVariant};
 use crate::Result;
 
 /// 包内一个文件成员。
@@ -176,7 +174,12 @@ pub fn load(
 ///
 /// 流程：整组先备份 → 逐个原子写 → 全部读回比对 sha256 → 任一不符则整组回滚。
 /// 参考实现只备份不回滚，这里补上回滚，因为 Qoder 桌面端会持续重写 auth 文件。
-pub fn restore(roots: &PathRoots, store: &Path, bundle: &Bundle) -> Result<RestoreOutcome> {
+pub fn restore(
+    roots: &PathRoots,
+    store: &Path,
+    bundle: &Bundle,
+    backup_dir: &Path,
+) -> Result<RestoreOutcome> {
     let files = credentials(roots, bundle.variant, bundle.target);
 
     // 覆盖性检查：现场存在、但包里缺位的 critical 文件会造成"半换号"（例如只换了
@@ -225,18 +228,15 @@ pub fn restore(roots: &PathRoots, store: &Path, bundle: &Bundle) -> Result<Resto
         return Err("bundle 是空的，没有可写入的文件".into());
     }
 
-    let backup_dir = store
-        .join("backups")
-        .join(bundle_prefix(bundle.variant, bundle.target) + "." + &now_ts());
-    std::fs::create_dir_all(&backup_dir)
-        .map_err(|e| format!("创建备份目录 {:?} 失败: {e}", backup_dir))?;
+    std::fs::create_dir_all(backup_dir)
+        .map_err(|e| format!("创建备份目录 {backup_dir:?} 失败: {e}"))?;
 
     // 1) 备份现场。原本不存在的记为 None，回滚时按"应删除"处理。
-    let mut backups: Vec<BackupItem> = Vec::new();
+    let mut items: Vec<BackupItem> = Vec::new();
     for (t, _) in &staging {
         let saved_name = if t.path.exists() {
             let bytes = read_bytes(&t.path)
-                .map_err(|e| format!("备份读取 {:?} 失败（回滚中止）: {e}", t.path))?;
+                .map_err(|e| format!("备份读取 {:?} 失败（尚未写入任何东西）: {e}", t.path))?;
             let name = t.role_file_name();
             atomic_write_bytes(&backup_dir.join(&name), &bytes)
                 .map_err(|e| format!("备份写入失败: {e}"))?;
@@ -244,11 +244,20 @@ pub fn restore(roots: &PathRoots, store: &Path, bundle: &Bundle) -> Result<Resto
         } else {
             None
         };
-        backups.push(BackupItem {
+        items.push(BackupItem {
+            role: t.role,
             path: t.path.clone(),
             saved_name,
         });
     }
+    // 清单必须先于任何写入落盘：进程在这中间被杀掉，事后才有依据退回去。
+    let manifest = BackupManifest {
+        variant: bundle.variant,
+        target: bundle.target,
+        taken_at: now_ts(),
+        items: items.clone(),
+    };
+    write_json(&backup_dir.join(MANIFEST_FILE), &manifest)?;
     write_json(&backup_dir.join("_meta.json"), bundle)?;
 
     // 2) 写入。
@@ -258,7 +267,7 @@ pub fn restore(roots: &PathRoots, store: &Path, bundle: &Bundle) -> Result<Resto
                 .map_err(|e| format!("创建 {:?} 失败: {e}", parent))?;
         }
         if let Err(e) = atomic_write_bytes(&t.path, bytes) {
-            let detail = rollback(&backup_dir, &backups);
+            let detail = rollback(backup_dir, &items);
             return Err(format!("写入 {:?} 失败: {e}；回滚{detail}", t.path));
         }
     }
@@ -279,7 +288,7 @@ pub fn restore(roots: &PathRoots, store: &Path, bundle: &Bundle) -> Result<Resto
         }
     }
     if !mismatches.is_empty() {
-        let detail = rollback(&backup_dir, &backups);
+        let detail = rollback(backup_dir, &items);
         return Err(format!(
             "写入后校验未通过（目标进程很可能还在覆盖写入）: {}；回滚{detail}",
             mismatches.join("; ")
@@ -288,8 +297,8 @@ pub fn restore(roots: &PathRoots, store: &Path, bundle: &Bundle) -> Result<Resto
 
     Ok(RestoreOutcome {
         written: staging.iter().map(|(t, _)| t.role).collect(),
-        backup_dir,
-        backups,
+        backup_dir: backup_dir.to_path_buf(),
+        items,
     })
 }
 
@@ -306,26 +315,60 @@ impl CredentialTarget {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct BackupItem {
+    role: FileRole,
     path: PathBuf,
     /// Some(name) = 备份前现场存在，文件存于备份目录下的 `name`；
     /// None = 备份前不存在，回滚时应删除我们创建出来的文件。
     saved_name: Option<String>,
 }
 
+/// 落盘的备份清单。有了它，回滚就不再依赖内存 —— 进程被杀或断电后，
+/// 任何一次启动都能凭 `_restore.json` 把现场退回去。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupManifest {
+    pub variant: QoderVariant,
+    pub target: QoderTarget,
+    pub taken_at: String,
+    items: Vec<BackupItem>,
+}
+
+pub const MANIFEST_FILE: &str = "_restore.json";
+
 #[derive(Debug, Clone)]
 pub struct RestoreOutcome {
     pub written: Vec<FileRole>,
     pub backup_dir: PathBuf,
-    backups: Vec<BackupItem>,
+    items: Vec<BackupItem>,
 }
 
 impl RestoreOutcome {
     /// 用户反悔时把现场退回 restore 之前。
     pub fn undo(&self) -> Result<()> {
-        restore_from_backup(&self.backup_dir, &self.backups)
+        restore_from_backup(&self.backup_dir, &self.items)
     }
+}
+
+/// 凭磁盘清单回滚（崩溃恢复入口，不需要内存上下文）。
+pub fn undo_backup(backup_dir: &Path) -> Result<()> {
+    let bytes = read_bytes(&backup_dir.join(MANIFEST_FILE))
+        .map_err(|e| format!("读 {:?} 失败: {e}", backup_dir.join(MANIFEST_FILE)))?;
+    let m: BackupManifest = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("备份清单解析失败: {e}"))?;
+    restore_from_backup(backup_dir, &m.items)
+}
+
+/// 备份目录内可见的清单条目（供 UI 展示"这次动了哪些文件"）。
+pub fn backup_items(backup_dir: &Path) -> Result<Vec<(FileRole, PathBuf, bool)>> {
+    let bytes = read_bytes(&backup_dir.join(MANIFEST_FILE))
+        .map_err(|e| format!("读备份清单失败: {e}"))?;
+    let m: BackupManifest = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("备份清单解析失败: {e}"))?;
+    Ok(m.items
+        .into_iter()
+        .map(|i| (i.role, i.path, i.saved_name.is_some()))
+        .collect())
 }
 
 fn restore_from_backup(backup_dir: &Path, backups: &[BackupItem]) -> Result<()> {
@@ -428,6 +471,13 @@ mod tests {
         std::fs::read(desktop_dir(roots, QoderVariant::Cn).join(name)).unwrap()
     }
 
+    /// 每次切换一个独立备份目录，与 switch.rs 的命名规则一致。
+    fn next_backup(store: &Path) -> PathBuf {
+        store
+            .join("backups")
+            .join(format!("cn.desktop.{}", uuid::Uuid::new_v4().simple()))
+    }
+
     #[test]
     fn capture_grabs_every_existing_file_and_reads_identity() {
         let (roots, store, tmp) = fixture();
@@ -468,15 +518,31 @@ mod tests {
         assert_eq!(b.display_label(), "b@x.com", "包标签取自当时的明文回显");
         assert_eq!(live(&roots, "auth.v1.dat"), b"authB", "现场应是 B");
 
-        let out = restore(&roots, &store, &a).unwrap();
+        let out = restore(&roots, &store, &a, &next_backup(&store)).unwrap();
         assert_eq!(live(&roots, "auth.v1.dat"), b"authA");
         assert_eq!(live(&roots, "Local State"), b"keyA", "主密钥必须成组换");
         assert_eq!(live(&roots, "auth.machine-id"), b"mA");
         assert!(out.backup_dir.is_dir());
+        assert!(
+            out.backup_dir.join(MANIFEST_FILE).is_file(),
+            "清单必须先落盘，崩溃后才能退回"
+        );
 
         out.undo().unwrap();
         assert_eq!(live(&roots, "auth.v1.dat"), b"authB", "undo 应退回切换前现场");
         assert_eq!(live(&roots, "Local State"), b"keyB");
+
+        // 再切一次，然后只用磁盘上的备份目录做恢复（模拟进程被杀后重启）。
+        let bk2 = next_backup(&store);
+        let out2 = restore(&roots, &store, &a, &bk2).unwrap();
+        assert_eq!(live(&roots, "auth.v1.dat"), b"authA");
+        drop(out2);
+        undo_backup(&bk2).unwrap();
+        assert_eq!(
+            live(&roots, "auth.v1.dat"),
+            b"authB",
+            "凭清单也应能恢复，不依赖内存"
+        );
 
         // 备份目录里四个成员都该在，供事后人工恢复。
         assert!(out.backup_dir.join("authmain").is_file());
@@ -493,7 +559,7 @@ mod tests {
         // 模拟"包只带了 auth.v1.dat，没带 Local State"。
         b.members.retain(|m| m.role != FileRole::LocalState);
 
-        let err = restore(&roots, &store, &b).unwrap_err();
+        let err = restore(&roots, &store, &b, &store.join("backups").join("bk")).unwrap_err();
         assert!(err.contains("半换号"), "错误信息该说明拒写原因: {err}");
         assert_eq!(live(&roots, "auth.v1.dat"), b"authA", "拒写后现场不该被动过");
         std::fs::remove_dir_all(tmp).ok();
@@ -509,9 +575,11 @@ mod tests {
         std::fs::write(b.dir_in(&store).join("authmain"), b"tampered").unwrap();
         seed(&roots, b"authB", b"keyB", b"mB", "b@x.com");
 
-        let err = restore(&roots, &store, &b).unwrap_err();
+        let err = restore(&roots, &store, &b, &store.join("backups").join("bk")).unwrap_err();
         assert!(err.contains("哈希不符"), "应检出包内损坏: {err}");
         assert_eq!(live(&roots, "auth.v1.dat"), b"authB");
+        // 哈希校验必须在备份之前就拦住，否则会留下空备份目录。
+        assert!(!store.join("backups").join("bk").exists());
         std::fs::remove_dir_all(tmp).ok();
     }
 
@@ -532,10 +600,12 @@ mod tests {
             &dir,
             &[
                 BackupItem {
+                    role: FileRole::AuthMain,
                     path: restored_path.clone(),
                     saved_name: Some("saved".into()),
                 },
                 BackupItem {
+                    role: FileRole::CliUser,
                     path: created_path.clone(),
                     saved_name: None,
                 },

@@ -1,0 +1,496 @@
+//! 切换流程：预览 → 记账 → 关目标 → 换文件 → 校验 → 重启。
+//!
+//! 与参考实现的两点不同：
+//! 1. 原作只备份不回滚，这里每一步都先写 journal；进程在中间被杀掉，下次启动凭
+//!    journal + `_restore.json` 清单就能把现场退回（`recover`）。
+//! 2. 原作可以直接 `taskkill` 目标；本机开发时发起方本身就是目标的子孙进程，所以
+//!    `Actor::Real` 带自杀检测，检测命中就拒写而不是硬来。
+
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::modules::config::{now_ts, switch_root, PathRoots};
+use crate::modules::{bundle, process, variant};
+use crate::modules::variant::{backup_stem, credentials, FileRole, QoderTarget, QoderVariant};
+use crate::Result;
+
+/// 谁来执行进程动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Actor {
+    /// 正常档：判定为"被托管"或"判不出来"都不许杀目标进程。
+    Real,
+    /// 强制档：用户明确知情并要求执行，跳过托管判定继续杀。
+    RealForced,
+    /// 演练档：只动文件，不碰进程。测试与预演用。
+    Simulated,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Request {
+    pub account_id: String,
+    pub variant: QoderVariant,
+    pub target: QoderTarget,
+    /// 换完是否把目标重新拉起。
+    #[serde(default)]
+    pub restart: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Phase {
+    Prepared,
+    TargetClosed,
+    Completed,
+    RolledBack,
+    Failed,
+}
+
+impl Phase {
+    /// 还没收尾的阶段 —— 恢复入口要挑这些。
+    pub fn needs_recovery(self) -> bool {
+        matches!(self, Phase::Prepared | Phase::TargetClosed)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Journal {
+    pub id: String,
+    pub account_id: String,
+    pub variant: QoderVariant,
+    pub target: QoderTarget,
+    pub started_at: String,
+    pub phase: Phase,
+    pub backup_dir: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Preview {
+    pub req: Request,
+    /// (角色, 真实路径, 此刻是否存在)。
+    pub layout: Vec<(FileRole, PathBuf, bool)>,
+    /// bundle 里实际会写回去的角色。
+    pub writes: Vec<FileRole>,
+    pub running_pids: Vec<u32>,
+    /// 发起方是否被目标客户端托管（决定了能不能杀进程）。
+    pub hosted: process::Hosted,
+    pub warnings: Vec<String>,
+}
+
+/// 换号前先给人看一眼会动到什么 —— 这一步不做任何写入。
+pub fn preview(
+    roots: &PathRoots,
+    store: &Path,
+    req: &Request,
+) -> Result<Preview> {
+    let b = bundle::load(store, &req.account_id, req.variant, req.target)?;
+    if b.is_empty() {
+        let hint = if req.target == QoderTarget::Cli && req.variant == QoderVariant::Cn {
+            "（实测 CN 版 CLI 不落盘凭据，登录态由桌面端注入 —— 请改换桌面目标）"
+        } else {
+            ""
+        };
+        return Err(format!(
+            "账号 {:?} 在 {:?}·{:?} 上没有任何凭据文件，无法切换{hint}",
+            req.account_id, req.variant, req.target
+        ));
+    }
+    let live = credentials(roots, req.variant, req.target);
+    let layout: Vec<(FileRole, PathBuf, bool)> =
+        live.iter().map(|f| (f.role, f.path.clone(), f.exists())).collect();
+    let uncovered: Vec<String> = live
+        .iter()
+        .filter(|f| f.critical && f.exists() && b.member(f.role).is_none())
+        .map(|f| format!("{:?}", f.role))
+        .collect();
+
+    let running = process::running_pids(req.target.images(req.variant));
+    let hosted = process::hosted_by(req.variant, req.target);
+
+    let mut warnings = Vec::new();
+    if !uncovered.is_empty() {
+        warnings.push(format!(
+            "包内缺位现场存在的 critical 文件: {} —— 真跑会被拒写",
+            uncovered.join(", ")
+        ));
+    }
+    match &hosted {
+        process::Hosted::Yes(why) | process::Hosted::Unknown(why) => {
+            if running.is_empty() {
+                warnings.push(format!("目标没在跑，可以安全换号；托管判定：{why}"));
+            } else {
+                warnings.push(format!(
+                    "不能在这里终止目标：{why}。请改从独立启动的 qoder-switch 或系统托盘发起。"
+                ));
+            }
+        }
+        process::Hosted::No => {}
+    }
+    if req.target == QoderTarget::Cli && req.variant == QoderVariant::Cn {
+        warnings.push(
+            "CN 版 CLI 通常不落盘凭据：它的登录态由桌面端注入，换 CLI 目标往往无效。"
+                .into(),
+        );
+    }
+
+    Ok(Preview {
+        req: req.clone(),
+        layout,
+        writes: b.members.iter().map(|m| m.role).collect(),
+        running_pids: running,
+        hosted,
+        warnings,
+    })
+}
+
+pub fn journal_dir(store: &Path) -> PathBuf {
+    store.join("journal")
+}
+
+fn write_journal(store: &Path, j: &Journal) -> Result<()> {
+    let dir = journal_dir(store);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建 journal 目录失败: {e}"))?;
+    let json = serde_json::to_vec_pretty(j).map_err(|e| e.to_string())?;
+    crate::modules::config::atomic_write_bytes(&dir.join(format!("{}.json", j.id)), &json)
+        .map_err(|e| format!("写 journal 失败: {e}"))
+}
+
+/// 执行切换。`progress` 会收到人话步骤，供 UI 直接显示。
+pub fn execute(
+    roots: &PathRoots,
+    store: &Path,
+    req: &Request,
+    actor: Actor,
+    progress: &mut dyn FnMut(&str),
+) -> Result<Journal> {
+    let pv = preview(roots, store, req)?;
+    let b = bundle::load(store, &req.account_id, req.variant, req.target)?;
+
+    let started_at = now_ts();
+    let id = format!(
+        "{}.{}.{}",
+        req.variant.label(),
+        started_at,
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    );
+    let backup_dir = store
+        .join("backups")
+        .join(backup_stem(req.variant, req.target, &started_at));
+    let mut j = Journal {
+        id: id.clone(),
+        account_id: req.account_id.clone(),
+        variant: req.variant,
+        target: req.target,
+        started_at: started_at.clone(),
+        phase: Phase::Prepared,
+        backup_dir: backup_dir.clone(),
+        note: None,
+    };
+    write_journal(store, &j)?;
+    progress(&format!(
+        "已记账 {}：目标 {}·{}，将写回 {} 个文件",
+        id,
+        req.variant.label(),
+        req.target.label(),
+        b.members.len()
+    ));
+
+    // 托管判定：正常档下"被托管"与"判不出来"都不许杀进程（fail-closed）；
+    // 强制档是用户明确知情后的显式覆盖。
+    let verdict = match actor {
+        Actor::Real => {
+            if let process::Hosted::Yes(why) | process::Hosted::Unknown(why) = &pv.hosted {
+                j.phase = Phase::Failed;
+                j.note = Some(format!("拒绝终止目标：{why}"));
+                write_journal(store, &j)?;
+                return Err(format!(
+                    "拒绝执行：{why}。终止目标进程会连同本会话一起结束；\
+                     请改从独立启动的 qoder-switch 发起，或确认后果后使用强制档。"
+                ));
+            }
+            pv.hosted.clone()
+        }
+        Actor::RealForced => {
+            progress("强制档：跳过托管判定，继续终止目标进程");
+            process::Hosted::No
+        }
+        Actor::Simulated => {
+            progress("演练模式：跳过关进程");
+            process::Hosted::No
+        }
+    };
+
+    if !matches!(actor, Actor::Simulated) && !pv.running_pids.is_empty() {
+        progress(&format!(
+            "关闭 {}（{} 个进程）",
+            req.target.label(),
+            pv.running_pids.len()
+        ));
+        if let Err(e) = process::close(req.variant, req.target, 20, &verdict) {
+            j.phase = Phase::Failed;
+            j.note = Some(format!("关进程失败: {e}"));
+            write_journal(store, &j)?;
+            return Err(e);
+        }
+    }
+    j.phase = Phase::TargetClosed;
+    write_journal(store, &j)?;
+
+    progress("备份现场并写回目标账号凭据");
+    let out = match bundle::restore(roots, store, &b, &backup_dir) {
+        Ok(o) => o,
+        Err(e) => {
+            // restore 内部已尽力回滚；journal 记 Failed 并保留备份目录指针。
+            j.phase = Phase::Failed;
+            j.note = Some(e.clone());
+            write_journal(store, &j)?;
+            return Err(e);
+        }
+    };
+    progress(&format!("写回并校验通过：{:?}", out.written));
+
+    if matches!(actor, Actor::Real) && req.restart {
+        if let Some(exe) = variant::executable(roots, req.variant, req.target) {
+            progress(&format!("重新启动 {exe:?}"));
+            process::launch(&exe)?;
+        } else {
+            progress("未能定位可执行文件，已跳过自动启动（请手动打开）");
+        }
+    }
+
+    j.phase = Phase::Completed;
+    write_journal(store, &j)?;
+    Ok(j)
+}
+
+/// 未完成切换（进程被杀/断电留下的）。UI 启动时查一次，逐条问用户要不要退回。
+pub fn unfinished(store: &Path) -> Result<Vec<Journal>> {
+    let dir = journal_dir(store);
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(&dir).map_err(|e| format!("读 journal 失败: {e}"))? {
+        let path = e.map_err(|e| e.to_string())?.path();
+        if path.extension().map(|x| x != "json").unwrap_or(true) {
+            continue;
+        }
+        let bytes = std::fs::read(&path).map_err(|e| format!("读 {:?} 失败: {e}", path))?;
+        let j: Journal = match serde_json::from_slice(&bytes) {
+            Ok(j) => j,
+            Err(_) => continue,
+        };
+        if j.phase.needs_recovery() {
+            out.push(j);
+        }
+    }
+    out.sort_by(|a, b| a.started_at.cmp(&b.started_at));
+    Ok(out)
+}
+
+/// 按 journal 记录的备份目录把现场退回。备份目录还不存在时说明尚未写入任何东西，
+/// 直接判定为已完成回滚。
+pub fn recover(store: &Path, j: &Journal) -> Result<Phase> {
+    if !j.backup_dir.exists() {
+        let mut done = j.clone();
+        done.phase = Phase::RolledBack;
+        done.note = Some("备份目录未生成，说明尚未写入任何东西".into());
+        write_journal(store, &done)?;
+        return Ok(Phase::RolledBack);
+    }
+    bundle::undo_backup(&j.backup_dir)?;
+    let mut done = j.clone();
+    done.phase = Phase::RolledBack;
+    write_journal(store, &done)?;
+    Ok(Phase::RolledBack)
+}
+
+/// 便利入口：默认 store 路径。
+pub fn default_store() -> PathBuf {
+    switch_root()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::variant::{desktop_dir, FileRole::*, QoderVariant::* };
+
+    struct Sandbox {
+        roots: PathRoots,
+        store: PathBuf,
+        tmp: PathBuf,
+    }
+
+    fn sandbox() -> Sandbox {
+        let tmp = std::env::temp_dir().join(format!("qs-switch-{}", uuid::Uuid::new_v4().simple()));
+        let roots = PathRoots::sandbox(&tmp);
+        let store = tmp.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        Sandbox { roots, store, tmp }
+    }
+
+    fn seed(roots: &PathRoots, auth: &[u8], key: &[u8], email: &str) {
+        let d = desktop_dir(roots, Cn);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("auth.v1.dat"), auth).unwrap();
+        std::fs::write(d.join("Local State"), key).unwrap();
+        std::fs::write(d.join("auth.machine-id"), auth).unwrap();
+        let cli = roots.home.join(".qoder-cn");
+        std::fs::create_dir_all(&cli).unwrap();
+        std::fs::write(
+            cli.join(".qoder-app-status.json"),
+            format!("{{\"email\":\"{email}\",\"product\":\"qodercn\"}}"),
+        )
+        .unwrap();
+    }
+
+    fn live(roots: &PathRoots) -> Vec<u8> {
+        std::fs::read(desktop_dir(roots, Cn).join("auth.v1.dat")).unwrap()
+    }
+
+    fn req(id: &str) -> Request {
+        Request { account_id: id.into(), variant: Cn, target: QoderTarget::Desktop, restart: false }
+    }
+
+    #[test]
+    fn preview_lists_layout_without_writing() {
+        let s = sandbox();
+        seed(&s.roots, b"authA", b"keyA", "a@x.com");
+        bundle::capture(&s.roots, &s.store, "acct-a", Cn, QoderTarget::Desktop).unwrap();
+
+        let pv = preview(&s.roots, &s.store, &req("acct-a")).unwrap();
+        assert!(pv.writes.contains(&AuthMain));
+        assert_eq!(pv.layout.iter().filter(|(_, _, e)| *e).count(), 4);
+        assert!(
+            pv.warnings.iter().all(|w| !w.contains("半换号")),
+            "包是完整的，不该有缺位告警: {:?}",
+            pv.warnings
+        );
+        assert!(!s.store.join("journal").exists(), "预览不该产生任何写入");
+        std::fs::remove_dir_all(s.tmp).ok();
+    }
+
+    /// 本机 QODER_PRODUCT_ID=qoder-cn，正常档必须拒绝终止目标。
+    #[test]
+    fn real_actor_refuses_when_hosted() {
+        let s = sandbox();
+        seed(&s.roots, b"authA", b"keyA", "a@x.com");
+        bundle::capture(&s.roots, &s.store, "acct-a", Cn, QoderTarget::Desktop).unwrap();
+        if process::running_pids(QoderTarget::Desktop.images(Cn)).is_empty() {
+            eprintln!("NOTE: 目标没在跑，拒绝逻辑无从验证");
+            return;
+        }
+        let mut steps = Vec::new();
+        let e = execute(
+            &s.roots,
+            &s.store,
+            &req("acct-a"),
+            Actor::Real,
+            &mut |m| steps.push(m.to_string()),
+        )
+        .unwrap_err();
+        assert!(e.contains("拒绝执行"), "被托管时正常档必须拒绝: {e}");
+        assert!(live(&s.roots) == b"authA", "拒绝后不该动过现场");
+        let left = unfinished(&s.store).unwrap();
+        assert!(left.is_empty(), "Failed 状态不该被当成待恢复: {left:?}");
+        std::fs::remove_dir_all(s.tmp).ok();
+    }
+
+    /// 沙箱里给 CN CLI 造出落盘凭据（官方哪天改了持久化策略就是这形态），
+    /// 确认预览仍会提醒"换 CLI 往往无效"。
+    #[test]
+    fn cli_target_still_warns_about_desktop_injection() {
+        let s = sandbox();
+        let auth = s.roots.home.join(".qoder-cn").join(".auth");
+        std::fs::create_dir_all(&auth).unwrap();
+        std::fs::write(auth.join("user"), b"cipher-A").unwrap();
+        std::fs::write(auth.join("machine_id"), b"m-A").unwrap();
+        bundle::capture(&s.roots, &s.store, "acct-cli", Cn, QoderTarget::Cli).unwrap();
+
+        let r = Request {
+            account_id: "acct-cli".into(),
+            variant: Cn,
+            target: QoderTarget::Cli,
+            restart: false,
+        };
+        let pv = preview(&s.roots, &s.store, &r).unwrap();
+        assert!(pv.warnings.iter().any(|w| w.contains("由桌面端注入")));
+        std::fs::remove_dir_all(s.tmp).ok();
+    }
+
+    #[test]
+    fn execute_in_simulation_swaps_and_journals_completion() {
+        let s = sandbox();
+        seed(&s.roots, b"authA", b"keyA", "a@x.com");
+        bundle::capture(&s.roots, &s.store, "acct-a", Cn, QoderTarget::Desktop).unwrap();
+        seed(&s.roots, b"authB", b"keyB", "b@x.com");
+        bundle::capture(&s.roots, &s.store, "acct-b", Cn, QoderTarget::Desktop).unwrap();
+
+        let mut steps = Vec::new();
+        let j = execute(
+            &s.roots,
+            &s.store,
+            &req("acct-a"),
+            Actor::Simulated,
+            &mut |m| steps.push(m.to_string()),
+        )
+        .unwrap();
+        assert_eq!(j.phase, Phase::Completed);
+        assert_eq!(live(&s.roots), b"authA");
+        assert!(steps.iter().any(|s| s.contains("校验通过")));
+        assert!(
+            j.backup_dir.join(bundle::MANIFEST_FILE).is_file(),
+            "备份清单必须落盘，否则崩溃后无从退回"
+        );
+        assert!(unfinished(&s.store).unwrap().is_empty(), "收尾完成不该被挑出来");
+        std::fs::remove_dir_all(s.tmp).ok();
+    }
+
+    /// 目标账号不存在时，必须连 journal 都不留下"半途"状态。
+    #[test]
+    fn unknown_account_fails_before_any_journal_is_written() {
+        let s = sandbox();
+        std::fs::create_dir_all(desktop_dir(&s.roots, Cn)).unwrap();
+        let mut steps = Vec::new();
+        let e = execute(&s.roots, &s.store, &req("ghost"), Actor::Simulated, &mut |m| {
+            steps.push(m.to_string())
+        })
+        .unwrap_err();
+        assert!(e.contains("读"), "应报找不到包: {e}");
+        assert!(steps.is_empty());
+        std::fs::remove_dir_all(s.tmp).ok();
+    }
+
+    #[test]
+    fn unfinished_and_recover_walk_the_scene_back() {
+        let s = sandbox();
+        seed(&s.roots, b"authA", b"keyA", "a@x.com");
+        bundle::capture(&s.roots, &s.store, "acct-a", Cn, QoderTarget::Desktop).unwrap();
+        seed(&s.roots, b"authB", b"keyB", "b@x.com");
+
+        // 手工造一个"写完就断"的现场：restore 成功但 journal 停在 TargetClosed。
+        let bk = s.store.join("backups").join("manual");
+        let b = bundle::load(&s.store, "acct-a", Cn, QoderTarget::Desktop).unwrap();
+        bundle::restore(&s.roots, &s.store, &b, &bk).unwrap();
+        let stranded = Journal {
+            id: "stranded".into(),
+            account_id: "acct-a".into(),
+            variant: Cn,
+            target: QoderTarget::Desktop,
+            started_at: "t".into(),
+            phase: Phase::TargetClosed,
+            backup_dir: bk.clone(),
+            note: None,
+        };
+        write_journal(&s.store, &stranded).unwrap();
+        assert_eq!(live(&s.roots), b"authA");
+
+        let list = unfinished(&s.store).unwrap();
+        assert_eq!(list.len(), 1, "应只挑出没收尾的那条");
+        assert!(recover(&s.store, &list[0]).unwrap() == Phase::RolledBack);
+        assert_eq!(live(&s.roots), b"authB", "恢复后应退回 B");
+        assert!(unfinished(&s.store).unwrap().is_empty(), "恢复后不该再被挑出");
+        std::fs::remove_dir_all(s.tmp).ok();
+    }
+}
