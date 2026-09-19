@@ -5,7 +5,7 @@
 pub mod modules;
 
 pub use modules::{
-    auth_codec, bundle, config, export_import, process, snapshot, switch, variant,
+    auth_codec, bundle, config, export_import, process, rotate, snapshot, switch, variant,
 };
 
 /// 核心层统一错误类型。面向 UI 的中文消息，不做错误码分类。

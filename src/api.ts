@@ -7,6 +7,7 @@ import type {
   Preview,
   QoderTarget,
   QoderVariant,
+  RotationView,
   SnapshotReport,
 } from "./types";
 
@@ -31,6 +32,10 @@ export const api = {
   exportText: (account_id: string) => invoke<string>("export_account_text", { account_id }),
   importText: (text: string, overwrite: boolean) =>
     invoke<{ written: string[]; skipped: string[] }>("import_account_text", { text, overwrite }),
+  rotation: (variant: QoderVariant) =>
+    invoke<RotationView>("rotation_suggestion", { variant }),
+  applyRotation: (variant: QoderVariant, restart: boolean) =>
+    invoke<Journal>("apply_rotation", { variant, restart }),
   onSwitchProgress: (cb: (msg: string) => void): Promise<UnlistenFn> =>
     listen<string>("switch-progress", (e) => cb(e.payload)),
 };

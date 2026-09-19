@@ -5,7 +5,7 @@ use tauri::{AppHandle, Emitter};
 
 use qs_switch_core::modules::config::{switch_root, PathRoots};
 use qs_switch_core::modules::variant::{QoderTarget, QoderVariant};
-use qs_switch_core::modules::{bundle, export_import, process, snapshot, switch};
+use qs_switch_core::modules::{bundle, export_import, process, rotate, snapshot, switch};
 
 /// 一个 (版本·目标) 的现场状态，供 UI 的安全横幅与账号列表使用。
 #[derive(Serialize)]
@@ -171,4 +171,31 @@ pub fn import_account_text(text: String, overwrite: bool) -> Result<ImportResult
             .collect(),
         skipped: rep.skipped,
     })
+}
+
+#[derive(Serialize)]
+pub struct RotationView {
+    pub suggestion: rotate::Suggestion,
+    pub state: rotate::RotateState,
+}
+
+/// 轮换建议。只读：不写产品目录、不动进程。
+#[tauri::command]
+pub fn rotation_suggestion(variant: QoderVariant) -> Result<RotationView, String> {
+    let roots = PathRoots::real();
+    let store = switch_root();
+    let cfg = rotate::RotateConfig::default();
+    Ok(RotationView {
+        suggestion: rotate::suggest(&roots, &store, variant, &cfg)?,
+        state: rotate::read_state(&store).unwrap_or_default(),
+    })
+}
+
+/// 执行建议。走的就是普通切换路径，托管判定与备份回滚一个都不绕过。
+#[tauri::command]
+pub fn apply_rotation(variant: QoderVariant, restart: bool) -> Result<switch::Journal, String> {
+    let roots = PathRoots::real();
+    let store = switch_root();
+    let s = rotate::suggest(&roots, &store, variant, &rotate::RotateConfig::default())?;
+    rotate::apply(&roots, &store, &s, restart)
 }

@@ -37,7 +37,9 @@ pub fn run() {
             commands::snapshot_now,
             commands::store_dir,
             commands::export_account_text,
-            commands::import_account_text
+            commands::import_account_text,
+            commands::rotation_suggestion,
+            commands::apply_rotation
         ])
         .run(tauri::generate_context!())
         .expect("Qoder Switch 启动失败");

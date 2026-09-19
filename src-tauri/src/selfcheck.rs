@@ -144,6 +144,23 @@ pub fn run() -> i32 {
         Ok(parts.join(" | "))
     });
 
+    r.step("rotation_suggestion", || {
+        use qs_switch_core::modules::{rotate, variant::QoderVariant};
+        let store = commands::store_dir();
+        let s = rotate::suggest(
+            &qs_switch_core::modules::config::PathRoots::real(),
+            std::path::Path::new(&store),
+            QoderVariant::Cn,
+            &rotate::RotateConfig::default(),
+        )?;
+        Ok(format!(
+            "切向={:?} 候选{}个 · {}",
+            s.decision.switch_to,
+            s.candidates.len(),
+            s.decision.reason
+        ))
+    });
+
     r.step("unfinished", || {
         Ok(format!("{} 条未收尾切换", commands::unfinished()?.len()))
     });

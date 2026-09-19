@@ -7,6 +7,7 @@ import type {
   Preview,
   QoderTarget,
   QoderVariant,
+  RotationView,
   SnapshotReport,
 } from "./types";
 
@@ -41,6 +42,7 @@ export default function App() {
   const [exportText, setExportText] = useState("");
   const [importText, setImportText] = useState("");
   const [importOverwrite, setImportOverwrite] = useState(false);
+  const [rot, setRot] = useState<RotationView | null>(null);
 
   const log = useCallback((m: string) => {
     setLogs((prev) => [...prev.slice(-199), `${new Date().toLocaleTimeString()} ${m}`]);
@@ -179,6 +181,80 @@ export default function App() {
           判定为「会连同本会话终止」或「判不出来」时，正常档一律拒绝杀进程 —— 从资源管理器独立启动
           qoder-switch 才会得到可安全终止的结论。
         </p>
+      </section>
+
+      <section className="banner">
+        <h2>轮换建议（刻意不自动执行）</h2>
+        <div className="row">
+          <button
+            disabled={busy}
+            onClick={() =>
+              void run(
+                `已按 ${VARIANT_CN[draftVariant]} 检查轮换`,
+                () => api.rotation(draftVariant),
+                setRot,
+              )
+            }
+          >
+            按 {VARIANT_CN[draftVariant]} 检查
+          </button>
+          {rot?.suggestion.decision.switch_to && (
+            <button
+              className="primary"
+              disabled={busy || !rot.suggestion.executable_from_here}
+              onClick={() => {
+                const v = rot!.suggestion.variant;
+                void run(`应用轮换建议：切到 ${rot!.suggestion.decision.switch_to}`, () =>
+                  api.applyRotation(v, true),
+                );
+              }}
+            >
+              应用建议：切到 {rot.suggestion.decision.switch_to}
+            </button>
+          )}
+        </div>
+        {!rot && (
+          <p className="hint">
+            判定只看各账号包解出的 token 剩余天数，不联网。建议不会自动执行 ——
+            换号要重启你正在用的客户端，必须由你确认。
+          </p>
+        )}
+        {rot && (
+          <>
+            <p className={rot.suggestion.decision.switch_to ? "lvl-warn" : "hint"}>
+              {rot.suggestion.decision.reason}
+            </p>
+            <p className="hint">{rot.suggestion.note}</p>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>账号包</th>
+                  <th>token 剩余</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rot.suggestion.candidates.map((c) => (
+                  <tr key={c.account_id}>
+                    <td>{c.account_id}</td>
+                    <td
+                      className={
+                        c.days_left === null
+                          ? "hint"
+                          : c.days_left <= 7
+                            ? "lvl-bad"
+                            : c.days_left <= 21
+                              ? "lvl-warn"
+                              : ""
+                      }
+                    >
+                      {c.days_left === null ? "未解出" : `${c.days_left} 天`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        )}
       </section>
 
       <div className="cols">

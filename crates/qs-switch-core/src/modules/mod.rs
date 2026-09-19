@@ -3,6 +3,7 @@ pub mod bundle;
 pub mod config;
 pub mod export_import;
 pub mod process;
+pub mod rotate;
 pub mod snapshot;
 pub mod switch;
 pub mod variant;

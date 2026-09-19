@@ -102,3 +102,33 @@ export interface SnapshotReport {
   path: string;
   changes: Change[];
 }
+
+export interface Candidate {
+  account_id: string;
+  days_left: number | null;
+}
+
+export interface Decision {
+  switch_to: string | null;
+  reason: string;
+}
+
+export interface Suggestion {
+  variant: QoderVariant;
+  decision: Decision;
+  candidates: Candidate[];
+  executable_from_here: boolean;
+  note: string;
+  checked_at: string;
+}
+
+export interface RotateState {
+  last_suggested_at?: string | null;
+  last_suggested_account?: string | null;
+  history: [string, string, string][];
+}
+
+export interface RotationView {
+  suggestion: Suggestion;
+  state: RotateState;
+}
