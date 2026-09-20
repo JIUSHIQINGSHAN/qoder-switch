@@ -161,6 +161,10 @@ function queryString(args?: Record<string, unknown>): string {
 }
 
 async function httpCall<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  // 有些调用点（签到/旅行/会话预览的按账号查询）绕过 call() 直接打 httpCall，
+  // 空值门控必须也在这里生效，否则浏览器里会对不存在的端点发真请求、控制台刷 404。
+  const empty = QODER_EMPTY[cmd];
+  if (empty) return empty() as T;
   const route = ROUTES[cmd];
   if (!route) throw new Error(`webui 模式暂不支持该操作: ${cmd}`);
   let res: Response;
@@ -192,30 +196,18 @@ async function httpCall<T>(cmd: string, args?: Record<string, unknown>): Promise
 const QODER_UNAVAILABLE: Record<string, string> = {
   checkin: "Qoder 无签到接口",
   checkin_all: "Qoder 无签到接口",
-  get_checkin_status: "Qoder 无签到接口",
   get_checkin_logs: "Qoder 无签到接口",
-  get_auto_checkin_config: "Qoder 无签到接口",
   save_auto_checkin_config: "Qoder 无签到接口",
-  get_travel_status: "Buddy 旅行是 Qoder 专有玩法",
-  get_auto_travel_config: "Buddy 旅行是 Qoder 专有玩法",
-  save_auto_travel_config: "Buddy 旅行是 Qoder 专有玩法",
-  get_credit_expiry: "额度接口未取证",
-  get_credit_statistics: "额度接口未取证",
-  get_token_statistics: "Token 用量统计未实现",
+  save_auto_travel_config: "Buddy 旅行是 WorkBuddy 专有玩法",
   oauth_start: "设备登录流程端点未取证，请用「导入本机账号」",
   oauth_status: "设备登录流程端点未取证",
   refresh_account_token: "刷新接口未取证",
-  list_sessions: "Qoder 会话不按账号归属，跨账号复制会串数据",
   copy_sessions: "Qoder 会话不按账号归属，跨账号复制会串数据",
   session_links_preview: "Qoder 会话不按账号归属，跨账号复制会串数据",
-  get_rate_limits: "限速归因未实现",
-  get_rate_limit_hook_status: "限速钩子未实现",
   install_rate_limit_hook: "限速钩子未实现",
   uninstall_rate_limit_hook: "限速钩子未实现",
-  get_rate_limit_config: "限速钩子未实现",
   save_rate_limit_config: "限速钩子未实现",
   check_update: "未配置发布源",
-  get_codebuddy_cli_status: "Qoder CLI 不落盘凭据，无独立账号指针",
   install_codebuddy_cli_helper: "Qoder CLI 不落盘凭据，无独立账号指针",
   switch_codebuddy_cli_account: "Qoder CLI 不落盘凭据，改桌面端即随之生效",
   get_codebuddy_cn_ide_status: "对应 Qoder 桌面端，请用主切换按钮",
@@ -229,9 +221,80 @@ const QODER_UNAVAILABLE: Record<string, string> = {
   check_auth_permission: "Windows 无 macOS 那套磁盘权限限制",
   open_permission_settings: "Windows 无 macOS 那套磁盘权限限制",
   reveal_app_in_finder: "macOS 专属操作",
+  relaunch_app: "webui 宿主请直接重启 qs-switch-server 进程",
+  set_launch_at_login_enabled: "本构建未接管开机自启",
+};
+
+/**
+ * 只读命令返回类型正确的空值。
+ *
+ * 这些面板对应的能力 Qoder 根本没有，也不打算补；但参考前端的渲染路径会直接对
+ * `creditMap[id].resources` 之类的字段调 `.filter()` —— 抛异常会让调用方 catch 后
+ * 留下 undefined，渲染期抛 TypeError，React 直接把整棵树拆成白屏（实测就是这样）。
+ * 所以读类命令给空集合，动作类命令才抛"不适用"。
+ */
+const QODER_EMPTY: Record<string, () => unknown> = {
+  get_credit_expiry: () => ({ ok: false, resources: [], error: "Qoder 无额度接口" }),
+  get_credit_statistics: () => ({
+    generatedAt: 0,
+    retentionDays: 0,
+    coverageStartAt: null,
+    summary: {},
+    daily: [],
+    accounts: [],
+    events: [],
+    error: "Qoder 无额度接口",
+  }),
+  get_token_statistics: () => ({ generatedAt: 0, sources: [], error: "Token 用量统计未实现" }),
+  list_sessions: () => ({ sessions: [] }),
+  // 契约自带 supported / "unsupported" 状态位：这就是"不支持"的正规表达，
+  // 既不会让渲染期拿到 undefined，也不必编造任何数据。
+  session_links_preview: () => ({
+    supported: false,
+    storeStatus: "unsupported",
+    storeError: "Qoder 会话不按账号归属",
+    sourceUid: "",
+    targetUid: "",
+    groups: [],
+  }),
+  get_rate_limits: () => ({ scannedAt: 0, windowDays: 0, accounts: [] }),
+  // 空值要按契约把**每个**键给齐：设置页的限额卡片直接对 `status.targets` 调 `.filter()`，
+  // 少给一个键就是整页白屏（无 ErrorBoundary，React 会把树拆掉）。
+  get_rate_limit_hook_status: () => ({
+    scriptPath: "",
+    scriptExists: false,
+    eventsPath: "",
+    installed: false,
+    lastEventAt: null,
+    targets: [],
+  }),
+  get_rate_limit_config: () => ({ enabled: false, hookOptOut: false, scanIdeLogs: false }),
+  get_auto_checkin_config: () => ({
+    enabled: false,
+    keepalive_days: 0,
+    lazy_refresh_hours: 0,
+  }),
+  get_auto_travel_config: () => ({ enabled: false }),
+  // 本构建没接管开机自启，所以状态就是"关"；开关按下去会说清为什么没生效。
+  get_launch_at_login_enabled: () => false,
+  get_checkin_status: () => ({ ok: false, resources: [] }),
+  get_travel_status: () => ({ label: "unknown", rewardCredit: null }),
+  get_codebuddy_cli_status: () => ({
+    configured: false,
+    settingsPresent: false,
+    helperPresent: false,
+    helperSupportsAccountIds: false,
+    activeIndex: null,
+    activeAccountId: null,
+    activeAccountName: null,
+    accountCount: 0,
+    statePath: "",
+  }),
 };
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  const empty = QODER_EMPTY[cmd];
+  if (empty) return empty() as T;
   const why = QODER_UNAVAILABLE[cmd];
   if (why) throw new Error(`此项在 Qoder 侧不适用：${why}`);
   if (demoModeEnabled) {

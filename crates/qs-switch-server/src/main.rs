@@ -98,6 +98,7 @@ fn handle(mut stream: TcpStream, dist: &Path) -> std::io::Result<()> {
                 status: 403,
                 content_type: "application/json",
                 body: r#"{"ok":false,"error":"只允许回环地址访问"}"#.into(),
+                bytes: None,
             },
         );
     }
@@ -128,6 +129,7 @@ fn handle(mut stream: TcpStream, dist: &Path) -> std::io::Result<()> {
                 status: 413,
                 content_type: "application/json",
                 body: r#"{"ok":false,"error":"请求体过大"}"#.into(),
+                bytes: None,
             },
         );
     }
@@ -150,6 +152,7 @@ fn handle(mut stream: TcpStream, dist: &Path) -> std::io::Result<()> {
             status: 204,
             content_type: "text/plain",
             body: String::new(),
+            bytes: None,
         },
         _ => serve_static(dist, path),
     };
@@ -159,17 +162,24 @@ fn handle(mut stream: TcpStream, dist: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// 构造响应。二进制资源走 `bytes`，文本走 `body` —— 两者不能混用同一字段，
+/// 因为把 woff2/png 塞进 String 会按 UTF-8 重编码并毁掉文件。
 fn write(stream: &mut TcpStream, r: &Response) -> std::io::Result<()> {
+    let payload: &[u8] = r.bytes.as_deref().unwrap_or(r.body.as_bytes());
     let head = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
-         Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n",
-        r.status,
-        reason(r.status),
-        r.content_type,
-        r.body.len()
+        "HTTP/1.1 {code} {why}\r\n\
+         Content-Type: {ct}\r\n\
+         Content-Length: {len}\r\n\
+         Cache-Control: no-store\r\n\
+         X-Content-Type-Options: nosniff\r\n\
+         Connection: close\r\n\r\n",
+        code = r.status,
+        why = reason(r.status),
+        ct = r.content_type,
+        len = payload.len(),
     );
     stream.write_all(head.as_bytes())?;
-    stream.write_all(r.body.as_bytes())?;
+    stream.write_all(payload)?;
     stream.flush()
 }
 
@@ -187,22 +197,32 @@ fn reason(status: u16) -> &'static str {
 }
 
 /// 静态文件：只允许 dist 目录内的白名单后缀，路径必须解析到 dist 之下。
+///
+/// 带 `.` 的请求按资源处理（找不到就是 404，让控制台如实报缺文件）；
+/// 不带 `.` 的是前端路由 —— 前端用 BrowserRouter，刷新 `/settings` 必须回 index.html，
+/// 否则复刻来的界面一刷新就白屏。
 fn serve_static(dist: &Path, path: &str) -> Response {
     let rel = match path {
         "/" | "" => "index.html",
         other => other.trim_start_matches('/'),
     };
     let ok_ext = ["html", "js", "css", "svg", "png", "ico", "json", "woff2"];
-    let ext = rel.rsplit('.').next().unwrap_or("");
+    let is_route = !rel.contains('.');
+    let ext = if is_route { "html" } else { rel.rsplit('.').next().unwrap_or("") };
     if !ok_ext.contains(&ext) || rel.contains("..\\") || rel.contains("/../") || rel.starts_with("../")
     {
         return Response {
             status: 404,
             content_type: "text/plain",
             body: "not found".into(),
+            bytes: None,
         };
     }
-    let joined = dist.join(rel);
+    let joined = if is_route {
+        dist.join("index.html")
+    } else {
+        dist.join(rel)
+    };
     let canonical = match joined.canonicalize() {
         Ok(c) => c,
         Err(_) => {
@@ -210,6 +230,7 @@ fn serve_static(dist: &Path, path: &str) -> Response {
                 status: 404,
                 content_type: "text/plain",
                 body: "not found".into(),
+                bytes: None,
             }
         }
     };
@@ -220,6 +241,7 @@ fn serve_static(dist: &Path, path: &str) -> Response {
                 status: 500,
                 content_type: "text/plain",
                 body: "dist 目录不存在".into(),
+                bytes: None,
             }
         }
     };
@@ -228,18 +250,16 @@ fn serve_static(dist: &Path, path: &str) -> Response {
             status: 404,
             content_type: "text/plain",
             body: "not found".into(),
+            bytes: None,
         };
     }
     match std::fs::read(&canonical) {
-        Ok(bytes) => Response {
-            status: 200,
-            content_type: mime_for(ext),
-            body: String::from_utf8_lossy(&bytes).to_string(),
-        },
+        Ok(bytes) => Response::binary(200, mime_for(ext), bytes),
         Err(_) => Response {
             status: 500,
             content_type: "text/plain",
             body: "读取失败".into(),
+            bytes: None,
         },
     }
 }
@@ -273,9 +293,10 @@ mod tests {
     #[test]
     fn serves_index_for_root_and_assets() {
         let d = tmp_dist();
+        // 静态文件一律按原始字节返回，所以断言要看 bytes 而不是 body。
         let r = serve_static(&d, "/");
         assert_eq!(r.status, 200);
-        assert!(r.body.contains("<html>ok</html>"));
+        assert_eq!(r.bytes.as_deref(), Some(&b"<html>ok</html>"[..]));
         let r = serve_static(&d, "/assets/app.js");
         assert_eq!(r.status, 200);
         assert!(r.content_type.contains("javascript"));
@@ -300,5 +321,21 @@ mod tests {
     fn missing_dist_is_404_not_panic() {
         let r = serve_static(Path::new("/definitely/not/here"), "/");
         assert_eq!(r.status, 404);
+    }
+
+    /// BrowserRouter 的前端路由要回 index.html；但缺文件的资源请求必须继续 404，
+    /// 否则 JS/CSS 404 会变成"下载了一个 HTML"，白屏且看不出原因。
+    #[test]
+    fn spa_routes_fall_back_to_index_but_missing_assets_do_not() {
+        let d = tmp_dist();
+        for route in ["/settings", "/token-stats", "/credit-stats", "/credit-stats/"] {
+            let r = serve_static(&d, route);
+            assert_eq!(r.status, 200, "{route} 应回 index.html");
+            assert!(r.content_type.contains("html"), "{route} 的 Content-Type 错了");
+            assert_eq!(r.bytes.as_deref(), Some(&b"<html>ok</html>"[..]));
+        }
+        assert_eq!(serve_static(&d, "/assets/nope.js").status, 404);
+        assert_eq!(serve_static(&d, "/assets/nope.png").status, 404);
+        std::fs::remove_dir_all(d).ok();
     }
 }
