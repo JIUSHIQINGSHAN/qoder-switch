@@ -25,10 +25,25 @@ Qoder 家族（桌面客户端 / QoderWork / CLI）的多账号切换桌面 App�
 国际版那份 `.auth/user` 的 mtime 也停在两个月前，而回显文件是当天新写的、`writer` 为 `main`。
 所以登录态的权威源是桌面端，CLI 由它注入。切换单元因此绑桌面端四件套，而不是 CLI 目录。
 
+## 下载与安装
+
+Windows 10+ x64，需 WebView2 运行时（Win11 自带）。两个渠道：
+
+- **[GitHub Releases](https://github.com/JIUSHIQINGSHAN/qoder-switch/releases/latest)**（推荐）：
+  - `qoder-switch_<版本>_x64-setup.exe`：NSIS 安装包（带 minisign 签名，应用内更新走它）；
+  - `qoder-switch_<版本>-portable-x64.zip`：免安装便携包（含桌面 exe 与 webui 服务端）；
+  - 校验和见包内 `SHA256SUMS.txt`；应用会校验更新包签名，公钥在 `src-tauri/tauri.conf.json`。
+- **npm（webui 形态）**：`npm install -g qoder-switch` 后按 `qoder-switch` 命令提示启动
+  本地服务端，在浏览器里操作；凭据存储与桌面 App 同为 `~/.qs-switch/`，不要同时操作。
+
+应用内更新：设置页「检查更新」→ 签名包下载安装 → 重启生效。更新源固定指向本仓库的
+`releases/latest/download/latest.json`（打 `v*` tag 由 CI 自动发版）。
+
 ## 构建
 
-本机没有预装 Rust，工具链与构建产物全部钉在 E:（C: 盘余量不足，一次 release target
-实测吃掉约 7GB）。这些位置由 `.cargo/config.toml` 的 `target-dir` 与本仓库脚本兜底：
+本机构建把工具链与产物钉在 E:（C: 盘余量不足，一次 release target 实测吃掉约 7GB）。
+产物目录由 `scripts/build.sh` 显式导出的 `CARGO_TARGET_DIR=E:/qs-target` 兜底
+（GitHub Actions 的 runner 没有 E: 盘，所以不在 `.cargo/config.toml` 里钉死）：
 
 ```bash
 bash scripts/build.sh deps      # npm install（registry 走 npmmirror）
@@ -160,6 +175,21 @@ qoder-switch.exe --self-check && echo OK
   `QODER_UNAVAILABLE`）：读类命令返回**契约里每个键都齐**的类型正确空值（少一个键就会让
   渲染期对 undefined 调 `.filter()`，无 ErrorBoundary 时整页白屏），动作类命令抛原因。
   直接走 `httpCall` 的那几个按账号查询也会被同一道门拦住，不会对本机服务发真请求。
+
+## FAQ
+
+- **杀软报毒？** 安装包没有做代码签名证书（EV 证书成本原因），NSIS 安装器可能被
+  误报。可以在 Release 页核对 `SHA256SUMS.txt`，或从源码自行构建；应用内更新只接受
+  minisign 签名（公钥在仓库里），不接受未签名产物。
+- **换号后历史会串吗？** Qoder 的会话历史不按账号隔离（`main.sqlite` 无 `account_id`），
+  切换后本机历史会话可能在新账号下可见——切换弹窗里有提示。本工具不做静默迁移。
+- **能跨机器/跨 Windows 用户恢复账号包吗？** 不能直接用：凭据经 DPAPI(CURRENT_USER)
+  加密，跨机器或跨用户解不开。账号包只在同一 Windows 用户内可复用。
+- **切换会不会丢数据？** 切换前整组凭据先备份到 `~/.qs-switch/`，写入后校验、失败自动
+  回滚；未收尾的切换会留在「待处理」列表里可恢复。
+- **CLI / QoderWork 会跟着换号吗？** 桌面端是登录态权威源。CN 版 CLI 不落盘凭据、
+  由桌面端注入；QoderWork 是独立文件。换号对它们的实际影响见 `docs/qoder-endpoints.md`
+  与 `docs/upstream-parity.md` 的实测记录。
 
 ## 许可
 

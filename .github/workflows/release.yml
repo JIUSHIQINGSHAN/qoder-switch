@@ -29,8 +29,8 @@ jobs:
       - name: 安装前端依赖（tsc 来自本地 typescript，勿裸 npx）
         run: npm ci
 
-      - name: 前端类型检查
-        run: npx tsc --noEmit
+      - name: 前端类型检查 + 构建（tauri 宏编译期需要 ../dist 存在）
+        run: npm run build
 
       - name: Rust 全量测试
         run: cargo test --workspace
