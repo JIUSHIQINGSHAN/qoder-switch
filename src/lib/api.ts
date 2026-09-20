@@ -201,7 +201,6 @@ const QODER_UNAVAILABLE: Record<string, string> = {
   install_rate_limit_hook: "限速钩子未实现",
   uninstall_rate_limit_hook: "限速钩子未实现",
   save_rate_limit_config: "限速钩子未实现",
-  check_update: "未配置发布源",
   install_codebuddy_cli_helper: "Qoder CLI 不落盘凭据，无独立账号指针",
   switch_codebuddy_cli_account: "Qoder CLI 不落盘凭据，改桌面端即随之生效",
   get_codebuddy_cn_ide_status: "对应 Qoder 桌面端，请用主切换按钮",
@@ -210,12 +209,22 @@ const QODER_UNAVAILABLE: Record<string, string> = {
   get_codebuddy_ide_status: "国际版桌面端尚无独立状态命令",
   switch_codebuddy_ide_account: "国际版桌面端尚无独立状态命令",
   detect_codebuddy_ide_account: "国际版桌面端尚无独立状态命令",
-  get_github_config: "自动更新未配置发布源",
-  save_github_config: "自动更新未配置发布源",
   check_auth_permission: "Windows 无 macOS 那套磁盘权限限制",
   open_permission_settings: "Windows 无 macOS 那套磁盘权限限制",
   reveal_app_in_finder: "macOS 专属操作",
+};
+
+/**
+ * 仅桌面端可用的命令（webui 宿主拦截）。更新检查/配置/重启与开机自启都绑定
+ * 桌面 App 本体：浏览器 webui 不代装桌面更新包，也不接管宿主进程。
+ */
+const DESKTOP_ONLY_REASONS: Record<string, string> = {
+  check_update: "更新检查与安装在 webui 不可用，请到 GitHub Release 页手动下载",
+  get_github_config: "更新源配置仅桌面端需要",
+  save_github_config: "更新源配置仅桌面端需要",
   relaunch_app: "webui 宿主请直接重启 qs-switch-server 进程",
+  get_launch_at_login_enabled: "开机自启仅桌面端有意义",
+  set_launch_at_login_enabled: "开机自启仅桌面端有意义",
 };
 
 /**
@@ -288,6 +297,10 @@ const QODER_EMPTY: Record<string, () => unknown> = {
 };
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  const desktopOnly = DESKTOP_ONLY_REASONS[cmd];
+  if (desktopOnly && isWebui()) {
+    throw new Error(`此项仅在桌面端可用：${desktopOnly}`);
+  }
   const empty = QODER_EMPTY[cmd];
   if (empty) return empty() as T;
   const why = QODER_UNAVAILABLE[cmd];

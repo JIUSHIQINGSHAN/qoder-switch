@@ -28,6 +28,8 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![tray::SILENT_STARTUP_ARG]),
         ));
+        // 应用内更新：端点与签名公钥在 tauri.conf.json 的 plugins.updater。
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     }
 
     builder
@@ -82,7 +84,11 @@ pub fn run() {
             compat::record_notification,
             compat::clear_notifications,
             commands::get_launch_at_login_enabled,
-            commands::set_launch_at_login_enabled
+            commands::set_launch_at_login_enabled,
+            compat::get_github_config,
+            compat::save_github_config,
+            compat::check_update,
+            compat::relaunch_app
         ])
         .run(tauri::generate_context!())
         .expect("Qoder Switch 启动失败");

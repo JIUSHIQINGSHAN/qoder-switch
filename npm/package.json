@@ -1,0 +1,33 @@
+{
+  "name": "qoder-switch",
+  "version": "0.1.4",
+  "description": "Qoder 多账号切换工具：本地 webui（浏览器操作）+ 桌面 App（安装后运行 qoder-switch）",
+  "bin": {
+    "qoder-switch": "bin/qoder-switch.js"
+  },
+  "files": [
+    "bin/qoder-switch.js",
+    "scripts",
+    "webui_dist"
+  ],
+  "optionalDependencies": {
+    "qoder-switch-win32-x64": "0.1.4"
+  },
+  "scripts": {
+    "postinstall": "node scripts/install.js"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "keywords": [
+    "qoder",
+    "account",
+    "switch",
+    "webui"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JIUSHIQINGSHAN/qoder-switch.git"
+  }
+}

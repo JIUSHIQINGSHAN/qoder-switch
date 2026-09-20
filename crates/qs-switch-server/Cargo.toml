@@ -1,6 +1,6 @@
 [package]
 name = "qs-switch-server"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 description = "Qoder Switch 的 HTTP 宿主：与桌面端复用同一个 qs-switch-core"
 

@@ -1,0 +1,125 @@
+name: release
+
+# 打 v* tag 触发：测试 → 签名构建 → GitHub Release（安装包/便携包/latest.json/校验和）。
+# 签名私钥在仓库 Secrets：TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD。
+# 公钥已写死在 src-tauri/tauri.conf.json（公开信息，不入 Secrets）。
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 前端类型检查
+        run: npx tsc --noEmit
+
+      - name: Rust 全量测试
+        run: cargo test --workspace
+
+  build-release:
+    needs: test
+    runs-on: windows-latest
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 读取版本号（来自 src-tauri/tauri.conf.json）
+        id: ver
+        shell: bash
+        run: echo "version=$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: 签名构建（桌面 exe + NSIS 安装包 + .sig）
+        run: npx tauri build
+
+      - name: 构建 webui 服务端（npm 平台包与便携形态共用）
+        run: cargo build --release -p qs-switch-server
+
+      - name: 打包便携版 zip（免安装 exe + webui 服务端）
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          New-Item -ItemType Directory -Force -Path dist-portable | Out-Null
+          Copy-Item target/release/qoder-switch.exe "dist-portable/qoder-switch.exe"
+          Copy-Item target/release/qs-switch-server.exe "dist-portable/qs-switch-server.exe"
+          Copy-Item README.md "dist-portable/README.txt"
+          Compress-Archive -Path dist-portable/* -DestinationPath "qoder-switch-$v-portable-x64.zip" -Force
+
+      - name: 生成 latest.json（updater 清单）
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const version = process.env.VERSION;
+            const tag = process.env.TAG;
+            const sig = fs.readFileSync(
+              `target/release/bundle/nsis/qoder-switch_${version}_x64-setup.exe.sig`, "utf8").trim();
+            const url = `https://github.com/${process.env.GITHUB_REPOSITORY}/releases/download/${tag}/qoder-switch_${version}_x64-setup.exe`;
+            const manifest = {
+              version,
+              notes: `Qoder Switch ${tag}：详见 Release 页面。`,
+              pub_date: new Date().toISOString(),
+              platforms: { "windows-x86_64": { signature: sig, url } },
+            };
+            fs.writeFileSync("latest.json", JSON.stringify(manifest, null, 2));
+          '
+
+      - name: 生成 SHA256SUMS.txt
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          cd target/release/bundle/nsis
+          sha256sum "qoder-switch_${VERSION}_x64-setup.exe" > "$GITHUB_WORKSPACE/SHA256SUMS.txt"
+          cd "$GITHUB_WORKSPACE"
+          sha256sum "qoder-switch-${VERSION}-portable-x64.zip" >> SHA256SUMS.txt
+          sha256sum latest.json >> SHA256SUMS.txt
+
+      - name: 发布 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          gh release create "$TAG" \
+            --title "Qoder Switch $TAG" \
+            --notes "安装包（setup）为 NSIS 签名更新包；便携版免安装。校验和见 SHA256SUMS.txt。应用内更新走 latest.json。" \
+            "target/release/bundle/nsis/qoder-switch_${VERSION}_x64-setup.exe" \
+            "target/release/bundle/nsis/qoder-switch_${VERSION}_x64-setup.exe.sig" \
+            "qoder-switch-${VERSION}-portable-x64.zip" \
+            "target/release/qs-switch-server.exe" \
+            "latest.json" \
+            "SHA256SUMS.txt"

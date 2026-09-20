@@ -1,12 +1,9 @@
-# 项目级 cargo 配置：把构建产物钉在 E: 盘。
+# 项目级 cargo 配置。
 #
-# C: 盘长期只剩 10-20GB，而 Tauri 的 release target 实测吃掉约 7GB。没有这个文件，
-# 忘带 CARGO_TARGET_DIR 的那次 `cargo build` 就会往项目目录里写 target/ 并撑爆 C 盘。
-#
-# 仍需在环境里给 RUSTUP_HOME / CARGO_HOME（工具链本体不在项目内），见 scripts/build.sh。
-
-[build]
-target-dir = "E:/qs-target"
+# 产物目录不再在这里钉死：GitHub Actions 的 runner 没有 E: 盘，钉在这里会让 CI 全挂。
+# 本机的 C: 盘装不下 release target（约 7GB），由 scripts/build.sh 显式导出
+# CARGO_TARGET_DIR=E:/qs-target 兜底；手动跑 cargo 时也请带上这个环境变量，
+# 见 scripts/build.sh 与 README 的构建节。
 
 [net]
 git-fetch-with-cli = true

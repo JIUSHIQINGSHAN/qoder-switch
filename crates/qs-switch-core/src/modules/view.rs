@@ -390,7 +390,8 @@ pub fn capabilities() -> Value {
             "凭据快照与差分",
             "托盘快捷切换",
             "开机自启（静默驻留托盘）",
-            "应用内通知存档（本机 notifications.json）"
+            "应用内通知存档（本机 notifications.json）",
+            "应用内更新（签名 latest.json，tag 触发 CI 发版）"
         ],
         "unavailable": [
             { "name": "每日签到", "reason": "Qoder 无签到接口" },
@@ -399,8 +400,7 @@ pub fn capabilities() -> Value {
             { "name": "OAuth 扫码添加账号", "reason": "桌面端登录不走设备码（实证，见 docs/qoder-endpoints.md §2.2）" },
             { "name": "主动刷新 token", "reason": "主 token 无刷新端点（实证，见 docs/qoder-endpoints.md §2.3）" },
             { "name": "自动轮换执行", "reason": "换号需重启用户正在用的 IDE，只出建议" },
-            { "name": "限速钩子与 429 归因", "reason": "未实现" },
-            { "name": "自动更新", "reason": "未配置发布源" }
+            { "name": "限速钩子与 429 归因", "reason": "未实现" }
         ]
     })
 }

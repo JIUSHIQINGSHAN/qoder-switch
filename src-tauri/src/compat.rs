@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 
 use qs_switch_core::modules::config::{PathRoots, switch_root};
 use qs_switch_core::modules::variant::{QoderTarget, QoderVariant};
-use qs_switch_core::modules::{bundle, notifications, switch, view};
+use qs_switch_core::modules::{bundle, notifications, switch, update, view};
 
 pub use view::UiRotateConfig;
 
@@ -290,6 +290,38 @@ pub async fn record_notification(
 #[tauri::command]
 pub async fn clear_notifications() -> Result<(), String> {
     notifications::clear()
+}
+
+// ---------------------------------------------------------------------------
+// 自动更新（版本检查走 core 的 update 模块；下载安装走前端 tauri-plugin-updater）
+// ---------------------------------------------------------------------------
+
+/// 更新源配置（owner/repo/proxy）。
+#[tauri::command]
+pub fn get_github_config() -> Value {
+    update::load_github_config()
+}
+
+#[tauri::command]
+pub fn save_github_config(config: Value) -> Result<Value, String> {
+    update::save_github_config(&config).map_err(|e| e.to_string())?;
+    Ok(update::load_github_config())
+}
+
+/// 检查 GitHub Releases 是否有新版本。force=true 绕过 6 小时缓存。
+#[tauri::command]
+pub async fn check_update(proxy: Option<String>, force: Option<bool>) -> Value {
+    update::update_check(proxy.as_deref(), force.unwrap_or(false)).await
+}
+
+/// 更新安装完成后的立即重启。
+///
+/// 用框架受管的 [`tauri::AppHandle::restart`]，而不是手写 spawn+exit。
+/// 已知边缘：restart 会原样保留 argv——若本次进程是自启带 `--hidden` 拉起的，
+/// 重启后仍处于静默驻留（可从托盘唤起主界面），不影响更新本身。
+#[tauri::command]
+pub fn relaunch_app(_app: tauri::AppHandle) {
+    _app.restart();
 }
 
 #[cfg(test)]

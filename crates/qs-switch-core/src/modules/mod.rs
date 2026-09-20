@@ -7,5 +7,6 @@ pub mod process;
 pub mod rotate;
 pub mod snapshot;
 pub mod switch;
+pub mod update;
 pub mod view;
 pub mod variant;

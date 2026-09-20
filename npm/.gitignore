@@ -1,0 +1,6 @@
+# npm/ 的暂存产物（pack-npm.sh 拷入的二进制与前端构建物）不入库；
+# package.json / 启动器 / install.js / 本 README 是源文件，正常提交。
+bin/*.exe
+bin/qs-switch-server
+webui_dist/
+platform/*/bin/
