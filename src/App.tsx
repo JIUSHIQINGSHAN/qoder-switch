@@ -1,558 +1,208 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, daysLeft, hostedText } from "./api";
-import type {
-  AxisStatus,
-  Bundle,
-  Journal,
-  Preview,
-  QoderTarget,
-  QoderVariant,
-  RotationView,
-  SnapshotReport,
-} from "./types";
+import { useEffect, useState } from "react";
+import { BrowserRouter, HashRouter, Navigate, NavLink, Outlet, Route, Routes } from "react-router-dom";
+import { ArrowUp, MessagesSquare, Settings, Sparkles, User } from "lucide-react";
 
-const VARIANTS: QoderVariant[] = ["cn", "global"];
-const TARGETS: QoderTarget[] = ["desktop", "cli", "work"];
-const TARGET_CN: Record<QoderTarget, string> = {
-  desktop: "桌面客户端",
-  cli: "CLI",
-  work: "QoderWork",
-};
-const VARIANT_CN: Record<QoderVariant, string> = { cn: "国内版", global: "国际版" };
+import { cn } from "@/lib/utils";
+import * as api from "@/lib/api";
+import type { UpdateInfo } from "@/lib/types";
+import AccountsPage from "@/pages/AccountsPage";
+import CreditStatsPage from "@/pages/CreditStatsPage";
+import TokenStatsPage from "@/pages/TokenStatsPage";
+import SettingsPage from "@/pages/SettingsPage";
+import { StatusDot, AppIconMark } from "@/components/product-marks";
+import { UpdateInstallDialog } from "@/components/update-install-dialog";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Toaster } from "@/components/ui/sonner";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { demoModeEnabled, pagesDemoHostingEnabled } from "@/lib/demo-mode";
+import { useCreditAutoRefresh } from "@/lib/use-credit-auto-refresh";
+import { useRotateDeferredNotice } from "@/lib/use-rotate-deferred-notice";
+import { useWorkbuddyStatusRefresh } from "@/lib/use-workbuddy-status-refresh";
+import { useAccountsStore } from "@/stores/accounts";
 
-const key = (b: { account_id: string; variant: QoderVariant; target: QoderTarget }) =>
-  `${b.account_id}|${b.variant}|${b.target}`;
-
-export default function App() {
-  const [axes, setAxes] = useState<AxisStatus[]>([]);
-  const [bundles, setBundles] = useState<Bundle[]>([]);
-  const [selected, setSelected] = useState<string>("");
-  const [pv, setPv] = useState<Preview | null>(null);
-  const [stranded, setStranded] = useState<Journal[]>([]);
-  const [logs, setLogs] = useState<string[]>([]);
-  const [snap, setSnap] = useState<SnapshotReport | null>(null);
-  const [storeDir, setStoreDir] = useState("");
-  const [draftId, setDraftId] = useState("");
-  const [draftVariant, setDraftVariant] = useState<QoderVariant>("cn");
-  const [draftTarget, setDraftTarget] = useState<QoderTarget>("desktop");
-  const [restart, setRestart] = useState(true);
-  const [forced, setForced] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [exportText, setExportText] = useState("");
-  const [importText, setImportText] = useState("");
-  const [importOverwrite, setImportOverwrite] = useState(false);
-  const [rot, setRot] = useState<RotationView | null>(null);
-
-  const log = useCallback((m: string) => {
-    setLogs((prev) => [...prev.slice(-199), `${new Date().toLocaleTimeString()} ${m}`]);
-  }, []);
-
-  const refresh = useCallback(async () => {
-    try {
-      const [a, b, u, dir] = await Promise.all([
-        api.probeAll(),
-        api.listAccounts(),
-        api.unfinished(),
-        api.storeDir(),
-      ]);
-      setAxes(a);
-      setBundles(b);
-      setStranded(u);
-      setStoreDir(dir);
-      setError("");
-    } catch (e) {
-      setError(String(e));
-    }
-  }, []);
+function UpdateCenter({ running }: { running: boolean | undefined }) {
+  const version = useAccountsStore((s) => s.status?.version);
+  const [info, setInfo] = useState<UpdateInfo | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
 
   useEffect(() => {
-    void refresh();
-    let un: (() => void) | undefined;
-    api
-      .onSwitchProgress((m) => log(`进度 · ${m}`))
-      .then((f) => {
-        un = f;
-      })
-      .catch((e) => log(`事件订阅失败：${e}`));
-    return () => un?.();
-  }, [refresh, log]);
+    let disposed = false;
 
-  const chosen = useMemo(() => bundles.find((b) => key(b) === selected) ?? null, [bundles, selected]);
+    async function checkForUpdate() {
+      try {
+        const result = await api.checkUpdate();
+        if (!disposed) setInfo(result.ok ? result : null);
+      } catch {
+        // 左下角只展示可操作的升级状态，网络错误不打扰正常使用。
+      }
+    }
 
-  // 临期优先排列：token 快过期的账号排前面，无到期信息的落到最后。
-  const ordered = useMemo(() => {
-    const rank = (b: Bundle) => {
-      const d = daysLeft(b.identity.expires_at);
-      return d === null ? Number.MAX_SAFE_INTEGER : d;
+    void checkForUpdate();
+    const timer = window.setInterval(() => void checkForUpdate(), 30 * 60 * 1000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
     };
-    return [...bundles].sort((a, b) => rank(a) - rank(b));
-  }, [bundles]);
+  }, []);
 
-  useEffect(() => {
-    if (!chosen) {
-      setPv(null);
-      return;
-    }
-    api
-      .preview(chosen.account_id, chosen.variant, chosen.target)
-      .then((p) => {
-        setPv(p);
-        setError("");
-      })
-      .catch((e) => setError(String(e)));
-  }, [chosen]);
-
-  async function run<T>(what: string, fn: () => Promise<T>, after?: (v: T) => void) {
-    setBusy(true);
-    setError("");
-    try {
-      const v = await fn();
-      log(what);
-      after?.(v);
-      await refresh();
-    } catch (e) {
-      setError(String(e));
-      log(`${what} 失败：${e}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const axisOf = (v: QoderVariant, t: QoderTarget) =>
-    axes.find((a) => a.variant === v && a.target === t);
-
-  const blocked = chosen ? hostedText(axisOf(chosen.variant, chosen.target)?.hosted ?? "No").level !== "ok" : true;
+  const hasUpdate = Boolean(info?.ok && info.hasUpdate && info.latest);
 
   return (
-    <div className="app">
-      <header>
-        <div>
-          <h1>Qoder Switch</h1>
-          <p className="sub">
-            多账号凭据包切换 · 账号库存于 <code>{storeDir || "~/.qs-switch"}</code>
-          </p>
+    <>
+      <section className="mt-auto border-t border-sidebar-border px-2 pt-3 text-xs">
+        <div className="flex items-center gap-2 text-[13px] text-sidebar-foreground">
+          <StatusDot on={Boolean(running)} />
+          <span className="min-w-0 flex-1 truncate">WorkBuddy</span>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <span className="text-sidebar-foreground/50">v{version || "?"}</span>
+            {hasUpdate && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    size="icon"
+                    className="size-5 rounded-full p-0"
+                    aria-label="更新"
+                    onClick={() => setDialogOpen(true)}
+                  >
+                    <ArrowUp className="size-3" strokeWidth={2.5} aria-hidden="true" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">更新</TooltipContent>
+              </Tooltip>
+            )}
+          </div>
         </div>
-        <div className="row">
-          <button disabled={busy} onClick={() => run("快照已比对", api.snapshotNow, setSnap)}>
-            快照比对
-          </button>
-          <button disabled={busy} onClick={() => void refresh()}>
-            刷新
-          </button>
-        </div>
-      </header>
-
-      {error && <div className="err">{error}</div>}
-
-      <section className="banner">
-        <h2>现场探针</h2>
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th>版本</th>
-              <th>目标</th>
-              <th>镜像名</th>
-              <th>在跑</th>
-              <th>凭据文件</th>
-              <th>托管判定</th>
-            </tr>
-          </thead>
-          <tbody>
-            {axes.map((a) => {
-              const h = hostedText(a.hosted);
-              const have = a.credentials.filter((c) => c.exists).length;
-              return (
-                <tr key={key({ account_id: a.variant, variant: a.variant, target: a.target })}>
-                  <td>{VARIANT_CN[a.variant]}</td>
-                  <td>{TARGET_CN[a.target]}</td>
-                  <td className="mono">{a.images.join(" + ")}</td>
-                  <td>{a.running_pids.length}</td>
-                  <td>
-                    {have}/{a.credentials.length}
-                  </td>
-                  <td className={`lvl-${h.level}`}>{h.text}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        <p className="hint">
-          判定为「会连同本会话终止」或「判不出来」时，正常档一律拒绝杀进程 —— 从资源管理器独立启动
-          qoder-switch 才会得到可安全终止的结论。
-        </p>
       </section>
+      <UpdateInstallDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        update={info}
+      />
+    </>
+  );
+}
 
-      <section className="banner">
-        <h2>轮换建议（刻意不自动执行）</h2>
-        <div className="row">
-          <button
-            disabled={busy}
-            onClick={() =>
-              void run(
-                `已按 ${VARIANT_CN[draftVariant]} 检查轮换`,
-                () => api.rotation(draftVariant),
-                setRot,
+function Layout() {
+  const running = useAccountsStore((s) => s.status?.running);
+  const hasUnifiedTitleBar =
+    api.isDesktop() && typeof navigator !== "undefined" && navigator.userAgent.includes("Macintosh");
+  useCreditAutoRefresh();
+  useWorkbuddyStatusRefresh();
+  useRotateDeferredNotice();
+
+  return (
+    <div className="flex h-screen min-h-0 overflow-hidden bg-background">
+      {hasUnifiedTitleBar ? (
+        <div
+          data-tauri-drag-region
+          className="fixed inset-x-0 top-0 z-50 h-8"
+          aria-hidden="true"
+        />
+      ) : null}
+      <aside
+        className={cn(
+          "flex min-h-0 w-[220px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar px-3 pb-4",
+          hasUnifiedTitleBar ? "pt-20" : "pt-4",
+        )}
+      >
+        <div className="flex items-center gap-2.5 px-1 pb-5">
+          <AppIconMark size={36} className="drop-shadow-sm" />
+          <div className="min-w-0">
+            <div
+              className="truncate text-[15px] leading-5 tracking-[-0.02em] text-sidebar-foreground/90"
+              style={{
+                fontFamily: '"Bricolage Grotesque Variable", "SF Pro Display", ui-sans-serif, sans-serif',
+                fontWeight: 640,
+              }}
+            >
+              WorkBuddy Switch
+            </div>
+            {demoModeEnabled && (
+              <Badge variant="secondary" className="mt-1 h-5 border-0 px-1.5 text-[10px] text-sidebar-foreground/60 shadow-none">
+                演示模式
+              </Badge>
+            )}
+          </div>
+        </div>
+        <nav className="flex min-h-0 flex-1 flex-col gap-0.5" aria-label="主导航">
+          <NavLink
+            to="/"
+            end
+            className={({ isActive }) =>
+              cn(
+                "flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring/50",
+                isActive
+                  ? "bg-foreground/[0.06] font-medium text-foreground"
+                  : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground",
               )
             }
           >
-            按 {VARIANT_CN[draftVariant]} 检查
-          </button>
-          {rot?.suggestion.decision.switch_to && (
-            <button
-              className="primary"
-              disabled={busy || !rot.suggestion.executable_from_here}
-              onClick={() => {
-                const v = rot!.suggestion.variant;
-                void run(`应用轮换建议：切到 ${rot!.suggestion.decision.switch_to}`, () =>
-                  api.applyRotation(v, true),
-                );
-              }}
-            >
-              应用建议：切到 {rot.suggestion.decision.switch_to}
-            </button>
-          )}
-        </div>
-        {!rot && (
-          <p className="hint">
-            判定只看各账号包解出的 token 剩余天数，不联网。建议不会自动执行 ——
-            换号要重启你正在用的客户端，必须由你确认。
-          </p>
+            <User className="size-4" />
+            账号管理
+          </NavLink>
+          <NavLink to="/token-stats" className={({ isActive }) => cn("flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors", isActive ? "bg-foreground/[0.06] font-medium text-foreground" : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground")}><MessagesSquare className="size-4" />Token 统计</NavLink>
+          <NavLink
+            to="/credit-stats"
+            className={({ isActive }) =>
+              cn(
+                "flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring/50",
+                isActive
+                  ? "bg-foreground/[0.06] font-medium text-foreground"
+                  : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground",
+              )
+            }
+          >
+            <Sparkles className="size-4" />
+            积分统计
+          </NavLink>
+          <NavLink
+            to="/settings"
+            className={({ isActive }) =>
+              cn(
+                "flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring/50",
+                isActive
+                  ? "bg-foreground/[0.06] font-medium text-foreground"
+                  : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground",
+              )
+            }
+          >
+            <Settings className="size-4" />
+            设置
+          </NavLink>
+        </nav>
+        {api.isWebui() && !demoModeEnabled ? null : <UpdateCenter running={running} />}
+      </aside>
+      <main
+        className={cn(
+          "min-w-0 flex-1 overflow-y-auto bg-background overscroll-contain",
+          hasUnifiedTitleBar && "pt-16 [&>div]:pt-4",
         )}
-        {rot && (
-          <>
-            <p className={rot.suggestion.decision.switch_to ? "lvl-warn" : "hint"}>
-              {rot.suggestion.decision.reason}
-            </p>
-            <p className="hint">{rot.suggestion.note}</p>
-            <table className="tbl">
-              <thead>
-                <tr>
-                  <th>账号包</th>
-                  <th>token 剩余</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rot.suggestion.candidates.map((c) => (
-                  <tr key={c.account_id}>
-                    <td>{c.account_id}</td>
-                    <td
-                      className={
-                        c.days_left === null
-                          ? "hint"
-                          : c.days_left <= 7
-                            ? "lvl-bad"
-                            : c.days_left <= 21
-                              ? "lvl-warn"
-                              : ""
-                      }
-                    >
-                      {c.days_left === null ? "未解出" : `${c.days_left} 天`}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </>
-        )}
-      </section>
-
-      <div className="cols">
-        <section>
-          <h2>已认领账号</h2>
-          <div className="row capture">
-            <input
-              placeholder="账号名，如 work-1"
-              value={draftId}
-              onChange={(e) => setDraftId(e.target.value)}
-            />
-            <select value={draftVariant} onChange={(e) => setDraftVariant(e.target.value as QoderVariant)}>
-              {VARIANTS.map((v) => (
-                <option key={v} value={v}>
-                  {VARIANT_CN[v]}
-                </option>
-              ))}
-            </select>
-            <select value={draftTarget} onChange={(e) => setDraftTarget(e.target.value as QoderTarget)}>
-              {TARGETS.map((t) => (
-                <option key={t} value={t}>
-                  {TARGET_CN[t]}
-                </option>
-              ))}
-            </select>
-            <button
-              disabled={busy || !draftId.trim()}
-              onClick={() =>
-                run(`已认领 ${draftId.trim()} · ${TARGET_CN[draftTarget]}`, () =>
-                  api.capture(draftId.trim(), draftVariant, draftTarget),
-                )
-              }
-            >
-              认领当前登录态
-            </button>
-          </div>
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th>账号名</th>
-                <th>版本·目标</th>
-                <th>身份</th>
-                <th>token 到期</th>
-                <th>文件</th>
-                <th>认领时间</th>
-              </tr>
-            </thead>
-            <tbody>
-              {bundles.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="hint">
-                    还没有任何账号包。先在 Qoder 里登录一个账号，再点「认领当前登录态」。
-                  </td>
-                </tr>
-              )}
-              {ordered.map((b) => {
-                const d = daysLeft(b.identity.expires_at);
-                return (
-                <tr
-                  key={key(b)}
-                  className={key(b) === selected ? "sel" : ""}
-                  onClick={() => setSelected(key(b))}
-                >
-                  <td>{b.account_id}</td>
-                  <td>
-                    {VARIANT_CN[b.variant]}·{TARGET_CN[b.target]}
-                  </td>
-                  <td>{b.identity.email ?? b.identity.name ?? "-"}</td>
-                  <td
-                    className={
-                      d === null ? "hint" : d <= 7 ? "lvl-bad" : d <= 21 ? "lvl-warn" : ""
-                    }
-                    title={b.identity.expires_at ?? "未解密，无到期时间"}
-                  >
-                    {d === null ? "—" : `${d} 天`}
-                  </td>
-                  <td>{b.members.length}</td>
-                  <td className="mono">{b.created_at}</td>
-                </tr>
-                );
-              })}
-            </tbody>
-          </table>
-
-          <h2>导出 / 导入账号包</h2>
-          <div className="row">
-            <button
-              disabled={busy || !chosen}
-              onClick={() => {
-                if (!chosen) return;
-                void run(
-                  `已导出 ${chosen.account_id} 的账号包`,
-                  () => api.exportText(chosen.account_id),
-                  setExportText,
-                );
-              }}
-            >
-              导出所选账号
-            </button>
-            <button
-              disabled={!exportText}
-              onClick={() => {
-                navigator.clipboard
-                  ?.writeText(exportText)
-                  .then(() => log("导出文本已复制到剪贴板"))
-                  .catch(() => log("复制失败，请手动全选文本框内容"));
-              }}
-            >
-              复制
-            </button>
-          </div>
-          {exportText && (
-            <textarea
-              className="io"
-              rows={4}
-              readOnly
-              value={exportText}
-              onFocus={(e) => e.currentTarget.select()}
-            />
-          )}
-          <textarea
-            className="io"
-            rows={3}
-            placeholder="把另一台机器导出的 JSON 粘到这里"
-            value={importText}
-            onChange={(e) => setImportText(e.target.value)}
-          />
-          <div className="row">
-            <label>
-              <input
-                type="checkbox"
-                checked={importOverwrite}
-                onChange={(e) => setImportOverwrite(e.target.checked)}
-              />
-              允许覆盖同名分片
-            </label>
-            <button
-              disabled={busy || !importText.trim()}
-              onClick={() =>
-                run("账号包导入完成", () => api.importText(importText, importOverwrite), (r) => {
-                  r.written.forEach((w) => log(`导入 · ${w}`));
-                  r.skipped.forEach((s) => log(`跳过 · ${s}`));
-                  if (r.written.length) setImportText("");
-                })
-              }
-            >
-              导入
-            </button>
-          </div>
-          <p className="hint">
-            导出的是凭据文件的密文副本，受 DPAPI（按 Windows 用户）保护：换机器或换
-            Windows 账号后导入会静默变成未登录，只能在同一 Windows 用户内搬运。
-          </p>
-
-          {stranded.length > 0 && (
-            <>
-              <h2>待恢复的切换</h2>
-              {stranded.map((j) => (
-                <div className="stranded" key={j.id}>
-                  <div>
-                    <b>{j.account_id}</b> · {j.phase} · <code>{j.backup_dir}</code>
-                    {j.note && <div className="hint">{j.note}</div>}
-                  </div>
-                  <button
-                    disabled={busy}
-                    onClick={() => run(`已回滚 ${j.id}`, () => api.recover(j))}
-                  >
-                    退回切换前
-                  </button>
-                </div>
-              ))}
-            </>
-          )}
-        </section>
-
-        <section>
-          <h2>切换面板</h2>
-          {!chosen && <p className="hint">左侧选一个账号包。</p>}
-          {chosen && pv && (
-            <>
-              <div className="kv">
-                <span>目标</span>
-                <b>
-                  {VARIANT_CN[chosen.variant]} · {TARGET_CN[chosen.target]}
-                </b>
-                <span>写回文件</span>
-                <b>{pv.writes.join(", ") || "无"}</b>
-                <span>在跑进程</span>
-                <b>{axisOf(chosen.variant, chosen.target)?.running_pids.length ?? 0}</b>
-                <span>托管判定</span>
-                <b className={`lvl-${hostedText(axisOf(chosen.variant, chosen.target)?.hosted ?? "No").level}`}>
-                  {hostedText(axisOf(chosen.variant, chosen.target)?.hosted ?? "No").text}
-                </b>
-              </div>
-
-              {pv.warnings.length > 0 && (
-                <ul className="warns">
-                  {pv.warnings.map((w, i) => (
-                    <li key={i}>{w}</li>
-                  ))}
-                </ul>
-              )}
-
-              <table className="tbl">
-                <thead>
-                  <tr>
-                    <th>角色</th>
-                    <th>路径</th>
-                    <th>此刻</th>
-                    <th>本次写回</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pv.layout.map(([role, path, exists]) => (
-                    <tr key={role}>
-                      <td className="mono">{role}</td>
-                      <td className="mono path" title={path}>
-                        {path}
-                      </td>
-                      <td>{exists ? "存在" : "缺"}</td>
-                      <td>{pv.writes.includes(role) ? "是" : "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-
-              <div className="row switch">
-                <label>
-                  <input type="checkbox" checked={restart} onChange={(e) => setRestart(e.target.checked)} />
-                  换完重启目标
-                </label>
-                <label className={blocked ? "bad" : ""}>
-                  <input type="checkbox" checked={forced} onChange={(e) => setForced(e.target.checked)} />
-                  强制档（明知会连同本会话终止）
-                </label>
-                <button
-                  className="primary"
-                  disabled={busy || (blocked && !forced)}
-                  onClick={() =>
-                    run(
-                      `已切到 ${chosen.account_id} · ${TARGET_CN[chosen.target]}`,
-                      () => api.switchNow(chosen.account_id, chosen.variant, chosen.target, restart, forced),
-                    )
-                  }
-                >
-                  切换到此账号
-                </button>
-              </div>
-              {blocked && !forced && (
-                <p className="hint">
-                  当前判定不允许杀进程。可以只换文件不关进程吗？不行 —— 桌面端在会话期会持续重写
-                  auth 文件，不先终止就等于白写。
-                </p>
-              )}
-            </>
-          )}
-
-          {snap && (
-            <>
-              <h2>最近一次快照比对</h2>
-              <p className="hint">
-                {snap.taken_at} · {snap.path}
-              </p>
-              {snap.changes.length === 0 ? (
-                <p className="hint">与上一张无差异。</p>
-              ) : (
-                <table className="tbl">
-                  <thead>
-                    <tr>
-                      <th>变化</th>
-                      <th>版本·目标</th>
-                      <th>角色</th>
-                      <th>性质</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {snap.changes.map((c, i) => (
-                      <tr key={i}>
-                        <td>{c.kind}</td>
-                        <td>
-                          {VARIANT_CN[c.variant]}·{TARGET_CN[c.target]}
-                        </td>
-                        <td className="mono">{c.role}</td>
-                        <td>{c.critical ? "换号必替" : "观测"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </>
-          )}
-        </section>
-      </div>
-
-      <section className="logs">
-        <h2>操作日志</h2>
-        <pre>{logs.join("\n") || "（暂无）"}</pre>
-      </section>
+      >
+        <Outlet />
+      </main>
     </div>
+  );
+}
+
+export default function App() {
+  const Router = pagesDemoHostingEnabled ? HashRouter : BrowserRouter;
+
+  return (
+    <TooltipProvider delayDuration={250}>
+      <Router>
+        <Routes>
+          <Route element={<Layout />}>
+            <Route path="/" element={<AccountsPage />} />
+            <Route path="/credit-stats" element={<CreditStatsPage />} />
+            <Route path="/token-stats" element={<TokenStatsPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Route>
+        </Routes>
+        <Toaster />
+      </Router>
+    </TooltipProvider>
   );
 }
