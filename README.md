@@ -3,7 +3,9 @@
 Qoder 家族（桌面客户端 / QoderWork / CLI）的多账号切换桌面 App。Tauri v2 + Rust core + React 19。
 
 思路与分层来自 [changexbc/workbuddy-switch](https://github.com/changexbc/workbuddy-switch)（MIT），
-按 Qoder 的实际存储结构重做了凭据层。参考实现以只读方式放在同级 `../reference/workbuddy-switch/`。
+按 Qoder 的实际存储结构重做了凭据层。要做前端比对时自行拉一份只读副本：
+`git clone --depth 1 https://github.com/changexbc/workbuddy-switch ../reference/workbuddy-switch`
+（副本不入库，本仓库也不依赖它存在）。
 
 ## 为什么不是照抄：账号载体换成了「凭据包」
 
@@ -40,7 +42,7 @@ bash scripts/build.sh all       # deps → icons → test → release
 `E:/cargo` 取值。`E:/cargo/config.toml` 需配 rsproxy.cn 的 sparse index 源替换，
 否则拉索引会超时。
 
-产物落在 `E:/qs-target/`：
+产物落在 `E:/qs-target/`（由 `.cargo/config.toml` 钉在 C 盘之外，构建时自动创建，随时可删）：
 
 - `debug/qoder-switch.exe` —— 开发调试
 - `release/qoder-switch.exe` —— 免安装单文件
