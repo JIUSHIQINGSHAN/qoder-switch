@@ -2,7 +2,7 @@ import type {
   AccountMeta, AppStatus, AutoRotateConfig, CheckinConfig, CheckinLog,
   CodeBuddyCliStatus, CodeBuddyCliSwitchResult, CodeBuddyCnIdeStatus, CreditExpiry, CreditOfficialUsageModel, CreditStatistics,
   GithubConfig, RateLimitHookStatus, RateLimitsPayload, RotateLog, RotateStatus, TokenStatistics, TokenStatsGroup, TokenStatsRequestRow, TokenStatsSource, TokenStatsTotals,
-  TravelConfig, TravelStatus,
+
 } from "./types";
 import { demoModeEnabled } from "./demo-mode";
 import { accountVariant, normalizeVariant } from "./variant";
@@ -331,18 +331,6 @@ function checkinConfig(): CheckinConfig {
   return { enabled: true, keepalive_days: 7, lazy_refresh_hours: 12 };
 }
 
-function travelConfig(): TravelConfig {
-  return { enabled: true };
-}
-
-function travelStatus(accountId: string): TravelStatus {
-  const index = Math.max(0, accounts.findIndex((account) => account.id === accountId));
-  // 演示三种状态：旅行中 / 已结束 / 无 Buddy
-  if (index % 3 === 0) return { label: "traveling", rewardCredit: 7, locationName: "咖啡馆", arriveAt: Math.floor(Date.now() / 1000) + 2 * 3600 + 40 * 60 };
-  if (index % 3 === 1) return { label: "finished", rewardCredit: 20, locationName: "健身房" };
-  return { label: "no-buddy", rewardCredit: null, locationName: null };
-}
-
 /**
  * 模型限额演示数据：A 单模型受限（图标无角标）、B 双模型受限（图标带数量角标，
  * 其中一条故意归因失败以展示「未知模型」）、C 无受限（图标不渲染）。
@@ -580,11 +568,9 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
     case "get_token_statistics": return demoTokenStatistics(typeof args?.days === "number" ? args.days : undefined);
     case "get_auto_checkin_config": return checkinConfig();
     case "get_checkin_logs": return { logs: checkinLogs() };
-    case "get_travel_status": return travelStatus(String(args?.accountId ?? ""));
     case "get_rate_limits": return rateLimits();
     case "get_rate_limit_hook_status": return rateLimitHookStatus();
     case "get_rate_limit_config": return { enabled: true };
-    case "get_auto_travel_config": return travelConfig();
     case "get_auto_rotate_config": return config;
     case "rotate_status": return rotateStatus;
     case "get_rotate_logs": return { logs: rotateLogs() };

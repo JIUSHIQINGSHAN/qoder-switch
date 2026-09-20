@@ -304,19 +304,6 @@ export interface CheckinResult {
   inactive?: boolean;
 }
 
-export interface TravelConfig {
-  enabled: boolean;
-}
-
-export type TravelStatusLabel = "untraveled" | "no-buddy" | "traveling" | "finished";
-
-export interface TravelStatus {
-  label: TravelStatusLabel;
-  rewardCredit: number | null;
-  locationName?: string | null;
-  arriveAt?: number | null;
-}
-
 /** 单个受限模型；`model` 为 null 表示日志里归因不到模型（显示「未知模型」，不猜测）。 */
 export interface RateLimitEntry {
   model: string | null;

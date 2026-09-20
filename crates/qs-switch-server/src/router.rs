@@ -528,10 +528,9 @@ mod compat {
             "rotate/status" => Ok(view::rotate_status(&roots, &store, v)),
             "rotate/run" => Ok(view::run_rotate(&roots, &store, v)),
             "rotate/logs" => Ok(view::rotate_logs(&store)),
-            // 应用内通知中心：本宿主不落盘，返回空集合即可让界面正常渲染。
-            "notifications" | "notifications/record" | "notifications/clear" => {
-                Ok(json!({ "items": [], "cleared": true, "recorded": true }))
-            }
+            "notifications" => Ok(view::notifications()),
+            "notifications/record" => Ok(view::record_notification()),
+            "notifications/clear" => Ok(view::clear_notifications()),
             _ => Err(format!("契约路由漏了 {cmd}")),
         };
         r

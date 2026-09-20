@@ -146,7 +146,9 @@ qoder-switch.exe --self-check && echo OK
 - 未实现（相对参考实现仍缺）：device flow 扫码添加账号与 PAT 旁路、**主动刷新 token**
   （到期只做到期展示与建议，刷新接口尚未取证）、额度/积分用量查询、会话跨账号迁移、
   webui/npm 双形态里的 **npm 发布形态**、自动更新。
-- WorkBuddy 的每日签到与 Buddy 旅行在 Qoder 无对应接口，不移植。
+- WorkBuddy 的每日签到在 Qoder 无对应接口：保留版式，动作与读类接口都写明"不适用"。
+- **Buddy 旅行已整体删除**（不是标"不适用"）：Qoder 没有这个玩法，界面入口、类型、
+  契约路由与演示数据一并去掉 —— 留一个永远点不动的按钮比删掉它更误导人。
 - 这些"没有的能力"在前端保留版式并写明不适用（`src/lib/api.ts` 的 `QODER_EMPTY` /
   `QODER_UNAVAILABLE`）：读类命令返回**契约里每个键都齐**的类型正确空值（少一个键就会让
   渲染期对 undefined 调 `.filter()`，无 ErrorBoundary 时整页白屏），动作类命令抛原因。

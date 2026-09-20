@@ -31,8 +31,6 @@ import type {
   SessionLinksPreview,
   SessionSyncSelection,
   SwitchResult,
-  TravelConfig,
-  TravelStatus,
   UpdateInfo,
   WbVariant,
 } from "./types";
@@ -54,7 +52,7 @@ const DEMO_READ_COMMANDS = new Set([
   "get_token_statistics",
   "get_checkin_logs", "get_auto_rotate_config", "rotate_status", "get_rotate_logs",
   "get_github_config", "check_update", "get_launch_at_login_enabled", "switch_progress",
-  "get_travel_status", "get_auto_travel_config", "get_rate_limits",
+  "get_rate_limits",
   "get_rate_limit_hook_status", "get_rate_limit_config",
 ]);
 
@@ -126,9 +124,6 @@ const ROUTES: Record<string, Route> = {
   list_notifications: { method: "GET", path: "/api/notifications" },
   record_notification: { method: "POST", path: "/api/notifications/record" },
   clear_notifications: { method: "POST", path: "/api/notifications/clear" },
-  get_travel_status: { method: "GET", path: "/api/travel/status" },
-  get_auto_travel_config: { method: "GET", path: "/api/travel/config" },
-  save_auto_travel_config: { method: "POST", path: "/api/travel/config" },
   get_auto_rotate_config: { method: "GET", path: "/api/rotate/config" },
   save_auto_rotate_config: { method: "POST", path: "/api/rotate/config" },
   rotate_status: { method: "GET", path: "/api/rotate/status" },
@@ -161,7 +156,7 @@ function queryString(args?: Record<string, unknown>): string {
 }
 
 async function httpCall<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  // 有些调用点（签到/旅行/会话预览的按账号查询）绕过 call() 直接打 httpCall，
+  // 有些调用点（签到/会话预览的按账号查询）绕过 call() 直接打 httpCall，
   // 空值门控必须也在这里生效，否则浏览器里会对不存在的端点发真请求、控制台刷 404。
   const empty = QODER_EMPTY[cmd];
   if (empty) return empty() as T;
@@ -198,7 +193,6 @@ const QODER_UNAVAILABLE: Record<string, string> = {
   checkin_all: "Qoder 无签到接口",
   get_checkin_logs: "Qoder 无签到接口",
   save_auto_checkin_config: "Qoder 无签到接口",
-  save_auto_travel_config: "Buddy 旅行是 WorkBuddy 专有玩法",
   oauth_start: "设备登录流程端点未取证，请用「导入本机账号」",
   oauth_status: "设备登录流程端点未取证",
   refresh_account_token: "刷新接口未取证",
@@ -274,11 +268,9 @@ const QODER_EMPTY: Record<string, () => unknown> = {
     keepalive_days: 0,
     lazy_refresh_hours: 0,
   }),
-  get_auto_travel_config: () => ({ enabled: false }),
   // 本构建没接管开机自启，所以状态就是"关"；开关按下去会说清为什么没生效。
   get_launch_at_login_enabled: () => false,
   get_checkin_status: () => ({ ok: false, resources: [] }),
-  get_travel_status: () => ({ label: "unknown", rewardCredit: null }),
   get_codebuddy_cli_status: () => ({
     configured: false,
     settingsPresent: false,
@@ -647,33 +639,6 @@ export function saveAutoCheckinConfig(config: CheckinConfig): Promise<CheckinCon
 
 export function getCheckinLogs(): Promise<{ logs: CheckinLog[] }> {
   return call("get_checkin_logs");
-}
-
-export async function getTravelStatus(accountId: string): Promise<TravelStatus> {
-  if (demoModeEnabled) {
-    return screenshotDemoResponse("get_travel_status", { accountId }) as TravelStatus;
-  }
-  if (isWebui()) {
-    // webui 端为批量接口，按 accountId 过滤
-    const all = await httpCall<{
-      accounts: { accountId: string; email: string; label: TravelStatus["label"]; rewardCredit: number | null; locationName?: string | null; arriveAt?: number | null }[];
-    }>("get_travel_status");
-    const one = all.accounts.find((a) => a.accountId === accountId);
-    return one
-      ? { label: one.label, rewardCredit: one.rewardCredit, locationName: one.locationName ?? null, arriveAt: one.arriveAt ?? null }
-      : { label: "untraveled", rewardCredit: null, locationName: null, arriveAt: null };
-  }
-  return call("get_travel_status", { accountId });
-}
-
-export function getAutoTravelConfig(): Promise<TravelConfig> {
-  return call("get_auto_travel_config");
-}
-
-export function saveAutoTravelConfig(config: TravelConfig): Promise<TravelConfig> {
-  return call("save_auto_travel_config", {
-    config: config as unknown as Record<string, unknown>,
-  });
 }
 
 export function getAutoRotateConfig(): Promise<AutoRotateConfig> {

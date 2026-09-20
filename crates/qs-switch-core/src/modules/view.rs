@@ -371,6 +371,21 @@ pub fn run_rotate(roots: &PathRoots, store: &Path, v: QoderVariant) -> Value {
     }
 }
 
+/// 应用内通知存档。Qoder 侧**没有**这个存档，所以三个响应都不假装存了东西：
+/// 读永远为空、记录明确说没保存、清空本来就没什么可清。
+/// 两个宿主共用，否则桌面端会因"命令不存在"报错而 webui 正常 —— 同一份 UI 两种行为。
+pub fn notifications() -> Value {
+    json!({ "items": [] })
+}
+
+pub fn record_notification() -> Value {
+    json!({ "recorded": false, "reason": "本构建不落盘通知存档" })
+}
+
+pub fn clear_notifications() -> Value {
+    json!({ "cleared": true })
+}
+
 /// 前端逐项确认"哪些能力在 Qoder 侧不存在"，用于把"不适用"写明而不是装作能用。
 pub fn capabilities() -> Value {
     json!({
@@ -384,7 +399,6 @@ pub fn capabilities() -> Value {
         ],
         "unavailable": [
             { "name": "每日签到", "reason": "Qoder 无签到接口" },
-            { "name": "Buddy 旅行", "reason": "WorkBuddy 专有玩法" },
             { "name": "积分统计与额度查询", "reason": "官方接口未取证，拒绝猜测调用" },
             { "name": "会话跨账号复制", "reason": "Qoder 会话不按账号归属，复制会串数据" },
             { "name": "OAuth 扫码添加账号", "reason": "设备流程端点未取证" },

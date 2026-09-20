@@ -1,4 +1,4 @@
-import { ArrowRight, CalendarCheck2, CalendarDays, Check, CircleCheck, Clock3, Coins, Ellipsis, Gauge, Loader2, PackageOpen, PlaneTakeoff, RefreshCw, Sparkles, Star, Trash2 } from "lucide-react";
+import { ArrowRight, CalendarCheck2, CalendarDays, Check, CircleCheck, Clock3, Coins, Ellipsis, Gauge, Loader2, PackageOpen, RefreshCw, Sparkles, Star, Trash2 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -17,7 +17,7 @@ import { CodeBuddyCnIdeMark, CodeBuddyMark, WorkBuddyMark } from "@/components/p
 import { cn } from "@/lib/utils";
 import { creditResourceName } from "@/lib/credit-package-names";
 import { demoModeEnabled } from "@/lib/demo-mode";
-import type { AccountMeta, CreditExpiry, CreditResource, RateLimitEntry, TravelStatus } from "@/lib/types";
+import type { AccountMeta, CreditExpiry, CreditResource, RateLimitEntry } from "@/lib/types";
 
 const AVATAR_TONES = [
   "bg-emerald-100 text-emerald-800",
@@ -91,7 +91,7 @@ const chipClass = "rounded-md px-1.5 py-0 text-[11px] font-medium";
 
 /**
  * 纯图标状态 chip：状态由图标 + 色调 + tooltip 共同表达，不再占文案宽度。
- * 签到、旅行与模型限额共用这一份实现（角标样式、`aria-label`、tooltip 位置统一）。
+ * 签到与模型限额共用这一份实现（角标样式、`aria-label`、tooltip 位置统一）。
  */
 function statusIconChip({
   icon,
@@ -128,66 +128,6 @@ function statusIconChip({
   );
 }
 
-function travelIconChip({
-  label,
-  tooltip,
-  variant,
-}: {
-  label: string;
-  tooltip: string;
-  variant: "secondary" | "success";
-}) {
-  return statusIconChip({ icon: <PlaneTakeoff className="size-3.5" />, label, tooltip, variant });
-}
-
-function formatTravelRemaining(arriveAt: number | null | undefined): string | null {
-  if (!arriveAt || arriveAt <= 0) return null;
-  const arriveMs = arriveAt > 1e12 ? arriveAt : arriveAt * 1000;
-  const remainingMs = arriveMs - Date.now();
-  if (remainingMs <= 0) return "即将到达";
-  const totalMinutes = Math.max(1, Math.ceil(remainingMs / 60_000));
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  if (hours > 0 && minutes > 0) return `剩余 ${hours} 小时 ${minutes} 分钟`;
-  if (hours > 0) return `剩余 ${hours} 小时`;
-  return `剩余 ${minutes} 分钟`;
-}
-
-function travelTooltip(status: TravelStatus): string {
-  const place = status.locationName?.trim();
-  const credit = status.rewardCredit;
-  const points = credit != null ? `+${credit}` : null;
-  const remaining = formatTravelRemaining(status.arriveAt);
-  if (status.label === "traveling") {
-    const parts = [place, points ? `预计 ${points}` : "旅行中", remaining].filter(Boolean);
-    return parts.length > 0 ? parts.join(" · ") : "旅行中";
-  }
-  if (status.label === "finished") {
-    if (place && points) return `${place} · ${points}`;
-    if (place) return `${place} · 已结束`;
-    if (points) return `已结束 · ${points}`;
-    return "已结束";
-  }
-  if (status.label === "no-buddy") return "无 Buddy";
-  return "未旅行";
-}
-
-/** 按旅行状态渲染标签：无 Buddy / 未旅行 / 旅行中 / 已结束。 */
-function travelChip(status: TravelStatus | undefined) {
-  if (!status) return null;
-  switch (status.label) {
-    case "no-buddy":
-      return <Badge variant="secondary" className={cn(chipClass, "text-muted-foreground")}>无 Buddy</Badge>;
-    case "traveling":
-      return travelIconChip({ label: travelTooltip(status), tooltip: travelTooltip(status), variant: "secondary" });
-    case "finished":
-      return travelIconChip({ label: travelTooltip(status), tooltip: travelTooltip(status), variant: "success" });
-    case "untraveled":
-    default:
-      return <Badge variant="secondary" className={cn(chipClass, "text-muted-foreground")}>未旅行</Badge>;
-  }
-}
-
 /** 倒计时：`2h14m 后恢复`；不足 1 分钟按「即将恢复」，已过期由调用方过滤。 */
 function formatRateLimitRemaining(resetAt: number, now: number): string {
   const remainingMs = resetAt - now;
@@ -212,7 +152,7 @@ function formatRateLimitClock(resetAt: number, now: number): string {
 }
 
 /**
- * 模型限额 chip：放在旅行图标旁。
+ * 模型限额 chip：与签到 chip 同一套样式。
  *
  * - 该账号当前没有受限模型 → 不渲染（AC1）；
  * - 悬停按恢复时间**升序**列出全部受限模型（最早的解锁时刻最有行动价值），
@@ -253,8 +193,6 @@ interface Props {
   onRefresh?: (a: AccountMeta) => void;
   onSwitch?: (a: AccountMeta) => void;
   todayCheckedIn?: boolean;
-  /** 今日旅行状态（undefined=查询中/未知，不渲染标签） */
-  travelStatus?: TravelStatus;
   /** 该账号当前受限的模型（来自本机日志台账）；空/缺失=无受限，不渲染图标。 */
   rateLimits?: RateLimitEntry[];
   credit?: CreditExpiry;
@@ -355,7 +293,7 @@ function CreditResourceRow({ resource, compact, placeholderLabel }: { resource?:
   );
 }
 
-export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch, todayCheckedIn, travelStatus, rateLimits, credit, creditLoading, creditUpdatedAt, creditPriority, workbuddyActive, codebuddyCliConfigured, codebuddyCliActive, codebuddyCliBusy, onSwitchCodebuddyCli, codebuddyCliLoading, codebuddyCnIdeAvailable, codebuddyCnIdeActive, codebuddyCnIdeBusy, codebuddyCnIdeLoading, onSwitchCodebuddyCnIde, featuresDisabled = true, compact = false }: Props) {
+export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch, todayCheckedIn, rateLimits, credit, creditLoading, creditUpdatedAt, creditPriority, workbuddyActive, codebuddyCliConfigured, codebuddyCliActive, codebuddyCliBusy, onSwitchCodebuddyCli, codebuddyCliLoading, codebuddyCnIdeAvailable, codebuddyCnIdeActive, codebuddyCnIdeBusy, codebuddyCnIdeLoading, onSwitchCodebuddyCnIde, featuresDisabled = true, compact = false }: Props) {
   const [resourcesOpen, setResourcesOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   /**
@@ -399,7 +337,6 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
           tooltip: todayCheckedIn ? "今日已签到" : "今日未签到",
           variant: todayCheckedIn ? "success" : "secondary",
         })}
-      {travelChip(travelStatus)}
       {rateLimitChip(rateLimits, now)}
       {(account.needsRelogin || expired) && <Badge variant="warning" className={chipClass}>{account.needsRelogin ? "需重新登录" : "Token 已过期"}</Badge>}
       {creditPriority && (
