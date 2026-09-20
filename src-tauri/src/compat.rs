@@ -31,15 +31,28 @@ fn target_of(s: Option<&str>) -> QoderTarget {
     }
 }
 
+/// 把阻塞式采集挪出主线程。
+///
+/// Tauri 的非 `async` 命令在**主线程**上执行，而 `get_status` / `get_accounts` 每次都要
+/// 起 `tasklist` 与 PowerShell 做 DPAPI（本机实测各约 700ms）。同步写法的直接后果是
+/// 窗口在那 0.7 秒里完全不收输入 —— 界面看起来就是"卡死"。
+async fn off_main<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("后台采集任务异常终止: {e}"))?
+}
+
 #[tauri::command]
-pub fn get_status(variant: Option<String>) -> Value {
-    view::app_status(&PathRoots::real(), variant_of(variant.as_deref()))
+pub async fn get_status(variant: Option<String>) -> Result<Value, String> {
+    off_main(move || Ok(view::app_status(&PathRoots::real(), variant_of(variant.as_deref())))).await
 }
 
 /// 返回全部档位的账号，由前端按 `variant` 过滤（契约如此，不在宿主侧筛）。
 #[tauri::command]
-pub fn get_accounts() -> Value {
-    view::accounts(&PathRoots::real())
+pub async fn get_accounts() -> Result<Value, String> {
+    off_main(|| Ok(view::accounts(&PathRoots::real()))).await
 }
 
 /// 切换进度。前端对话框轮询 `switch_progress`，桌面端另有事件通道，两条路共用这份状态。
@@ -139,34 +152,40 @@ pub async fn switch_account(
 /// `account_id` 可选：前端"导入本机账号"只送档位（它那时还不知道本机登的是谁），
 /// 缺省包名由档位推出。
 #[tauri::command]
-pub fn import_local(
+pub async fn import_local(
     account_id: Option<String>,
     variant: Option<String>,
     target: Option<String>,
 ) -> Result<Value, String> {
-    let roots = PathRoots::real();
-    let store = switch_root();
-    let v = variant_of(variant.as_deref());
-    let t = target_of(target.as_deref());
-    let id = account_id.unwrap_or_else(|| view::local_account_id(v));
-    let b = bundle::capture(&roots, &store, &id, v, t)?;
-    if b.is_empty() {
-        return Err(format!(
-            "该目标在本机不落盘凭据（{:?}·{:?}），没有可认领的文件",
-            v, t
-        ));
-    }
-    Ok(json!({ "ok": true, "account": view::account_meta(&b) }))
+    off_main(move || {
+        let roots = PathRoots::real();
+        let store = switch_root();
+        let v = variant_of(variant.as_deref());
+        let t = target_of(target.as_deref());
+        let id = account_id.unwrap_or_else(|| view::local_account_id(v));
+        let b = bundle::capture(&roots, &store, &id, v, t)?;
+        if b.is_empty() {
+            return Err(format!(
+                "该目标在本机不落盘凭据（{:?}·{:?}），没有可认领的文件",
+                v, t
+            ));
+        }
+        Ok(json!({ "ok": true, "account": view::account_meta(&b) }))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn delete_account(account_id: String) -> Result<Value, String> {
-    let dir = bundle::accounts_root_in(&switch_root()).join(&account_id);
-    if !dir.is_dir() {
-        return Err(format!("账号目录不存在: {}", dir.display()));
-    }
-    std::fs::remove_dir_all(&dir).map_err(|e| format!("删除 {} 失败: {e}", dir.display()))?;
-    Ok(json!({ "ok": true }))
+pub async fn delete_account(account_id: String) -> Result<Value, String> {
+    off_main(move || {
+        let dir = bundle::accounts_root_in(&switch_root()).join(&account_id);
+        if !dir.is_dir() {
+            return Err(format!("账号目录不存在: {}", dir.display()));
+        }
+        std::fs::remove_dir_all(&dir).map_err(|e| format!("删除 {} 失败: {e}", dir.display()))?;
+        Ok(json!({ "ok": true }))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -180,14 +199,28 @@ pub fn save_auto_rotate_config(config: Value) -> Result<UiRotateConfig, String> 
 }
 
 #[tauri::command]
-pub fn rotate_status(variant: Option<String>) -> Value {
-    view::rotate_status(&PathRoots::real(), &switch_root(), variant_of(variant.as_deref()))
+pub async fn rotate_status(variant: Option<String>) -> Result<Value, String> {
+    off_main(move || {
+        Ok(view::rotate_status(
+            &PathRoots::real(),
+            &switch_root(),
+            variant_of(variant.as_deref()),
+        ))
+    })
+    .await
 }
 
 /// 手动跑一次轮换检查。只产出建议并记日志，**不执行切换**。
 #[tauri::command]
-pub fn run_rotate(variant: Option<String>) -> Value {
-    view::run_rotate(&PathRoots::real(), &switch_root(), variant_of(variant.as_deref()))
+pub async fn run_rotate(variant: Option<String>) -> Result<Value, String> {
+    off_main(move || {
+        Ok(view::run_rotate(
+            &PathRoots::real(),
+            &switch_root(),
+            variant_of(variant.as_deref()),
+        ))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -196,28 +229,40 @@ pub fn get_rotate_logs() -> Value {
 }
 
 #[tauri::command]
-pub fn export_accounts(account_ids: Vec<String>) -> Result<Value, String> {
-    view::export_records(&switch_root(), &account_ids)
+pub async fn export_accounts(account_ids: Vec<String>) -> Result<Value, String> {
+    off_main(move || view::export_records(&switch_root(), &account_ids)).await
 }
 
 #[tauri::command]
-pub fn export_accounts_to_path(account_ids: Vec<String>, path: String) -> Result<Value, String> {
-    let v = export_accounts(account_ids)?;
-    let text = serde_json::to_string_pretty(&v["accounts"]).map_err(|e| e.to_string())?;
-    std::fs::write(&path, text).map_err(|e| format!("写 {path} 失败: {e}"))?;
-    Ok(json!({ "ok": true, "path": path }))
+pub async fn export_accounts_to_path(
+    account_ids: Vec<String>,
+    path: String,
+) -> Result<Value, String> {
+    off_main(move || {
+        let v = view::export_records(&switch_root(), &account_ids)?;
+        let text = serde_json::to_string_pretty(&v["accounts"]).map_err(|e| e.to_string())?;
+        std::fs::write(&path, text).map_err(|e| format!("写 {path} 失败: {e}"))?;
+        Ok(json!({ "ok": true, "path": path }))
+    })
+    .await
 }
 
 /// 预览导入文件：只解析与校验，不写盘。
 #[tauri::command]
-pub fn preview_import_accounts(file_text: String) -> Result<Value, String> {
-    view::preview_import(&file_text)
+pub async fn preview_import_accounts(file_text: String) -> Result<Value, String> {
+    off_main(move || view::preview_import(&file_text)).await
 }
 
 /// 导入。`indexes` 是用户在预览里勾选的下标。
 #[tauri::command]
-pub fn import_accounts(file_text: String, indexes: Option<Vec<usize>>) -> Result<Value, String> {
-    view::import_records(&switch_root(), &file_text, indexes.as_deref())
+pub async fn import_accounts(
+    file_text: String,
+    indexes: Option<Vec<usize>>,
+) -> Result<Value, String> {
+    off_main(move || {
+        view::import_records(&switch_root(), &file_text, indexes.as_deref())
+    })
+    .await
 }
 
 /// 前端逐项确认"哪些能力在 Qoder 侧不存在"，用于在界面上写明而不是装作能用。
@@ -268,7 +313,7 @@ mod tests {
 
     #[test]
     fn run_rotate_never_claims_to_have_switched() {
-        let r = run_rotate(Some("cn".into()));
+        let r = tauri::async_runtime::block_on(run_rotate(Some("cn".into()))).unwrap();
         let status = r.get("status").and_then(|x| x.as_str()).unwrap_or("");
         assert!(
             matches!(status, "suggested" | "hold" | "error"),
@@ -279,7 +324,7 @@ mod tests {
 
     #[test]
     fn rotate_logs_and_status_are_wellformed() {
-        let s = rotate_status(Some("cn".into()));
+        let s = tauri::async_runtime::block_on(rotate_status(Some("cn".into()))).unwrap();
         assert_eq!(s["cliConfigured"], false, "Qoder 无 CLI 指针机制");
         assert!(s.get("config").is_some());
         assert!(get_rotate_logs()["logs"].is_array());
@@ -302,8 +347,8 @@ mod tests {
 
     #[test]
     fn preview_import_rejects_garbage() {
-        assert!(preview_import_accounts("不是 JSON".into()).is_err());
-        let ok = preview_import_accounts(r#"[{"id":"a","uid":"u"}]"#.into()).unwrap();
+        assert!(tauri::async_runtime::block_on(preview_import_accounts("不是 JSON".into())).is_err());
+        let ok = tauri::async_runtime::block_on(preview_import_accounts(r#"[{"id":"a","uid":"u"}]"#.into())).unwrap();
         assert_eq!(ok["total"], 1);
     }
 
@@ -319,7 +364,7 @@ mod tests {
     /// 本机现状必须能被 get_status 说清楚：在跑、认证文件路径、当前账号。
     #[test]
     fn status_reflects_local_reality() {
-        let s = get_status(Some("cn".into()));
+        let s = tauri::async_runtime::block_on(get_status(Some("cn".into()))).unwrap();
         assert_eq!(s["variant"], "cn");
         let file = s["authFile"].as_str().unwrap_or_default();
         assert!(file.ends_with("auth.v1.dat"), "{file}");
@@ -331,7 +376,7 @@ mod tests {
 
     #[test]
     fn accounts_list_carries_expiry() {
-        let arr = get_accounts()["accounts"]
+        let arr = tauri::async_runtime::block_on(get_accounts()).unwrap()["accounts"]
             .as_array()
             .cloned()
             .unwrap_or_default();
@@ -345,7 +390,9 @@ mod tests {
     #[test]
     fn desktop_and_webui_agree_on_contract_shapes() {
         let roots = PathRoots::real();
-        assert_eq!(get_status(Some("ai".into())), view::app_status(&roots, QoderVariant::Global));
+        assert_eq!(
+            tauri::async_runtime::block_on(get_status(Some("ai".into()))).unwrap(),
+            view::app_status(&roots, QoderVariant::Global));
         assert_eq!(get_capabilities(), view::capabilities());
         assert_eq!(get_rotate_logs(), view::rotate_logs(&switch_root()));
     }
