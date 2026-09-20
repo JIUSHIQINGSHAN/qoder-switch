@@ -390,7 +390,10 @@ mod tests {
     }
 
     /// 本机证据测试：这些文件在开发机上必须真实存在，否则说明布局写错了。
+    /// 绑定真实 Qoder 安装，他人机器/CI 上必然失败——默认忽略，
+    /// 开发机用 `cargo test -- --ignored` 或 `scripts/build.sh test` 补跑。
     #[test]
+    #[ignore = "绑定开发机的真实 Qoder 安装布局"]
     fn local_evidence_files_exist() {
         let roots = PathRoots::real();
         let expected = [

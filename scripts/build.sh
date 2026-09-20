@@ -30,7 +30,9 @@ case "${1:-all}" in
     rm -rf src-tauri/icons/android src-tauri/icons/ios
     ;;
   test)
+    # CI 只跑常规集；本机再补跑被 #[ignore] 的真机证据测试（绑定本机 Qoder 布局）。
     cargo test --workspace
+    cargo test --workspace -- --ignored
     ;;
   web)
     npm run build
