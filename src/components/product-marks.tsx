@@ -1,6 +1,5 @@
 import { cn } from "@/lib/utils";
-import workbuddyIcon from "@/assets/workbuddy-official-icon.png";
-import codebuddyCnIdeIcon from "@/assets/codebuddy-cn-ide-icon.png";
+import qoderMark from "@/assets/qoder-mark.png";
 
 const appIconUrl = `${import.meta.env.BASE_URL}icon-transparent.png`;
 
@@ -10,9 +9,12 @@ interface MarkProps {
 }
 
 /**
- * Qoder 官方应用图标（从 Qoder.app 的 icon.icns 提取）。
- * 与 Qoder IDE 图标同为标准 macOS app icon 风格（约 10% 透明边距），
- * 放大 118% 居中裁掉透明圈后与 Qoder 系列图标视觉一致。
+ * Qoder 桌面客户端标记。
+ *
+ * 源图不是手画的：取自本机安装目录 `<安装根>\resources\app-icon.ico` 的 256px 帧
+ * （ICO 内嵌的是 PNG，魔数得按大端读才认得出）。这里用**国际版那帧无角标的图**：
+ * 国内版的图标右上角烤进了 "CN" 字样，再叠 IntlBadge 就会两个角标打架。
+ * 档位区分完全交给 IntlBadge。
  */
 export function WorkBuddyMark({ size = 32, className }: MarkProps) {
   return (
@@ -22,9 +24,9 @@ export function WorkBuddyMark({ size = 32, className }: MarkProps) {
       style={{ width: size, height: size }}
     >
       <img
-        src={workbuddyIcon}
+        src={qoderMark}
         alt=""
-        className="absolute left-1/2 top-1/2 size-[118%] max-w-none -translate-x-1/2 -translate-y-1/2 object-cover"
+        className="absolute left-1/2 top-1/2 size-full max-w-none -translate-x-1/2 -translate-y-1/2 object-cover"
       />
     </span>
   );
@@ -103,10 +105,10 @@ export function CodeBuddyMark({ size = 32, className }: MarkProps) {
 }
 
 /**
- * Qoder IDE（桌面客户端）官方应用图标。
- * 源图四周自带约 9% 透明边距：正方形图 + object-cover 不会触发任何缩放，
- * 必须先把图放大到 122% 再居中裁剪，才能把透明圈裁掉并与 Qoder 的
- * 全幅 logo 达到同样的视觉大小（裁剪仅落在透明边距上，几乎不伤画面）。
+ * Qoder IDE（桌面客户端）标记。
+ *
+ * 与上面同一份图：Qoder 侧"桌面客户端"和"IDE"指的是同一个客户端程序，
+ * 所以两个标记位画同一个官方图标是准确的，不要为了看起来不同而另画图。
  */
 export function CodeBuddyCnIdeMark({ size = 32, className }: MarkProps) {
   return (
@@ -116,9 +118,9 @@ export function CodeBuddyCnIdeMark({ size = 32, className }: MarkProps) {
       style={{ width: size, height: size }}
     >
       <img
-        src={codebuddyCnIdeIcon}
+        src={qoderMark}
         alt=""
-        className="absolute left-1/2 top-1/2 size-[122%] max-w-none -translate-x-1/2 -translate-y-1/2 object-cover"
+        className="absolute left-1/2 top-1/2 size-full max-w-none -translate-x-1/2 -translate-y-1/2 object-cover"
       />
     </span>
   );

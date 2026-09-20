@@ -138,8 +138,10 @@ function AutoCheckinCard() {
 
   async function load() {
     try {
-      const [c, l] = await Promise.all([api.getAutoCheckinConfig(), api.getCheckinLogs()]);
-      setCfg(c);
+      // 配置与日志分两步取：签到日志在 Qoder 侧不适用会抛错，放进 Promise.all
+      // 会让 setCfg 永远执行不到，卡片就停在"加载配置中…"——原因已经在 msg 里说过了。
+      setCfg(await api.getAutoCheckinConfig());
+      const l = await api.getCheckinLogs();
       setLogs(l.logs);
     } catch (e) {
       setMsg({ type: "err", text: api.asError(e) });
@@ -412,7 +414,9 @@ function AutoRotateCard() {
             {status.lastCheckAt && <span>上次检查 {formatTime(status.lastCheckAt)}</span>}
             {status.lastSwitchAt && <span>上次切换 {formatTime(status.lastSwitchAt)}</span>}
             {!status.cliConfigured && (
-              <span className="text-destructive">未接入 Qoder CLI（请先到账号页安装 helper）</span>
+              <span className="text-destructive">
+                Qoder CLI 无独立账号指针（换桌面端登录态后 CLI 下次启动即生效）
+              </span>
             )}
           </div>
         )}
@@ -625,9 +629,9 @@ function PermissionCheckCard() {
             <p className="mb-1 font-medium text-foreground">如何授权（拖拽方式）：</p>
             <ol className="list-decimal space-y-1 pl-4">
               <li>点上方「打开完全磁盘访问」</li>
-              <li>再点「在 Finder 中显示」打开 workbuddy-switch 所在位置</li>
+              <li>再点「在 Finder 中显示」打开 qoder-switch 所在位置</li>
               <li>
-                把 <b>workbuddy-switch.app</b> 从 Finder <b>直接拖进</b>完全磁盘访问的列表区域
+                把 <b>qoder-switch.app</b> 从 Finder <b>直接拖进</b>完全磁盘访问的列表区域
                 （即使没有提示框，拖入即生效），然后打开它的开关
               </li>
               <li>回到本页点「检测权限」，或直接重试切换</li>

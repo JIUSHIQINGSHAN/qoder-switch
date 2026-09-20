@@ -154,7 +154,7 @@ export function OAuthLoginDialog({ open, onOpenChange, variant = DEFAULT_VARIANT
                 <CircleAlert className="size-4" />
                 <AlertTitle>请把链接复制到无痕窗口打开</AlertTitle>
                 <AlertDescription>
-                  若浏览器已登录 workbuddy.ai，授权页会直接跳到「登录成功」而不会绑定账号。
+                  若浏览器已登录同一个账号，授权页会直接跳到「登录成功」而不会绑定账号。
                   请用下方按钮复制链接，粘贴到浏览器的无痕（隐私）窗口中打开并完成登录。
                 </AlertDescription>
               </Alert>

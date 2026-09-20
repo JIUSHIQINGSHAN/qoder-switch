@@ -32,9 +32,12 @@ export function variantCodebuddyIdeName(variant: WbVariant): string {
  *
  * 只给域名字样、不做超链接（design D9）。国内版空状态不含域名，取值仅为让调用方
  * 不必再写档位判断。
+ *
+ * 取值来自本机两个客户端各自配置里实际出现过的站点：CN 侧是 qoder.com.cn，
+ * 国际版侧是 qoder.com（接口域另有 qoder.sh，那不是下载入口）。
  */
 export function variantDownloadDomain(variant: WbVariant): string {
-  return variant === "ai" ? "workbuddy.ai" : "codebuddy.cn";
+  return variant === "ai" ? "qoder.com" : "qoder.com.cn";
 }
 
 /** 账号自身档位；账号缺省字段时按国内版处理。 */

@@ -895,7 +895,7 @@ export default function AccountsPage() {
                   ? "检测到旧版 helper，请先升级；升级前不会将 CLI 切换显示为已验证。"
                   : codebuddyCli.configured
                     ? "当前 helper 仍按旧索引读取账号；升级后将按账号 ID 独立切换，账号增删也不会错位。"
-                    : "Qoder 账号与积分功能可正常使用；如需从这里切换 Qoder CLI 账号，点击下方按钮一键接入。"}
+                    : "Qoder CLI 在本机不落盘凭据，没有独立的账号指针可接入；换桌面端登录态后，CLI 下次启动即随之生效。"}
             </p>
             <DemoAction>
               <Button
@@ -1123,18 +1123,18 @@ export default function AccountsPage() {
             <DialogDescription>
               {codebuddyUsesSettingsEnv ? (
                 <>
-                  将把当前账号的认证 Token 写入
-                  <code className="mx-1 rounded bg-muted px-1">~/.codebuddy/settings.json</code>
-                  的 <code className="mx-1 rounded bg-muted px-1">env.CODEBUDDY_AUTH_TOKEN</code>。
-                  其他配置会保留；更新只影响后续加载的会话，当前运行会话不会切换。是否继续？
+                  Qoder CLI 不从
+                  <code className="mx-1 rounded bg-muted px-1">settings.json</code>
+                  的 env 读取凭据：本机实测它根本不落盘登录态。所以这一步没有任何文件可写，
+                  继续会直接返回「不适用」。换桌面端登录态即可，CLI 下次启动自然生效。
                 </>
               ) : (
                 <>
-                  {codebuddyCli?.configured || codebuddyCli?.migrationRequired ? "升级" : "接入"}会自动写入
-                  <code className="mx-1 rounded bg-muted px-1">~/.codebuddy-rotate/helper.cjs</code>
-                  并更新
-                  <code className="mx-1 rounded bg-muted px-1">~/.codebuddy/settings.json</code>
-                  的 apiKeyHelper 配置，是否继续？
+                  Qoder CLI 没有
+                  <code className="mx-1 rounded bg-muted px-1">apiKeyHelper</code>
+                  这类「默认账号指针」，所以接入 / 升级都没有落点：不会写
+                  <code className="mx-1 rounded bg-muted px-1">helper.cjs</code>
+                  ，也不会改任何配置。继续会直接返回「不适用」。
                 </>
               )}
             </DialogDescription>
