@@ -55,6 +55,20 @@ pub struct Identity {
     pub refresh_expires_at: Option<String>,
 }
 
+/// RFC3339（`2026-10-19T06:19:41Z`）→ 毫秒。前端契约里的时间戳是毫秒数。
+pub fn iso_to_ms(iso: &str) -> Option<u64> {
+    chrono::DateTime::parse_from_rfc3339(iso)
+        .ok()
+        .map(|t| t.timestamp_millis().max(0) as u64)
+}
+
+/// 本工具自己的紧凑时间戳（`%Y%m%dT%H%M%SZ`）→ 毫秒。与 `iso_to_ms` 不互认。
+pub fn compact_to_ms(s: &str) -> Option<u64> {
+    chrono::NaiveDateTime::parse_from_str(s, "%Y%m%dT%H%M%SZ")
+        .ok()
+        .map(|t| t.and_utc().timestamp_millis().max(0) as u64)
+}
+
 /// ISO8601（`2026-10-19T06:19:41Z`）到"还剩几天"。解析不了返回 None，不猜。
 pub fn days_until(iso: &str) -> Option<i64> {
     let then = chrono::DateTime::parse_from_rfc3339(iso)

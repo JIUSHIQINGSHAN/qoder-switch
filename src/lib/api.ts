@@ -44,7 +44,9 @@ import { screenshotDemoResponse } from "./screenshot-demo";
  * - 桌面 App（Tauri）：`invoke` 调用 Rust commands
  * - webui（浏览器）：HTTP fetch 调用本地 workbuddy-switch 服务（127.0.0.1）
  */
-const API_BASE = "http://127.0.0.1:57890";
+// 本项目的 HTTP 宿主（qs-switch-server）默认 57891；刻意与参考实现的 57890 错开，
+// 因为本机可能同时装着 workbuddy-switch 的 webui。
+const API_BASE = "http://127.0.0.1:57891";
 
 const DEMO_READ_COMMANDS = new Set([
   "get_status", "get_accounts", "get_codebuddy_cli_status", "get_codebuddy_cn_ide_status", "get_codebuddy_ide_status", "get_checkin_status",

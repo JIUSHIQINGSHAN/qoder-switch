@@ -1,4 +1,5 @@
 mod commands;
+mod compat;
 mod selfcheck;
 mod tray;
 
@@ -39,7 +40,13 @@ pub fn run() {
             commands::export_account_text,
             commands::import_account_text,
             commands::rotation_suggestion,
-            commands::apply_rotation
+            commands::apply_rotation,
+            // 前端契约（参考实现原样副本所调用的命令名与返回形状）
+            compat::get_status,
+            compat::get_accounts,
+            compat::switch_account,
+            compat::import_local,
+            compat::delete_account
         ])
         .run(tauri::generate_context!())
         .expect("Qoder Switch 启动失败");
