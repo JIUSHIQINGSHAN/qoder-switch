@@ -1374,7 +1374,7 @@ function RequestDetailDialog({
         <DialogHeader>
           <DialogTitle>请求明细</DialogTitle>
           <DialogDescription>
-            每次模型调用一行，按时间倒序展示本地 CodeBuddy CLI 日志记录。
+            每次模型调用一行，按时间倒序展示本地 Qoder CLI 日志记录。
           </DialogDescription>
         </DialogHeader>
         {rows.length === 0 ? (
@@ -1402,7 +1402,7 @@ function Dashboard({ source }: { source: TokenStatsSource }) {
         </div>
         {source.source === "workbuddy-ai" && (
           <div className="mt-2 text-xs leading-5">
-            国际版数据源为空：本机可能未安装 WorkBuddy 国际版客户端，或尚未产生本地会话日志；
+            国际版数据源为空：本机可能未安装 Qoder 国际版客户端，或尚未产生本地会话日志；
             国际版数据与国内版分开统计，不参与国内版用量。
           </div>
         )}
@@ -1651,28 +1651,28 @@ export default function TokenStatsPage() {
               value="workbuddy"
               disabled={Boolean(stats && !stats.sources.some((item) => item.source === "workbuddy"))}
             >
-              WorkBuddy
+              Qoder
             </TabsTrigger>
             <TabsTrigger
               className="max-w-full whitespace-normal"
               value="workbuddy-ai"
               disabled={Boolean(stats && !stats.sources.some((item) => item.source === "workbuddy-ai"))}
             >
-              WorkBuddy 国际版
+              Qoder 国际版
             </TabsTrigger>
             <TabsTrigger
               className="max-w-full whitespace-normal"
               value="codebuddy-cli"
               disabled={Boolean(stats && !stats.sources.some((item) => item.source === "codebuddy-cli"))}
             >
-              CodeBuddy CLI
+              Qoder CLI
             </TabsTrigger>
             <TabsTrigger
               className="max-w-full whitespace-normal"
               value="codebuddy-ide"
               disabled={Boolean(stats && !stats.sources.some((item) => item.source === "codebuddy-ide"))}
             >
-              CodeBuddy IDE
+              Qoder IDE
             </TabsTrigger>
           </TabsList>
         </Tabs>

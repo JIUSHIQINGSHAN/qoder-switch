@@ -10,9 +10,9 @@ interface MarkProps {
 }
 
 /**
- * WorkBuddy 官方应用图标（从 WorkBuddy.app 的 icon.icns 提取）。
- * 与 CodeBuddy IDE 图标同为标准 macOS app icon 风格（约 10% 透明边距），
- * 放大 118% 居中裁掉透明圈后与 CodeBuddy 系列图标视觉一致。
+ * Qoder 官方应用图标（从 Qoder.app 的 icon.icns 提取）。
+ * 与 Qoder IDE 图标同为标准 macOS app icon 风格（约 10% 透明边距），
+ * 放大 118% 居中裁掉透明圈后与 Qoder 系列图标视觉一致。
  */
 export function WorkBuddyMark({ size = 32, className }: MarkProps) {
   return (
@@ -32,9 +32,9 @@ export function WorkBuddyMark({ size = 32, className }: MarkProps) {
 
 /**
  * 档位角标：复用官方图标 + 角标区分档位，不新画图形，
- * 保持与既有 WorkBuddy / CodeBuddy 标记同一套圆角与配色。
+ * 保持与既有 Qoder / Qoder 标记同一套圆角与配色。
  * 角标文案为 `INTL`（4 字符，比圆形 badge 宽），故按内容撑成胶囊并收紧字号。
- * WorkBuddy 与 CodeBuddy IDE 的档位标记共用这一份实现。
+ * Qoder 与 Qoder IDE 的档位标记共用这一份实现。
  */
 function IntlBadge({ size }: { size: number }) {
   const badge = Math.max(11, Math.round(size * 0.46));
@@ -48,7 +48,7 @@ function IntlBadge({ size }: { size: number }) {
   );
 }
 
-/** WorkBuddy 国际版标记。 */
+/** Qoder 国际版标记。 */
 export function WorkBuddyAiMark({ size = 32, className }: MarkProps) {
   return (
     <span
@@ -103,9 +103,9 @@ export function CodeBuddyMark({ size = 32, className }: MarkProps) {
 }
 
 /**
- * CodeBuddy IDE（桌面客户端）官方应用图标。
+ * Qoder IDE（桌面客户端）官方应用图标。
  * 源图四周自带约 9% 透明边距：正方形图 + object-cover 不会触发任何缩放，
- * 必须先把图放大到 122% 再居中裁剪，才能把透明圈裁掉并与 WorkBuddy 的
+ * 必须先把图放大到 122% 再居中裁剪，才能把透明圈裁掉并与 Qoder 的
  * 全幅 logo 达到同样的视觉大小（裁剪仅落在透明边距上，几乎不伤画面）。
  */
 export function CodeBuddyCnIdeMark({ size = 32, className }: MarkProps) {
@@ -125,9 +125,9 @@ export function CodeBuddyCnIdeMark({ size = 32, className }: MarkProps) {
 }
 
 /**
- * CodeBuddy IDE 国际版标记：同一官方图标 + INTL 角标。
- * 依据 `variantUsesIntlCodebuddyIde()` —— 国际版档位下 IDE 切的是 CodeBuddy.app，
- * 与国内版的 CodeBuddy CN 是两个客户端，故用同一套角标区分。
+ * Qoder IDE 国际版标记：同一官方图标 + INTL 角标。
+ * 依据 `variantUsesIntlCodebuddyIde()` —— 国际版档位下 IDE 切的是 Qoder.app，
+ * 与国内版的 Qoder CN 是两个客户端，故用同一套角标区分。
  */
 export function CodeBuddyAiIdeMark({ size = 32, className }: MarkProps) {
   return (

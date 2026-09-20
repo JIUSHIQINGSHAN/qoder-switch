@@ -616,7 +616,7 @@ function TrendChart({
           <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
             <CardDescription className="min-w-0 text-xs">
               {officialAvailable
-                ? `来自 WorkBuddy 官方请求用量 · ${official?.rangeStart} 至 ${official?.rangeEnd}`
+                ? `来自 Qoder 官方请求用量 · ${official?.rangeStart} 至 ${official?.rangeEnd}`
                 : "只统计连续快照中余额下降的正差值；官方用量暂不可用时保留此口径。"}
             </CardDescription>
             <div className="flex max-w-full flex-wrap items-center gap-1.5">

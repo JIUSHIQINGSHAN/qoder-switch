@@ -1,4 +1,4 @@
-// WorkBuddy 档位（国内版 / 国际版）的前端单一事实来源：
+// Qoder 档位（国内版 / 国际版）的前端单一事实来源：
 // 展示名、缺省判定、以及「哪些入口属于哪个档位」的判定都收敛在这里，
 // 避免各页面各写一份字符串。
 
@@ -19,12 +19,12 @@ export function variantLabel(variant: WbVariant): string {
 
 /** 档位对应的客户端名称（对话框、状态卡、账号页 tooltip 用）。 */
 export function variantAppName(variant: WbVariant): string {
-  return variant === "ai" ? "WorkBuddy 国际版" : "WorkBuddy";
+  return variant === "ai" ? "Qoder 国际版" : "Qoder";
 }
 
-/** CodeBuddy IDE 的档位展示名（账号页档位标记 tooltip 用），与 WorkBuddy 命名保持一致。 */
+/** Qoder IDE 的档位展示名（账号页档位标记 tooltip 用），与 Qoder 命名保持一致。 */
 export function variantCodebuddyIdeName(variant: WbVariant): string {
-  return variant === "ai" ? "CodeBuddy IDE 国际版" : "CodeBuddy IDE";
+  return variant === "ai" ? "Qoder IDE 国际版" : "Qoder IDE";
 }
 
 /**
@@ -52,7 +52,7 @@ export function variantSupportsCheckin(variant: WbVariant): boolean {
   return variant !== "ai";
 }
 
-/** 国际版 Tab 切 CodeBuddy.app；国内版 Tab 仍切 CodeBuddy CN。 */
+/** 国际版 Tab 切 Qoder.app；国内版 Tab 仍切 Qoder CN。 */
 export function variantUsesIntlCodebuddyIde(variant: WbVariant): boolean {
   return variant === "ai";
 }

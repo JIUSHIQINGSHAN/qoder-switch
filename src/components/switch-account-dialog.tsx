@@ -709,7 +709,7 @@ function SessionPickRow({
   );
 }
 
-/** WorkBuddy 侧栏文件夹名：cwd 最后一段。 */
+/** Qoder 侧栏文件夹名：cwd 最后一段。 */
 function sessionFolderLabel(cwd: string): string {
   const normalized = cwd.trim().replace(/[\\/]+$/, "");
   if (!normalized) return "未分组";
@@ -738,7 +738,7 @@ function groupSessionsByFolder(sessions: Session[]): FolderGroup[] {
   }));
 }
 
-/** 对齐 WorkBuddy 侧栏：任务（playground）平铺，空间按文件夹分组。 */
+/** 对齐 Qoder 侧栏：任务（playground）平铺，空间按文件夹分组。 */
 function buildSessionTree(sessions: Session[]): KindGroup[] {
   const tasks = sessions.filter((s) => s.isPlayground);
   const spaces = sessions.filter((s) => !s.isPlayground);

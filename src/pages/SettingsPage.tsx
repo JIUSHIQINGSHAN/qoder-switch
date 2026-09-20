@@ -307,7 +307,7 @@ function AutoCheckinCard() {
   );
 }
 
-/** 自动轮换配置（CodeBuddy CLI）+ 手动检查 + 日志。 */
+/** 自动轮换配置（Qoder CLI）+ 手动检查 + 日志。 */
 function AutoRotateCard() {
   const [cfg, setCfg] = useState<AutoRotateConfig | null>(null);
   const [status, setStatus] = useState<RotateStatus | null>(null);
@@ -400,7 +400,7 @@ function AutoRotateCard() {
   return (
     <SettingsGroup
       id="settings-auto-rotate"
-      title="CodeBuddy CLI 自动轮换"
+      title="Qoder CLI 自动轮换"
     >
       <CardContent className="space-y-0 p-0">
         {status && (
@@ -412,7 +412,7 @@ function AutoRotateCard() {
             {status.lastCheckAt && <span>上次检查 {formatTime(status.lastCheckAt)}</span>}
             {status.lastSwitchAt && <span>上次切换 {formatTime(status.lastSwitchAt)}</span>}
             {!status.cliConfigured && (
-              <span className="text-destructive">未接入 CodeBuddy CLI（请先到账号页安装 helper）</span>
+              <span className="text-destructive">未接入 Qoder CLI（请先到账号页安装 helper）</span>
             )}
           </div>
         )}
@@ -421,7 +421,7 @@ function AutoRotateCard() {
           <>
             <SettingsFieldRow
               label="启用自动轮换"
-              description="开启后按下方间隔自动检查并切换 CodeBuddy CLI 账号"
+              description="开启后按下方间隔自动检查并切换 Qoder CLI 账号"
               htmlFor="ar-enabled"
               operational
             >
@@ -487,7 +487,7 @@ function AutoRotateCard() {
               />
             </SettingsFieldRow>
             <p className="border-b border-border/60 px-4 py-3 text-[13px] leading-5 text-muted-foreground sm:px-5">
-              切换时机：目标账号剩余到期时间少于「紧迫阈值」且比当前账号早超过「差异阈值」，且目标剩余积分不低于「最小剩余积分」。检测到有 CodeBuddy CLI 会话在运行时，本次轮换会跳过并在当日最多提示 5 次；重启 CLI 后新账号才会生效。
+              切换时机：目标账号剩余到期时间少于「紧迫阈值」且比当前账号早超过「差异阈值」，且目标剩余积分不低于「最小剩余积分」。检测到有 Qoder CLI 会话在运行时，本次轮换会跳过并在当日最多提示 5 次；重启 CLI 后新账号才会生效。
             </p>
 
             <div className="flex flex-wrap gap-2 border-b-0 border-border/60 px-4 py-3 sm:px-5">
@@ -558,7 +558,7 @@ function AutoRotateCard() {
   );
 }
 
-/** 权限检测卡片：确认本 App 是否有权写入 WorkBuddy 认证文件（探针与展示路径同档位）。 */
+/** 权限检测卡片：确认本 App 是否有权写入 Qoder 认证文件（探针与展示路径同档位）。 */
 function PermissionCheckCard() {
   const authFile = useAuthFile();
   const variant = useAccountsStore((s) => s.variant);
@@ -1054,7 +1054,7 @@ function AppearanceCard() {
   );
 }
 
-/** 限额监听：总开关 + hook 接入状态（CLI / WorkBuddy 实时上报，IDE 仍走日志扫描）。 */
+/** 限额监听：总开关 + hook 接入状态（CLI / Qoder 实时上报，IDE 仍走日志扫描）。 */
 function RateLimitCard() {
   const [config, setConfig] = useState<RateLimitConfig | null>(null);
   const [status, setStatus] = useState<RateLimitHookStatus | null>(null);
@@ -1096,8 +1096,8 @@ function RateLimitCard() {
   }
 
   /**
-   * 「扫描 CodeBuddy IDE 日志」独立开关：只关两个 IDE 的日志来源（IDE 的 429 不触发任何
-   * 事件，日志是它唯一的数据源），CLI / WorkBuddy 的 hook 通路不受影响。
+   * 「扫描 Qoder IDE 日志」独立开关：只关两个 IDE 的日志来源（IDE 的 429 不触发任何
+   * 事件，日志是它唯一的数据源），CLI / Qoder 的 hook 通路不受影响。
    */
   async function onToggleIdeLogs(scanIdeLogs: boolean) {
     if (!config || busy) return;
@@ -1112,7 +1112,7 @@ function RateLimitCard() {
         type: "ok",
         text: scanIdeLogs
           ? "已开启 IDE 日志扫描"
-          : "已关闭 IDE 日志扫描：两个 CodeBuddy IDE 的限额不再显示",
+          : "已关闭 IDE 日志扫描：两个 Qoder IDE 的限额不再显示",
       });
     } catch (e) {
       setConfig(previous);
@@ -1143,7 +1143,7 @@ function RateLimitCard() {
       setStatus(await api.installRateLimitHook());
       setMsg({
         type: "ok",
-        text: "已接入限额监听：CodeBuddy CLI / WorkBuddy 的 429 会实时上报（原配置已备份，可随时卸载还原）",
+        text: "已接入限额监听：Qoder CLI / Qoder 的 429 会实时上报（原配置已备份，可随时卸载还原）",
       });
     } catch (e) {
       setMsg({ type: "err", text: api.asError(e) });
@@ -1176,11 +1176,11 @@ function RateLimitCard() {
   // IDE 的限额只有日志一条来源：扫描开关关闭时文案不能再说「仍按日志扫描」。
   const ideNote =
     config?.scanIdeLogs === false
-      ? "CodeBuddy IDE 的日志扫描已关闭"
-      : "CodeBuddy IDE 无事件，仍按日志扫描";
+      ? "Qoder IDE 的日志扫描已关闭"
+      : "Qoder IDE 无事件，仍按日志扫描";
   const hookDescription = status
     ? existingTargets.length === 0
-      ? `未检测到 CodeBuddy CLI / WorkBuddy 客户端：没有可接入的配置（${ideNote}）`
+      ? `未检测到 Qoder CLI / Qoder 客户端：没有可接入的配置（${ideNote}）`
       : status.installed
         ? `${installedCount} / ${existingTargets.length} 个已安装客户端已接入：429 当轮实时上报（秒级）；${ideNote}`
         : config?.hookOptOut
@@ -1207,8 +1207,8 @@ function RateLimitCard() {
         </SettingsFieldRow>
 
         <SettingsFieldRow
-          label="扫描 CodeBuddy IDE 日志"
-          description="IDE 的限额只有日志一条来源，关掉后不再显示；CodeBuddy CLI / WorkBuddy 的实时上报不受影响"
+          label="扫描 Qoder IDE 日志"
+          description="IDE 的限额只有日志一条来源，关掉后不再显示；Qoder CLI / Qoder 的实时上报不受影响"
           htmlFor="rl-ide-scan"
           operational
         >
@@ -1217,7 +1217,7 @@ function RateLimitCard() {
             checked={config?.scanIdeLogs ?? true}
             disabled={busy || !config}
             onCheckedChange={(v) => void onToggleIdeLogs(v)}
-            aria-label="扫描 CodeBuddy IDE 日志"
+            aria-label="扫描 Qoder IDE 日志"
           />
         </SettingsFieldRow>
 

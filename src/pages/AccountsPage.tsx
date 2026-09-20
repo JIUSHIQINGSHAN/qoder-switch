@@ -65,7 +65,7 @@ import { useAccountsStore } from "@/stores/accounts";
  * 账号页两个轮询的间隔（都经 `useVisibleInterval` 门控，仅主窗口可见时执行）。
  *
  * - 旅行：后台派发/领取循环最快 15 分钟变一次状态，1 分钟用于及时反映"到期领取"后的显示；
- * - 限额：CLI / WorkBuddy 由后端 hook 信号实时入账并推送（`rate-limits-updated`），
+ * - 限额：CLI / Qoder 由后端 hook 信号实时入账并推送（`rate-limits-updated`），
  *   这里只兜底 IDE 日志扫描；后端按同一间隔节流扫描，前端再按 payload 的 `scannedAt`
  *   判断「距上次扫描 ≥ 5 分钟」才发起，避免可见性切换/页面重挂载把扫描打散。
  */
@@ -198,7 +198,7 @@ export default function AccountsPage() {
   const [checkinAllRunning, setCheckinAllRunning] = useState(false);
   /** 接入/升级 CLI helper 确认框 */
   const [installConfirmOpen, setInstallConfirmOpen] = useState(false);
-  /** 切换 CodeBuddy CLI 确认目标（null=关闭） */
+  /** 切换 Qoder CLI 确认目标（null=关闭） */
   const [cliSwitchTarget, setCliSwitchTarget] = useState<AccountMeta | null>(null);
   /** 删除账号确认目标（null=关闭） */
   const [deleteTarget, setDeleteTarget] = useState<AccountMeta | null>(null);
@@ -285,7 +285,7 @@ export default function AccountsPage() {
     void importLocal()
       .then(() => void fetchAll())
       .catch(() => {
-        /* 本机无 WorkBuddy 登录态时静默，不打扰用户 */
+        /* 本机无 Qoder 登录态时静默，不打扰用户 */
       });
   }, [variant, visibleAccounts.length, loading, importLocal, fetchAll]);
 
@@ -315,7 +315,7 @@ export default function AccountsPage() {
     void (async () => {
       if (!api.isDemoMode()) {
         try {
-          // 国际版探测 CodeBuddy.app 钥匙串；国内版探测 CodeBuddy CN。不要交叉读。
+          // 国际版探测 Qoder.app 钥匙串；国内版探测 Qoder CN。不要交叉读。
           if (variantUsesIntlCodebuddyIde(variant)) {
             await api.detectCodebuddyIdeAccount();
           } else {
@@ -413,7 +413,7 @@ export default function AccountsPage() {
     rateLimitEnabled === true,
   );
 
-  // 后端入账 hook 事件（CLI / WorkBuddy 的 429 当轮）后推送 → 立即拉取，秒级更新。
+  // 后端入账 hook 事件（CLI / Qoder 的 429 当轮）后推送 → 立即拉取，秒级更新。
   // 这一路不看节流：新状态已经在后端，前端只做拉取。
   useEffect(() => {
     if (api.isWebui()) return;
@@ -641,19 +641,19 @@ export default function AccountsPage() {
     if (!account || codebuddyCliSwitchingId !== null) return;
     setCliSwitchTarget(null);
     setCodebuddyCliSwitchingId(account.id);
-    const toastId = toast.loading("正在切换 CodeBuddy CLI…", {
+    const toastId = toast.loading("正在切换 Qoder CLI…", {
       description: `正在将默认账号设为 ${account.nickname || account.email || account.id}`,
     });
     try {
       // 后端一律先关闭正在运行的 CLI 再写状态（`closeRunningCli` 入参已废弃）。
       const result = await api.switchCodebuddyCliAccount(account.id);
       await refreshCodebuddyCliStatus();
-      toast.success("CodeBuddy CLI 默认账号已更新", {
+      toast.success("Qoder CLI 默认账号已更新", {
         id: toastId,
         description: `${account.nickname || account.email || account.id}：${result.message || "配置已更新"}`,
       });
     } catch (error) {
-      toast.error("CodeBuddy CLI 切换失败", {
+      toast.error("Qoder CLI 切换失败", {
         id: toastId,
         description: api.asError(error),
       });
@@ -665,20 +665,20 @@ export default function AccountsPage() {
   async function onSwitchCodebuddyCnIde(account: AccountMeta) {
     if (codebuddyCnIdeSwitchingId !== null) return;
     setCodebuddyCnIdeSwitchingId(account.id);
-    const toastId = toast.loading("正在切换 CodeBuddy IDE…", {
-      description: "将注入凭证并重启 CodeBuddy IDE",
+    const toastId = toast.loading("正在切换 Qoder IDE…", {
+      description: "将注入凭证并重启 Qoder IDE",
     });
     try {
       const result = variantUsesIntlCodebuddyIde(variant)
         ? await api.switchCodebuddyIdeAccount(account.id, true)
         : await api.switchCodebuddyCnIdeAccount(account.id, true);
       await refreshCodebuddyCnIdeStatus();
-      toast.success("CodeBuddy IDE 已切换", {
+      toast.success("Qoder IDE 已切换", {
         id: toastId,
         description: result.message || result.account,
       });
     } catch (error) {
-      toast.error("CodeBuddy IDE 切换失败", {
+      toast.error("Qoder IDE 切换失败", {
         id: toastId,
         description: api.asError(error),
       });
@@ -697,10 +697,10 @@ export default function AccountsPage() {
     setInstallingCodebuddyCli(true);
     try {
       const result = await api.installCodebuddyCliHelper();
-      toast.success("CodeBuddy CLI 接入已更新", { description: result.message });
+      toast.success("Qoder CLI 接入已更新", { description: result.message });
       await refreshCodebuddyCliStatus();
     } catch (error) {
-      toast.error("CodeBuddy CLI 接入失败", { description: api.asError(error) });
+      toast.error("Qoder CLI 接入失败", { description: api.asError(error) });
     } finally {
       setInstallingCodebuddyCli(false);
     }
@@ -813,7 +813,7 @@ export default function AccountsPage() {
                   <CodeBuddyMark size={28} />
                 </span>
                 <span className="pointer-events-none absolute right-0 top-full z-50 mt-2 hidden whitespace-nowrap rounded-md bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-lg ring-1 ring-black/5 group-hover:block">
-                  CodeBuddy CLI：{codebuddyCli?.migrationRequired ? "需升级" : codebuddyCli?.configured ? "已接入" : "未接入"} · 当前账号：{codebuddyCurrentName}
+                  Qoder CLI：{codebuddyCli?.migrationRequired ? "需升级" : codebuddyCli?.configured ? "已接入" : "未接入"} · 当前账号：{codebuddyCurrentName}
                 </span>
               </span>
             </div>
@@ -880,22 +880,22 @@ export default function AccountsPage() {
           codebuddyCli.syncPending) && (
         <Alert className="mb-4">
           <Terminal />
-          <AlertTitle>CodeBuddy CLI 接入</AlertTitle>
+          <AlertTitle>Qoder CLI 接入</AlertTitle>
           <AlertDescription>
             <p>
               {codebuddyUsesSettingsEnv
                 ? codebuddyCli.environmentOverride
-                  ? "检测到进程环境变量 CODEBUDDY_AUTH_TOKEN。它会覆盖 settings.json；请先从 Windows 用户或系统环境变量中删除它，再重启本应用与 CodeBuddy CLI。"
+                  ? "检测到进程环境变量 CODEBUDDY_AUTH_TOKEN。它会覆盖 settings.json；请先从 Windows 用户或系统环境变量中删除它，再重启本应用与 Qoder CLI。"
                   : codebuddyCli.syncPending
                     ? "Windows CLI 认证配置与当前账号 Token 已脱节。点击更新认证后写入最新 Token；当前运行会话不会切换，请由 ACP 重新加载会话或重启 CLI 后生效。"
                     : codebuddyCli.migrationRequired
                       ? "检测到旧版 Windows helper 配置。接入后会改用 settings.json 的 env.CODEBUDDY_AUTH_TOKEN，不再执行 helper。"
-                      : "Windows 使用 CodeBuddy settings.json 中的认证 Token。保活刷新只更新后续启动使用的 Token；切换账号会先关闭正在运行的 CodeBuddy CLI，重新打开 CLI 后即用新账号。"
+                      : "Windows 使用 Qoder settings.json 中的认证 Token。保活刷新只更新后续启动使用的 Token；切换账号会先关闭正在运行的 Qoder CLI，重新打开 CLI 后即用新账号。"
                 : codebuddyCli.migrationRequired
                   ? "检测到旧版 helper，请先升级；升级前不会将 CLI 切换显示为已验证。"
                   : codebuddyCli.configured
                     ? "当前 helper 仍按旧索引读取账号；升级后将按账号 ID 独立切换，账号增删也不会错位。"
-                    : "WorkBuddy 账号与积分功能可正常使用；如需从这里切换 CodeBuddy CLI 账号，点击下方按钮一键接入。"}
+                    : "Qoder 账号与积分功能可正常使用；如需从这里切换 Qoder CLI 账号，点击下方按钮一键接入。"}
             </p>
             <DemoAction>
               <Button
@@ -1115,10 +1115,10 @@ export default function AccountsPage() {
           <DialogHeader>
             <DialogTitle>
               {codebuddyUsesSettingsEnv
-                ? "更新 CodeBuddy CLI 认证"
+                ? "更新 Qoder CLI 认证"
                 : codebuddyCli?.configured || codebuddyCli?.migrationRequired
-                  ? "升级 CodeBuddy CLI helper"
-                  : "接入 CodeBuddy CLI"}
+                  ? "升级 Qoder CLI helper"
+                  : "接入 Qoder CLI"}
             </DialogTitle>
             <DialogDescription>
               {codebuddyUsesSettingsEnv ? (
@@ -1148,14 +1148,14 @@ export default function AccountsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* 切换 CodeBuddy CLI 确认（桌面 App 不支持 window.confirm） */}
+      {/* 切换 Qoder CLI 确认（桌面 App 不支持 window.confirm） */}
       <Dialog open={cliSwitchTarget !== null} onOpenChange={(open) => !open && setCliSwitchTarget(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>切换 CodeBuddy CLI</DialogTitle>
+            <DialogTitle>切换 Qoder CLI</DialogTitle>
             <DialogDescription>
-              将把 CodeBuddy CLI 默认账号设为「{cliSwitchAccountLabel}」。
-              确认后会关闭正在运行的 CodeBuddy CLI 会话，当前会话会中断；重新打开 CLI 后新账号才会生效。
+              将把 Qoder CLI 默认账号设为「{cliSwitchAccountLabel}」。
+              确认后会关闭正在运行的 Qoder CLI 会话，当前会话会中断；重新打开 CLI 后新账号才会生效。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

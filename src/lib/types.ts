@@ -1,7 +1,7 @@
 // 与 Rust 后端命令返回结构对齐的类型定义（对照 server.py 各 API 响应）
 
 /**
- * WorkBuddy 客户端档位：国内版（cn）/ 国际版（ai）。
+ * Qoder 客户端档位：国内版（cn）/ 国际版（ai）。
  * 后端以字符串返回，历史数据与旧响应可能缺省该字段，读取时统一按国内版处理。
  */
 export type WbVariant = "cn" | "ai";
@@ -89,7 +89,7 @@ export interface Session {
   cwd: string;
   updatedAt: number;
   hasHistory: boolean;
-  /** WorkBuddy playground（侧栏「任务」）；缺省视为空间会话。 */
+  /** Qoder playground（侧栏「任务」）；缺省视为空间会话。 */
   isPlayground?: boolean;
 }
 
@@ -376,9 +376,9 @@ export interface RateLimitConfig {
   /** 用户点过「卸载 hook」→ 启动时不再自动接入；重新点「接入 hook」清除。 */
   hookOptOut: boolean;
   /**
-   * 是否扫描两个 CodeBuddy IDE 的日志（默认 true）。
+   * 是否扫描两个 Qoder IDE 的日志（默认 true）。
    * IDE 的 429 不触发任何 hook 事件，日志是它唯一的数据源；关闭只影响 IDE 两源，
-   * CLI / WorkBuddy 的 hook 实时上报与未接 hook 时的日志兜底不变。
+   * CLI / Qoder 的 hook 实时上报与未接 hook 时的日志兜底不变。
    */
   scanIdeLogs: boolean;
 }
@@ -584,7 +584,7 @@ export interface TokenStatsGroup extends TokenStatsTotals { key: string; title?:
 /** 一次模型调用的明细行；`total = input + output + cacheWrite`，`uncachedInput = max(0, input - cacheRead)`，`thinking` 是 `output` 中思考过程的 token 数（回复内容 = max(0, output - thinking)），均与聚合口径一致。 */
 export interface TokenStatsRequestRow { timestamp: number; model: string; project: string; sessionId: string; title?: string | null; input: number; output: number; cacheRead: number; cacheWrite: number; uncachedInput: number; thinking: number; total: number; }
 /** `workbuddy-ai` 为国际版本地数据源，与国内版分开统计，数据源缺失时为空集。 */
-export interface TokenStatsSource { source: "workbuddy" | "workbuddy-ai" | "codebuddy-cli" | "codebuddy-ide"; summary: TokenStatsTotals; models: TokenStatsGroup[]; projects: TokenStatsGroup[]; sessions: TokenStatsGroup[]; daily: TokenStatsGroup[]; /** Optional model-specific daily series for trend filtering. */ dailyByModel?: Record<string, TokenStatsGroup[]>; /** 仅 CodeBuddy CLI 来源返回的最近请求明细；旧后端或缺失时按空数组处理。 */ requests?: TokenStatsRequestRow[]; hours: TokenStatsGroup[]; filesScanned: number; parseErrors: number; coverageStartAt?: number | null; coverageEndAt?: number | null; }
+export interface TokenStatsSource { source: "workbuddy" | "workbuddy-ai" | "codebuddy-cli" | "codebuddy-ide"; summary: TokenStatsTotals; models: TokenStatsGroup[]; projects: TokenStatsGroup[]; sessions: TokenStatsGroup[]; daily: TokenStatsGroup[]; /** Optional model-specific daily series for trend filtering. */ dailyByModel?: Record<string, TokenStatsGroup[]>; /** 仅 Qoder CLI 来源返回的最近请求明细；旧后端或缺失时按空数组处理。 */ requests?: TokenStatsRequestRow[]; hours: TokenStatsGroup[]; filesScanned: number; parseErrors: number; coverageStartAt?: number | null; coverageEndAt?: number | null; }
 export interface TokenStatistics { generatedAt: number; rangeDays?: number | null; sources: TokenStatsSource[]; }
 
 export interface CodeBuddyCliStatus {
@@ -653,7 +653,7 @@ export interface UpdateInfo {
   message?: string;
 }
 
-/** CodeBuddy CN IDE（桌面客户端）状态；与 CodeBuddy CLI 独立。 */
+/** Qoder CN IDE（桌面客户端）状态；与 Qoder CLI 独立。 */
 export interface CodeBuddyCnIdeStatus {
   installed: boolean;
   running: boolean;

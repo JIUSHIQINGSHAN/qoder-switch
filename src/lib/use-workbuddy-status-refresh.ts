@@ -7,7 +7,7 @@ import { useAccountsStore } from "@/stores/accounts";
 
 export const WORKBUDDY_STATUS_REFRESH_INTERVAL_MS = 60 * 1000;
 
-/** Refresh WorkBuddy status only while the main window is visible and focused. */
+/** Refresh Qoder status only while the main window is visible and focused. */
 export function useWorkbuddyStatusRefresh() {
   const activeRef = useRef(false);
   const timerRef = useRef<number | undefined>(undefined);

@@ -9,11 +9,11 @@ import type { CreditResource } from "./types";
 
 /** 商品码 → 官方中文名；键为官方下发的完整商品码。 */
 const CREDIT_PACKAGE_NAMES: Record<string, string> = {
-  TCACA_code_001_PqouKr6QWV: "CodeBuddy 个人体验版",
+  TCACA_code_001_PqouKr6QWV: "Qoder 个人体验版",
   TCACA_code_002_AkiJS3ZHF5: "版本基础用量",
-  TCACA_code_003_FAnt7lcmRT: "CodeBuddy 个人标准版",
+  TCACA_code_003_FAnt7lcmRT: "Qoder 个人标准版",
   TCACA_code_005_maRGyrHhw1: "版本基础用量",
-  TCACA_code_006_DbXS0lrypC: "CodeBuddy 个人体验版",
+  TCACA_code_006_DbXS0lrypC: "Qoder 个人体验版",
   TCACA_code_007_nzdH5h4Nl0: "平台奖励积分",
   TCACA_code_008_cfWoLwvjU4: "版本基础用量",
   TCACA_code_009_0XmEQc2xOf: "购买积分",

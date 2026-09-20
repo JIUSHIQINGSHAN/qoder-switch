@@ -42,7 +42,7 @@ import { screenshotDemoResponse } from "./screenshot-demo";
 /**
  * 双通道适配层：
  * - 桌面 App（Tauri）：`invoke` 调用 Rust commands
- * - webui（浏览器）：HTTP fetch 调用本地 workbuddy-switch 服务（127.0.0.1）
+ * - webui（浏览器）：HTTP fetch 调用本地 qs-switch-server 服务（127.0.0.1）
  */
 // 本项目的 HTTP 宿主（qs-switch-server）默认 57891；刻意与参考实现的 57890 错开，
 // 因为本机可能同时装着 workbuddy-switch 的 webui。
@@ -196,9 +196,9 @@ const QODER_UNAVAILABLE: Record<string, string> = {
   get_checkin_logs: "Qoder 无签到接口",
   get_auto_checkin_config: "Qoder 无签到接口",
   save_auto_checkin_config: "Qoder 无签到接口",
-  get_travel_status: "Buddy 旅行是 WorkBuddy 专有玩法",
-  get_auto_travel_config: "Buddy 旅行是 WorkBuddy 专有玩法",
-  save_auto_travel_config: "Buddy 旅行是 WorkBuddy 专有玩法",
+  get_travel_status: "Buddy 旅行是 Qoder 专有玩法",
+  get_auto_travel_config: "Buddy 旅行是 Qoder 专有玩法",
+  save_auto_travel_config: "Buddy 旅行是 Qoder 专有玩法",
   get_credit_expiry: "额度接口未取证",
   get_credit_statistics: "额度接口未取证",
   get_token_statistics: "Token 用量统计未实现",
@@ -268,7 +268,7 @@ export function installCodebuddyCliHelper(): Promise<CodeBuddyCliInstallResult> 
 }
 
 /**
- * 切换 CodeBuddy CLI 默认账号。
+ * 切换 Qoder CLI 默认账号。
  *
  * @param closeRunningCli 已废弃：后端一律先关闭正在运行的 CLI 再写状态，该入参被忽略。
  *   仅为兼容既有调用方保留（HTTP 路径仍会原样发送）。

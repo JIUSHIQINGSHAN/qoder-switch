@@ -265,12 +265,12 @@ interface Props {
   workbuddyActive?: boolean;
   codebuddyCliConfigured?: boolean;
   codebuddyCliActive?: boolean;
-  /** 任一 CodeBuddy CLI 账号切换正在进行，用于阻止并发切换。 */
+  /** 任一 Qoder CLI 账号切换正在进行，用于阻止并发切换。 */
   codebuddyCliBusy?: boolean;
   onSwitchCodebuddyCli?: (a: AccountMeta) => void;
   /** 当前卡片是否为正在切换的目标账号。 */
   codebuddyCliLoading?: boolean;
-  /** CodeBuddy CN IDE 是否已安装（可切换）。 */
+  /** Qoder CN IDE 是否已安装（可切换）。 */
   codebuddyCnIdeAvailable?: boolean;
   codebuddyCnIdeActive?: boolean;
   codebuddyCnIdeBusy?: boolean;
@@ -284,10 +284,10 @@ interface Props {
 function ProductCurrentState({ product, compact = false }: { product: "workbuddy" | "codebuddy" | "codebuddy-cn"; compact?: boolean }) {
   const title =
     product === "workbuddy"
-      ? "WorkBuddy 当前账号"
+      ? "Qoder 当前账号"
       : product === "codebuddy-cn"
-        ? "CodeBuddy IDE 当前账号"
-        : "CodeBuddy CLI 当前账号";
+        ? "Qoder IDE 当前账号"
+        : "Qoder CLI 当前账号";
   return (
     <span
       role="status"
@@ -423,10 +423,10 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
         className={cn(
           "relative flex items-center border-b border-border",
           compact ? "min-h-[52px] px-3.5 py-1.5" : "min-h-[104px] px-5 py-3",
-          /* 选中态染色，优先级：WorkBuddy（品牌绿）> CodeBuddy IDE（淡紫）> CodeBuddy CLI（中性灰）> 默认。
+          /* 选中态染色，优先级：Qoder（品牌绿）> Qoder IDE（淡紫）> Qoder CLI（中性灰）> 默认。
              多个产品同时选中时取优先级最高者；具体哪几个产品在使用由 header 的标记+勾选角标表达。
-             CodeBuddy IDE 的紫是产品专属色：主题里没有对应语义 token，故用 Tailwind 的 violet-500
-             （本文件 AVATAR_TONES 已在用同一调色板），透明度与 WorkBuddy 的 /5、/15 保持同一强度。 */
+             Qoder IDE 的紫是产品专属色：主题里没有对应语义 token，故用 Tailwind 的 violet-500
+             （本文件 AVATAR_TONES 已在用同一调色板），透明度与 Qoder 的 /5、/15 保持同一强度。 */
           workbuddyActive ? "bg-primary/5" : codebuddyCnIdeActive ? "bg-violet-500/5" : codebuddyCliActive ? "bg-muted/60" : "bg-muted/30",
         )}
       >
@@ -449,8 +449,8 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
             </div>
           )}
           {codebuddyCnIdeActive && (
-            /* 复用 WorkBuddy 的 SVG：两个产品的标记同形；CodeBuddyCnIdeMark 是位图 app 图标，
-               放大到水印尺寸会是一块模糊方块。位置与旋转与 WorkBuddy 水印相同 —— 两者同时选中时
+            /* 复用 Qoder 的 SVG：两个产品的标记同形；CodeBuddyCnIdeMark 是位图 app 图标，
+               放大到水印尺寸会是一块模糊方块。位置与旋转与 Qoder 水印相同 —— 两者同时选中时
                完全重合，因此无需再引入第三套偏移规则。 */
             <div className={cn("absolute top-[64%] -translate-y-1/2 opacity-[0.075] saturate-50 grayscale-[10%]", codebuddyCliActive ? "right-[68px] rotate-[8deg]" : "right-5 rotate-[7deg]")}>
               <WorkBuddyMark size={compact ? 40 : 56} />
@@ -505,22 +505,22 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
                       </span>
                     </span>
                   </TooltipTrigger>
-                  <TooltipContent side="top">WorkBuddy 当前账号</TooltipContent>
+                  <TooltipContent side="top">Qoder 当前账号</TooltipContent>
                 </Tooltip>
               ) : demoModeEnabled ? (
                 <DemoAction>
-                  <Button variant="outline" size="icon" className="size-7 rounded-lg" aria-label="设为 WorkBuddy 当前账号">
+                  <Button variant="outline" size="icon" className="size-7 rounded-lg" aria-label="设为 Qoder 当前账号">
                     <WorkBuddyMark size={15} />
                   </Button>
                 </DemoAction>
               ) : (
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Button variant="outline" size="icon" className="size-7 rounded-lg" disabled={featuresDisabled || !onSwitch} onClick={() => onSwitch?.(account)} aria-label="设为 WorkBuddy 当前账号">
+                    <Button variant="outline" size="icon" className="size-7 rounded-lg" disabled={featuresDisabled || !onSwitch} onClick={() => onSwitch?.(account)} aria-label="设为 Qoder 当前账号">
                       <WorkBuddyMark size={15} />
                     </Button>
                   </TooltipTrigger>
-                  <TooltipContent side="top">设为 WorkBuddy 当前账号（会重启 WorkBuddy）</TooltipContent>
+                  <TooltipContent side="top">设为 Qoder 当前账号（会重启 Qoder）</TooltipContent>
                 </Tooltip>
               )}
               {codebuddyCnIdeActive ? (
@@ -533,16 +533,16 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
                       </span>
                     </span>
                   </TooltipTrigger>
-                  <TooltipContent side="top">CodeBuddy IDE 当前账号</TooltipContent>
+                  <TooltipContent side="top">Qoder IDE 当前账号</TooltipContent>
                 </Tooltip>
               ) : (
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Button variant="outline" size="icon" className="relative size-7 rounded-lg" disabled={featuresDisabled || !codebuddyCnIdeAvailable || !onSwitchCodebuddyCnIde || codebuddyCnIdeBusy} onClick={() => onSwitchCodebuddyCnIde?.(account)} aria-label={codebuddyCnIdeLoading ? "正在切换 CodeBuddy IDE" : "切换到 CodeBuddy IDE"} aria-busy={codebuddyCnIdeLoading}>
+                    <Button variant="outline" size="icon" className="relative size-7 rounded-lg" disabled={featuresDisabled || !codebuddyCnIdeAvailable || !onSwitchCodebuddyCnIde || codebuddyCnIdeBusy} onClick={() => onSwitchCodebuddyCnIde?.(account)} aria-label={codebuddyCnIdeLoading ? "正在切换 Qoder IDE" : "切换到 Qoder IDE"} aria-busy={codebuddyCnIdeLoading}>
                       {codebuddyCnIdeLoading ? <Loader2 className="size-3.5 animate-spin" /> : <CodeBuddyCnIdeMark size={15} />}
                     </Button>
                   </TooltipTrigger>
-                  <TooltipContent side="top">{codebuddyCnIdeAvailable ? "切换到 CodeBuddy IDE（会重启 IDE）" : "未检测到 CodeBuddy IDE"}</TooltipContent>
+                  <TooltipContent side="top">{codebuddyCnIdeAvailable ? "切换到 Qoder IDE（会重启 IDE）" : "未检测到 Qoder IDE"}</TooltipContent>
                 </Tooltip>
               )}
               {codebuddyCliActive ? (
@@ -555,16 +555,16 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
                       </span>
                     </span>
                   </TooltipTrigger>
-                  <TooltipContent side="top">CodeBuddy CLI 当前账号</TooltipContent>
+                  <TooltipContent side="top">Qoder CLI 当前账号</TooltipContent>
                 </Tooltip>
               ) : (
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Button variant="outline" size="icon" className="size-7 rounded-lg" disabled={featuresDisabled || !codebuddyCliConfigured || !onSwitchCodebuddyCli || codebuddyCliBusy} onClick={() => onSwitchCodebuddyCli?.(account)} aria-label={codebuddyCliLoading ? "正在切换 CodeBuddy CLI 当前账号" : "设为 CodeBuddy CLI 当前账号"} aria-busy={codebuddyCliLoading}>
+                    <Button variant="outline" size="icon" className="size-7 rounded-lg" disabled={featuresDisabled || !codebuddyCliConfigured || !onSwitchCodebuddyCli || codebuddyCliBusy} onClick={() => onSwitchCodebuddyCli?.(account)} aria-label={codebuddyCliLoading ? "正在切换 Qoder CLI 当前账号" : "设为 Qoder CLI 当前账号"} aria-busy={codebuddyCliLoading}>
                       {codebuddyCliLoading ? <Loader2 className="size-3.5 animate-spin" /> : <CodeBuddyMark size={15} />}
                     </Button>
                   </TooltipTrigger>
-                  <TooltipContent side="top">{codebuddyCliConfigured ? "设为 CodeBuddy CLI 当前账号" : "请先接入 CodeBuddy CLI"}</TooltipContent>
+                  <TooltipContent side="top">{codebuddyCliConfigured ? "设为 Qoder CLI 当前账号" : "请先接入 Qoder CLI"}</TooltipContent>
                 </Tooltip>
               )}
             </div>
@@ -647,38 +647,38 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
         <footer className="flex flex-wrap items-center gap-2.5 border-t px-5 py-2.5">
           {workbuddyActive ? <ProductCurrentState product="workbuddy" compact /> : demoModeEnabled ? (
             <DemoAction>
-              <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" aria-label="设为 WorkBuddy 当前账号">
+              <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" aria-label="设为 Qoder 当前账号">
                 <WorkBuddyMark size={18} /><span>设为当前</span>
               </Button>
             </DemoAction>
           ) : (
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" disabled={featuresDisabled || !onSwitch} onClick={() => onSwitch?.(account)} aria-label="设为 WorkBuddy 当前账号">
+                <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" disabled={featuresDisabled || !onSwitch} onClick={() => onSwitch?.(account)} aria-label="设为 Qoder 当前账号">
                   <WorkBuddyMark size={18} /><span>设为当前</span>
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="top">设为 WorkBuddy 当前账号（会重启 WorkBuddy）</TooltipContent>
+              <TooltipContent side="top">设为 Qoder 当前账号（会重启 Qoder）</TooltipContent>
             </Tooltip>
           )}
           {codebuddyCnIdeActive ? <ProductCurrentState product="codebuddy-cn" compact /> : (
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" disabled={featuresDisabled || !codebuddyCnIdeAvailable || !onSwitchCodebuddyCnIde || codebuddyCnIdeBusy} onClick={() => onSwitchCodebuddyCnIde?.(account)} aria-label={codebuddyCnIdeLoading ? "正在切换 CodeBuddy IDE" : "切换到 CodeBuddy IDE"} aria-busy={codebuddyCnIdeLoading}>
+                <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" disabled={featuresDisabled || !codebuddyCnIdeAvailable || !onSwitchCodebuddyCnIde || codebuddyCnIdeBusy} onClick={() => onSwitchCodebuddyCnIde?.(account)} aria-label={codebuddyCnIdeLoading ? "正在切换 Qoder IDE" : "切换到 Qoder IDE"} aria-busy={codebuddyCnIdeLoading}>
                   {codebuddyCnIdeLoading ? <Loader2 className="size-4 animate-spin" /> : <CodeBuddyCnIdeMark size={18} />}<span>{codebuddyCnIdeLoading ? "切换中…" : "IDE"}</span>
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="top">{codebuddyCnIdeAvailable ? "切换到 CodeBuddy IDE（会重启 IDE）" : "未检测到 CodeBuddy IDE"}</TooltipContent>
+              <TooltipContent side="top">{codebuddyCnIdeAvailable ? "切换到 Qoder IDE（会重启 IDE）" : "未检测到 Qoder IDE"}</TooltipContent>
             </Tooltip>
           )}
           {codebuddyCliActive ? <ProductCurrentState product="codebuddy" compact /> : (
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" disabled={featuresDisabled || !codebuddyCliConfigured || !onSwitchCodebuddyCli || codebuddyCliBusy} onClick={() => onSwitchCodebuddyCli?.(account)} aria-label={codebuddyCliLoading ? "正在切换 CodeBuddy CLI 当前账号" : "设为 CodeBuddy CLI 当前账号"} aria-busy={codebuddyCliLoading}>
+                <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" disabled={featuresDisabled || !codebuddyCliConfigured || !onSwitchCodebuddyCli || codebuddyCliBusy} onClick={() => onSwitchCodebuddyCli?.(account)} aria-label={codebuddyCliLoading ? "正在切换 Qoder CLI 当前账号" : "设为 Qoder CLI 当前账号"} aria-busy={codebuddyCliLoading}>
                   {codebuddyCliLoading ? <Loader2 className="size-4 animate-spin" /> : <CodeBuddyMark size={18} />}<span>{codebuddyCliLoading ? "切换中…" : "CLI 当前"}</span>
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="top">{codebuddyCliConfigured ? "设为 CodeBuddy CLI 当前账号" : "请先接入 CodeBuddy CLI"}</TooltipContent>
+              <TooltipContent side="top">{codebuddyCliConfigured ? "设为 Qoder CLI 当前账号" : "请先接入 Qoder CLI"}</TooltipContent>
             </Tooltip>
           )}
         </footer>

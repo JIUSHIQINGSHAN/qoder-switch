@@ -70,20 +70,20 @@ const usageSeeds: AccountUsageSeed[] = [
 const creditPackages = [
   // 账号 A：1 条 → 1 行，无「查看全部积分包」
   [
-    ["CodeBuddy 新用户体验包", 800, 386.4, 5],
+    ["Qoder 新用户体验包", 800, 386.4, 5],
   ],
   // 账号 B：2 条 → 2 行，无「查看全部积分包」（链接在 resources.length > 2 时才出现）
   [
-    ["CodeBuddy 个人版积分包", 1800, 905.5, 42],
-    ["CodeBuddy 签到赠送积分", 240, 174.35, 15],
+    ["Qoder 个人版积分包", 1800, 905.5, 42],
+    ["Qoder 签到赠送积分", 240, 174.35, 15],
   ],
   // 账号 C：5 条 → 2 行 + 「查看全部积分包」
   [
-    ["CodeBuddy 个人版国内运营裂变包", 2400, 1680.4, 29],
-    ["CodeBuddy 个人版积分包", 1200, 748.6, 55],
-    ["CodeBuddy 新用户体验包", 360, 214.5, 14],
-    ["CodeBuddy 签到赠送积分", 180, 96.75, 21],
-    ["CodeBuddy 活动奖励积分", 300, 207.9, 38],
+    ["Qoder 个人版国内运营裂变包", 2400, 1680.4, 29],
+    ["Qoder 个人版积分包", 1200, 748.6, 55],
+    ["Qoder 新用户体验包", 360, 214.5, 14],
+    ["Qoder 签到赠送积分", 180, 96.75, 21],
+    ["Qoder 活动奖励积分", 300, 207.9, 38],
   ],
 ] as const;
 
@@ -493,7 +493,7 @@ function demoTokenSource(source: TokenStatsSource["source"], scale: number): Tok
     parseErrors: 0,
     coverageStartAt: now - 13 * 86_400_000,
     coverageEndAt: now,
-    // 只有 CodeBuddy CLI 来源返回请求明细，与真实后端行为一致。
+    // 只有 Qoder CLI 来源返回请求明细，与真实后端行为一致。
     ...(source === "codebuddy-cli" ? { requests: demoTokenRequests(scale) } : {}),
   };
 }
@@ -520,7 +520,7 @@ function demoTokenStatistics(days?: number): TokenStatistics {
 /** Read-only demo response provider. It never reads or mutates real user data. */
 export function screenshotDemoResponse(command: string, args?: Record<string, unknown>): unknown {
   const demoAccounts = hydratedAccounts();
-  const appStatus: AppStatus = { running: true, authFile: "/demo/workbuddy/auth.json", current: { uid: demoAccounts[0].uid, nickname: demoAccounts[0].nickname, email: demoAccounts[0].email }, appPath: "/demo/WorkBuddy.app", version: "0.1.24" };
+  const appStatus: AppStatus = { running: true, authFile: "/demo/workbuddy/auth.json", current: { uid: demoAccounts[0].uid, nickname: demoAccounts[0].nickname, email: demoAccounts[0].email }, appPath: "/demo/Qoder.app", version: "0.1.24" };
   const activeIndex = Math.max(0, demoAccounts.findIndex((account) => account.id === demoActiveCliAccountId));
   const activeAccount = demoAccounts[activeIndex] ?? demoAccounts[0];
   const cliStatus: CodeBuddyCliStatus = { configured: true, settingsPresent: true, helperPresent: true, helperSupportsAccountIds: true, activeIndex, activeAccountId: activeAccount.id, activeAccountName: activeAccount.nickname, activeAccountVariant: accountVariant(activeAccount), accountCount: demoAccounts.length, statePath: "/demo/codebuddy-cli-state.json" };
@@ -537,14 +537,14 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
             running: false,
             current: null,
             authFile: "/demo/workbuddy-ai/auth.json",
-            appPath: "/demo/WorkBuddy AI.app",
+            appPath: "/demo/Qoder AI.app",
             variant,
           }
         : { ...appStatus, variant };
     }
     case "get_accounts": return { accounts: demoAccounts };
     case "get_codebuddy_cli_status": return cliStatus;
-    // 让演示里存在一个「CodeBuddy IDE 当前账号」：否则 IDE 标记与选中态染色（淡紫）在演示里永远不可见。
+    // 让演示里存在一个「Qoder IDE 当前账号」：否则 IDE 标记与选中态染色（淡紫）在演示里永远不可见。
     // 取第二个账号，使三张卡各自演示一种形态（A 占位行 / B IDE 选中 / C 查看全部）。
     case "get_codebuddy_cn_ide_status": return {
       installed: true,
@@ -552,7 +552,7 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
       dataDir: "/demo/codebuddy-cn-ide",
       dbPath: "/demo/codebuddy-cn-ide/state.vscdb",
       dbExists: true,
-      appPath: "/demo/CodeBuddy CN.app",
+      appPath: "/demo/Qoder CN.app",
       activeAccountId: demoAccounts[1].id,
       activeAccountName: demoAccounts[1].nickname,
     } satisfies CodeBuddyCnIdeStatus;
@@ -564,7 +564,7 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
       dataDir: "/demo/codebuddy-ide",
       dbPath: "/demo/codebuddy-ide/state.vscdb",
       dbExists: true,
-      appPath: "/demo/CodeBuddy IDE.app",
+      appPath: "/demo/Qoder IDE.app",
       activeAccountId: demoAccounts[1].id,
       activeAccountName: demoAccounts[1].nickname,
     } satisfies CodeBuddyCnIdeStatus;
