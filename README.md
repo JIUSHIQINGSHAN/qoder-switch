@@ -145,9 +145,13 @@ qoder-switch.exe --self-check && echo OK
 - 会话历史不按账号隔离：桌面 `main.sqlite` 的 `chat_sessions` 无 `account_id` 列，
   `~/.qoder*/projects/` 按工作目录命名。换号后两个账号会互见历史，界面上会提示。
 - DPAPI 按 Windows 用户生效：账号包只在同一 Windows 用户内可复用，跨机器或跨用户无效。
-- 未实现（相对参考实现仍缺）：device flow 扫码添加账号与 PAT 旁路、**主动刷新 token**
-  （到期只做到期展示与建议，刷新接口尚未取证）、额度/积分用量查询、会话跨账号迁移、
-  webui/npm 双形态里的 **npm 发布形态**、自动更新。
+- 未实现（相对参考实现仍缺）：device flow 扫码添加账号（**桌面端实证不适用**：登录不走
+  设备码，见 `docs/qoder-endpoints.md` §2.2；CLI 侧配对流程待探）、PAT 旁路、
+  额度/积分用量查询（**端点已取证**，`docs/qoder-endpoints.md` §2.1，待实现）、
+  会话跨账号迁移、webui/npm 双形态里的 **npm 发布形态**、自动更新。
+- **主动刷新主 token 实证不适用**（不是"尚未取证"）：主 accessToken 没有任何刷新端点，
+  桌面端到期即走网页重登（`docs/qoder-endpoints.md` §2.3）。
+- 通知存档（toast 历史）未落盘：三条通知命令恒返回空列表，界面入口保留。
 - WorkBuddy 的每日签到在 Qoder 无对应接口：保留版式，动作与读类接口都写明"不适用"。
 - **Buddy 旅行已整体删除**（不是标"不适用"）：Qoder 没有这个玩法，界面入口、类型、
   契约路由与演示数据一并去掉 —— 留一个永远点不动的按钮比删掉它更误导人。

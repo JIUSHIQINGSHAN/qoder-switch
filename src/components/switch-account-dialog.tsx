@@ -499,7 +499,11 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
       >
         <DialogHeader className="shrink-0">
           <DialogTitle>切换到「{account?.nickname || account?.email || account?.uid || "该账号"}」</DialogTitle>
-          <DialogDescription>切换时将重启 {variantAppName(accountVariant(account))}。</DialogDescription>
+          <DialogDescription>
+            切换时将重启 {variantAppName(accountVariant(account))}。
+            <br />
+            注：Qoder 的会话历史不按账号隔离，切换后本机历史会话可能在新账号下可见。
+          </DialogDescription>
         </DialogHeader>
 
         {busy && (

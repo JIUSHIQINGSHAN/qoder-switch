@@ -1,4 +1,4 @@
-export const GITHUB_OWNER = "changexbc";
+export const GITHUB_OWNER = "JIUSHIQINGSHAN";
 // 更新源指向本仓库；注意本项目的自动更新尚未配置发布源（见 README 已知边界）。
 export const GITHUB_REPO = "qoder-switch";
 export const GITHUB_REPOSITORY_URL = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}`;
