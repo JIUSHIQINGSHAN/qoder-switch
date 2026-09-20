@@ -58,7 +58,10 @@ pub fn run() {
             compat::export_accounts_to_path,
             compat::preview_import_accounts,
             compat::import_accounts,
-            compat::get_capabilities
+            compat::get_capabilities,
+            compat::list_notifications,
+            compat::record_notification,
+            compat::clear_notifications
         ])
         .run(tauri::generate_context!())
         .expect("Qoder Switch 启动失败");

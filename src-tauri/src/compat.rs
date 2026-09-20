@@ -226,6 +226,28 @@ pub fn get_capabilities() -> Value {
     view::capabilities()
 }
 
+/// 通知历史。Qoder 侧不落盘存档，所以列表恒空 —— 但命令必须存在，
+/// 否则同一份界面在桌面端报错、在 webui 正常。
+#[tauri::command]
+pub fn list_notifications() -> Value {
+    view::notifications()
+}
+
+#[tauri::command]
+pub fn record_notification(
+    level: Option<String>,
+    title: Option<String>,
+    description: Option<String>,
+) -> Value {
+    let _ = (level, title, description);
+    view::record_notification()
+}
+
+#[tauri::command]
+pub fn clear_notifications() -> Value {
+    view::clear_notifications()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
