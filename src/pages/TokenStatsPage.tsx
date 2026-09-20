@@ -1696,7 +1696,7 @@ export default function TokenStatsPage() {
       ) : (
         !error && (
           <div className="rounded-xl border border-dashed px-4 py-16 text-center text-sm text-muted-foreground">
-            该来源暂无可用统计数据，请点击刷新重试。
+            Qoder 侧没有 Token 用量统计的数据源，刷新不会多出内容。
           </div>
         )
       )}
