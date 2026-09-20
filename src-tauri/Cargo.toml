@@ -1,6 +1,6 @@
 [package]
 name = "qoder-switch"
-version = "0.1.2"
+version = "0.1.3"
 description = "Qoder Switch —— Qoder 多账号切换桌面 App（Tauri 版）"
 authors = ["JIUSHIQINGSHAN"]
 edition = "2021"

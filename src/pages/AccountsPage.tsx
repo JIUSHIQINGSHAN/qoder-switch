@@ -45,7 +45,6 @@ import { SwitchAccountDialog } from "@/components/switch-account-dialog";
 import * as api from "@/lib/api";
 import { useVisibleInterval } from "@/lib/use-visible-interval";
 import {
-  DEFAULT_VARIANT,
   accountVariant,
   normalizeVariant,
   variantAppName,
@@ -225,20 +224,10 @@ export default function AccountsPage() {
   }, []);
 
   /**
-   * 首次启动自动导入本机账号（本会话只尝试一次，无本机账号时静默）。
-   * 仅限默认档位：切到国际版时不静默写入账号，改由空状态引导显式导入或浏览器授权登录。
+   * 这里**不做**首次启动自动导入。上游会在账号列表为空时静默调 importLocal，
+   * 等于用户什么都没点就先往 ~/.qs-switch 复制了一份真实凭据。
+   * 认领本机登录态只走「导入本机账号」按钮。
    */
-  const autoImportTried = useRef(false);
-  useEffect(() => {
-    if (variant !== DEFAULT_VARIANT) return;
-    if (autoImportTried.current || loading || visibleAccounts.length > 0) return;
-    autoImportTried.current = true;
-    void importLocal()
-      .then(() => void fetchAll())
-      .catch(() => {
-        /* 本机无 Qoder 登录态时静默，不打扰用户 */
-      });
-  }, [variant, visibleAccounts.length, loading, importLocal, fetchAll]);
 
   async function refreshCodebuddyCliStatus() {
     try {
