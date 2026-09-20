@@ -344,6 +344,7 @@ mod compat {
     use serde_json::{json, Value};
 
     use qs_switch_core::modules::config::{switch_root, PathRoots};
+    use qs_switch_core::modules::notifications;
     use qs_switch_core::modules::variant::{QoderTarget, QoderVariant};
     use qs_switch_core::modules::{bundle, switch, view};
     use qs_switch_core::Result;
@@ -528,9 +529,20 @@ mod compat {
             "rotate/status" => Ok(view::rotate_status(&roots, &store, v)),
             "rotate/run" => Ok(view::run_rotate(&roots, &store, v)),
             "rotate/logs" => Ok(view::rotate_logs(&store)),
-            "notifications" => Ok(view::notifications()),
-            "notifications/record" => Ok(view::record_notification()),
-            "notifications/clear" => Ok(view::clear_notifications()),
+            "notifications" => Ok(view::notifications(notifications::list()?)),
+            "notifications/record" => {
+                // POST body：{level,title,description?}；与桌面端同一条 core 路径。
+                notifications::record(
+                    input.get("level").and_then(|x| x.as_str()).unwrap_or("info"),
+                    input.get("title").and_then(|x| x.as_str()).unwrap_or(""),
+                    input.get("description").and_then(|x| x.as_str()),
+                )?;
+                Ok(Value::Null)
+            }
+            "notifications/clear" => {
+                notifications::clear()?;
+                Ok(Value::Null)
+            }
             _ => Err(format!("契约路由漏了 {cmd}")),
         };
         r

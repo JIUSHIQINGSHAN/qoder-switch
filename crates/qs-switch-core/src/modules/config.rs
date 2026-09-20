@@ -86,6 +86,14 @@ pub fn mtime_ms(path: &Path) -> std::io::Result<u64> {
         .unwrap_or(0))
 }
 
+/// 当前 Unix 毫秒时间戳（通知存档等本地时间戳用）。
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 /// 路径根的三个轴。生产用 `real()`，测试与演练用 `sandbox()`，
 /// 这样凭据布局可以在临时目录里整棵重建，绝不会碰到真实产品目录。
 #[derive(Debug, Clone, PartialEq, Eq)]

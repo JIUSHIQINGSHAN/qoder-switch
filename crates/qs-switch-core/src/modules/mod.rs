@@ -2,6 +2,7 @@ pub mod auth_codec;
 pub mod bundle;
 pub mod config;
 pub mod export_import;
+pub mod notifications;
 pub mod process;
 pub mod rotate;
 pub mod snapshot;

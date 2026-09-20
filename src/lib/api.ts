@@ -238,7 +238,11 @@ const QODER_EMPTY: Record<string, () => unknown> = {
     events: [],
     error: "Qoder 无额度接口",
   }),
-  get_token_statistics: () => ({ generatedAt: 0, sources: [], error: "Token 用量统计未实现" }),
+  get_token_statistics: () => ({
+    generatedAt: 0,
+    sources: [],
+    error: "Qoder 侧没有 Token 用量统计的数据源（本地日志无 token 键，实测 2026-09-21）",
+  }),
   list_sessions: () => ({ sessions: [] }),
   // 契约自带 supported / "unsupported" 状态位：这就是"不支持"的正规表达，
   // 既不会让渲染期拿到 undefined，也不必编造任何数据。

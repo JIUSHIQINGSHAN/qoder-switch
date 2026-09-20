@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 
 use qs_switch_core::modules::config::{PathRoots, switch_root};
 use qs_switch_core::modules::variant::{QoderTarget, QoderVariant};
-use qs_switch_core::modules::{bundle, switch, view};
+use qs_switch_core::modules::{bundle, notifications, switch, view};
 
 pub use view::UiRotateConfig;
 
@@ -271,26 +271,25 @@ pub fn get_capabilities() -> Value {
     view::capabilities()
 }
 
-/// 通知历史。Qoder 侧不落盘存档，所以列表恒空 —— 但命令必须存在，
-/// 否则同一份界面在桌面端报错、在 webui 正常。
+/// 通知存档（`~/.qs-switch/notifications.json`，最近 100 条，新的在前）。
+/// 前端所有 toast 都会同步写一份；写入失败不影响提示本身（notify.ts 静默忽略）。
 #[tauri::command]
-pub fn list_notifications() -> Value {
-    view::notifications()
+pub async fn list_notifications() -> Result<Value, String> {
+    Ok(view::notifications(notifications::list()?))
 }
 
 #[tauri::command]
-pub fn record_notification(
-    level: Option<String>,
-    title: Option<String>,
+pub async fn record_notification(
+    level: String,
+    title: String,
     description: Option<String>,
-) -> Value {
-    let _ = (level, title, description);
-    view::record_notification()
+) -> Result<(), String> {
+    notifications::record(&level, &title, description.as_deref())
 }
 
 #[tauri::command]
-pub fn clear_notifications() -> Value {
-    view::clear_notifications()
+pub async fn clear_notifications() -> Result<(), String> {
+    notifications::clear()
 }
 
 #[cfg(test)]

@@ -371,19 +371,12 @@ pub fn run_rotate(roots: &PathRoots, store: &Path, v: QoderVariant) -> Value {
     }
 }
 
-/// 应用内通知存档。Qoder 侧**没有**这个存档，所以三个响应都不假装存了东西：
-/// 读永远为空、记录明确说没保存、清空本来就没什么可清。
+/// 应用内通知存档的列表形状。数据来自 `notifications` 模块
+/// （`~/.qs-switch/notifications.json`，最近 100 条，新的在前）；
+/// 条目 `{ level, title, description?, at }` 与前端 `AppNotification` 一一对应。
 /// 两个宿主共用，否则桌面端会因"命令不存在"报错而 webui 正常 —— 同一份 UI 两种行为。
-pub fn notifications() -> Value {
-    json!({ "items": [] })
-}
-
-pub fn record_notification() -> Value {
-    json!({ "recorded": false, "reason": "本构建不落盘通知存档" })
-}
-
-pub fn clear_notifications() -> Value {
-    json!({ "cleared": true })
+pub fn notifications(items: Vec<crate::modules::notifications::NotificationEntry>) -> Value {
+    json!({ "items": items })
 }
 
 /// 前端逐项确认"哪些能力在 Qoder 侧不存在"，用于把"不适用"写明而不是装作能用。
@@ -395,14 +388,16 @@ pub fn capabilities() -> Value {
             "账号包导出与导入",
             "token 到期与轮换建议",
             "凭据快照与差分",
-            "托盘快捷切换"
+            "托盘快捷切换",
+            "开机自启（静默驻留托盘）",
+            "应用内通知存档（本机 notifications.json）"
         ],
         "unavailable": [
             { "name": "每日签到", "reason": "Qoder 无签到接口" },
-            { "name": "积分统计与额度查询", "reason": "官方接口未取证，拒绝猜测调用" },
+            { "name": "积分统计与额度查询", "reason": "官方接口已取证（docs/qoder-endpoints.md），待实现" },
             { "name": "会话跨账号复制", "reason": "Qoder 会话不按账号归属，复制会串数据" },
-            { "name": "OAuth 扫码添加账号", "reason": "设备流程端点未取证" },
-            { "name": "主动刷新 token", "reason": "刷新接口未取证" },
+            { "name": "OAuth 扫码添加账号", "reason": "桌面端登录不走设备码（实证，见 docs/qoder-endpoints.md §2.2）" },
+            { "name": "主动刷新 token", "reason": "主 token 无刷新端点（实证，见 docs/qoder-endpoints.md §2.3）" },
             { "name": "自动轮换执行", "reason": "换号需重启用户正在用的 IDE，只出建议" },
             { "name": "限速钩子与 429 归因", "reason": "未实现" },
             { "name": "自动更新", "reason": "未配置发布源" }
