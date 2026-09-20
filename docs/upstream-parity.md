@@ -21,7 +21,7 @@
 | 切换进度 | switch_progress | A | api.ts:448-450 |
 | 每日签到 | CodeBuddy 签到接口 | B（Qoder 无签到接口） | api.ts:192-195,266-273；README |
 | 额度/积分用量 | 官方额度接口 | **B→已取证待升级**：`/api/v2/quota/usage` 已取证（见 qoder-endpoints.md §2.1） | api.ts:231-241 |
-| Token 用量统计（整页 1713 行） | 扫本地日志聚合 | **D**：后端恒返回占位；api.ts 说"未实现"与 App.tsx:1699"没有数据源"口径打架 | api.ts:242 |
+| Token 用量统计（整页 1713 行） | 扫本地日志聚合 | **B（实证无数据源）**：本地日志无 token 键、skill-usage 只有次数（实测 2026-09-21）；api.ts 与 App.tsx 口径已统一 | api.ts:242 |
 | 会话列表/跨账号复制 | list/copy/preview | B（会话不按账号归属；弹窗已加互见提示） | api.ts:199-200,243,246-253 |
 | 模型限额台账+hook | 写 CLI/IDE 配置 | B（hook 注入点 CodeBuddy 专属） | api.ts:201-203,254,257-265 |
 | CLI 接入/切换 | 写 settings.json+helper | B（CN CLI 不落盘凭据） | api.ts:205-206,274-284 |
@@ -30,8 +30,8 @@
 | OAuth 设备码登录 | oauth_start/status+对话框 | **不适用修正**：桌面端登录不走设备码（端点取证 qoder-endpoints.md §2.2）；CLI 配对流程待探 | api.ts:196-197 |
 | 主动刷新主 token | refresh_account_token | **不适用（实证）**：主 token 无刷新端点（qoder-endpoints.md §2.3） | api.ts:198 |
 | 自动更新 | github config+check+install+relaunch | **D**：发布源未配置（M10） | api.ts:204,213-214,218 |
-| 开机自启 | set/get_launch_at_login | **D**：UI 开关在，后端"未接管"（M9 首项） | api.ts:219,272 |
-| 通知存档落盘 | record/list/clear | **D（轻）**：命令在但恒空占位；README 未列边界，易误读 | compat.rs:274-289；view.rs:377-389 |
+| 开机自启 | set/get_launch_at_login | **A（2026-09-21 接管）**：tauri-plugin-autostart，自启带 --hidden 静默驻留 | api.ts（门控已撤）；commands.rs |
+| 通知存档落盘 | record/list/clear | **A（2026-09-21 落地）**：~/.qs-switch/notifications.json，最近 100 条 | notifications.rs；compat.rs；router.rs |
 | macOS 权限自检/Finder | check_auth_permission 等 | B（Windows 无此限制） | api.ts:215-217 |
 | Buddy 旅行（整条玩法） | 成长中心+旅行 chip+轮询 | C 整条删除 | README:153；本项目零残留 |
 | VS Code 扩展切换（含会话复制） | 403 行对话框+类型+mark | C 整条删除（Qoder 无 VS Code 扩展） | 上游独有文件，本项目不存在 |
