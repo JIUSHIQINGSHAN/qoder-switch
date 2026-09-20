@@ -88,7 +88,9 @@ function formatCredits(value: number | null | undefined): string {
 }
 
 function formatDateTime(ts: number | null | undefined): string {
-  if (ts === null || ts === undefined) return "—";
+  // 0 不是"1970 年"，是"没有采集过"：Qoder 侧没有额度接口，采集时刻就是空。
+  // 不挡住 0 的话，页面会显示"当前数据更新于 01/01 08:00"，像真有一个采集时刻。
+  if (!ts) return "—";
   return new Date(ts).toLocaleString("zh-CN", {
     month: "2-digit",
     day: "2-digit",
