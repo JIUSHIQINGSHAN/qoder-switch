@@ -5,3 +5,4 @@ dist/
 # 账号包是凭据文件的副本，绝不允许入库。
 .qs-switch/
 accounts-export/
+.mimosa/
