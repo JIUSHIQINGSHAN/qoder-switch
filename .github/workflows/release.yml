@@ -26,6 +26,9 @@ jobs:
           node-version: 20
           cache: npm
 
+      - name: 安装前端依赖（tsc 来自本地 typescript，勿裸 npx）
+        run: npm ci
+
       - name: 前端类型检查
         run: npx tsc --noEmit
 
