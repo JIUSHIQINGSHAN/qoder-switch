@@ -86,6 +86,8 @@ fn dpapi_via_powershell(data: &[u8], protect: bool) -> Result<Vec<u8>> {
     );
     let mut cmd = Command::new("powershell");
     cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+    // GUI 宿主里这条调用每次刷状态都会跑，放任它建控制台就是"终端一直闪"。
+    crate::modules::process::hide_console(&mut cmd);
     let out = cmd
         .output()
         .map_err(|e| format!("调用 powershell 做 DPAPI {method} 失败: {e}"))?;

@@ -23,12 +23,30 @@ fn image_matches(actual: &str, wanted: &str) -> bool {
     strip(actual) == strip(wanted)
 }
 
+/// 给辅助子进程关掉控制台窗口。
+///
+/// GUI 宿主（Tauri）自己没有控制台，于是它每起一个 `tasklist` / `powershell`，
+/// Windows 都会**新建一个控制台窗口** —— 状态每 60 秒刷一次、每次至少两个子进程，
+/// 用户看到的就是"终端一直闪"。这些调用都只是取数据，永远不该有窗口。
+/// 启动客户端本体（`launch`）不走这里，那个窗口是用户要的。
+pub(crate) fn hide_console(cmd: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = cmd;
+}
+
 /// 目标在跑哪些进程。Windows 用 `tasklist` 的 CSV 输出，一次拿全再按镜像名过滤，
 /// 避免每个镜像名起一个进程。
 pub fn running_pids(images: &[&str]) -> Vec<u32> {
-    let out = match std::process::Command::new("tasklist")
-        .args(["/nh", "/fo", "csv"])
-        .output()
+    let mut cmd = std::process::Command::new("tasklist");
+    cmd.args(["/nh", "/fo", "csv"]);
+    hide_console(&mut cmd);
+    let out = match cmd.output()
     {
         Ok(o) if o.status.success() => o.stdout,
         _ => return Vec::new(),
@@ -115,8 +133,10 @@ pub fn ancestor_chain() -> Result<Chain> {
         Write-Output QSDONE\n";
     let utf16: Vec<u8> = script.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
     let encoded = base64::engine::general_purpose::STANDARD.encode(&utf16);
-    let out = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
+    let mut cmd = std::process::Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded]);
+    hide_console(&mut cmd);
+    let out = cmd
         .output()
         .map_err(|e| format!("调用 powershell 失败: {e}"))?;
     if !out.status.success() {
@@ -228,9 +248,10 @@ pub fn close(
         }
     }
     for pid in &pids {
-        let _ = std::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T"])
-            .output();
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.args(["/PID", &pid.to_string(), "/T"]);
+        hide_console(&mut cmd);
+        let _ = cmd.output();
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_s);
     while std::time::Instant::now() < deadline {
@@ -240,9 +261,10 @@ pub fn close(
         std::thread::sleep(std::time::Duration::from_millis(300));
     }
     for pid in running_pids(images) {
-        let _ = std::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/F", "/T"])
-            .output();
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.args(["/PID", &pid.to_string(), "/F", "/T"]);
+        hide_console(&mut cmd);
+        let _ = cmd.output();
     }
     if running_pids(images).is_empty() {
         Ok(())
