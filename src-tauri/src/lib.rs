@@ -10,15 +10,34 @@ pub fn self_check() -> i32 {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         // 单实例必须最先注册：第二个进程会在建窗口与托盘之前退出。
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            tray::show_main(app);
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // 自启重复触发（静默）不弹既有窗口，其余第二实例照常唤醒到前台。
+            if tray::should_activate_on_second_launch(argv) {
+                tray::show_main(app);
+            }
         }))
         .plugin(tauri_plugin_opener::init())
-        .manage(compat::ProgressCell::default())
+        .manage(compat::ProgressCell::default());
+
+    #[cfg(desktop)]
+    {
+        // 自启拉起时带 --hidden：配合窗口配置的 visible:false 实现静默驻留托盘。
+        builder = builder.plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![tray::SILENT_STARTUP_ARG]),
+        ));
+    }
+
+    builder
         .setup(|app| {
             tray::install(&app.handle().clone())?;
+            // 主窗口由配置创建为不可见；这里按是否静默启动决定要不要立刻显示。
+            tray::setup_startup_visibility(
+                app.handle(),
+                tray::is_silent_startup(std::env::args()),
+            );
             Ok(())
         })
         // 关窗只隐藏不退出：换号后还要能从托盘把界面拉回来。
@@ -61,7 +80,9 @@ pub fn run() {
             compat::get_capabilities,
             compat::list_notifications,
             compat::record_notification,
-            compat::clear_notifications
+            compat::clear_notifications,
+            commands::get_launch_at_login_enabled,
+            commands::set_launch_at_login_enabled
         ])
         .run(tauri::generate_context!())
         .expect("Qoder Switch 启动失败");

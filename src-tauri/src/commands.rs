@@ -199,3 +199,67 @@ pub fn apply_rotation(variant: QoderVariant, restart: bool) -> Result<switch::Jo
     let s = rotate::suggest(&roots, &store, variant, &rotate::RotateConfig::default())?;
     rotate::apply(&roots, &store, &s, restart)
 }
+
+// ---------------------------------------------------------------------------
+// 开机自启（参考实现同名命令的原样搬运：OS 注册状态是唯一事实源）
+// ---------------------------------------------------------------------------
+
+/// 查询系统当前的开机自启注册状态。
+///
+/// 以 tauri-plugin-autostart 的 OS 状态为唯一事实来源，不另存本地布尔值。
+#[tauri::command]
+pub fn get_launch_at_login_enabled(_app: AppHandle) -> Result<bool, String> {
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        return _app
+            .autolaunch()
+            .is_enabled()
+            .map_err(|e| format!("查询开机自启状态失败：{e}"));
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = _app;
+        Err("当前平台不支持开机自启".to_string())
+    }
+}
+
+/// 注册 / 移除系统开机自启，并回读权威状态。
+///
+/// 回读结果与请求值不一致时按失败处理并返回当前真实状态，避免假装设置成功。
+#[tauri::command]
+pub fn set_launch_at_login_enabled(_app: AppHandle, enabled: bool) -> Result<bool, String> {
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        let autostart = _app.autolaunch();
+        let action = if enabled { "开启" } else { "关闭" };
+        let result = if enabled {
+            autostart.enable()
+        } else {
+            autostart.disable()
+        };
+        if let Err(e) = result {
+            return Err(format!("{action}开机自启失败：{e}"));
+        }
+        let authoritative = autostart
+            .is_enabled()
+            .map_err(|e| format!("开机自启设置后回读状态失败：{e}"))?;
+        if authoritative != enabled {
+            return Err(format!(
+                "{action}开机自启未生效（系统当前状态：{}），请稍后重试",
+                if authoritative {
+                    "已开启"
+                } else {
+                    "未开启"
+                }
+            ));
+        }
+        Ok(authoritative)
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = (_app, enabled);
+        Err("当前平台不支持开机自启".to_string())
+    }
+}

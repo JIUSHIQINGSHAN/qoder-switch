@@ -16,6 +16,31 @@ use qs_switch_core::modules::{bundle, switch};
 /// 托盘项 id 前缀，便于在事件里反解出要切的账号。
 const PREFIX: &str = "acct:";
 
+/// 静默启动参数：注册开机自启时由插件注入（见 lib.rs 的 autostart 初始化）。
+pub const SILENT_STARTUP_ARG: &str = "--hidden";
+
+/// 判断本次启动是否携带精确的 `--hidden` 参数（系统自启触发）。
+///
+/// 必须整参相等，禁止子串匹配，避免 `--hidden-x`、`x--hidden` 等误入静默模式。
+pub fn is_silent_startup(args: impl IntoIterator<Item = impl AsRef<str>>) -> bool {
+    args.into_iter()
+        .any(|arg| arg.as_ref() == SILENT_STARTUP_ARG)
+}
+
+/// 第二次启动是否需要把既有实例唤醒到前台。
+///
+/// 静默启动（精确 `--hidden`，自启重复触发）不打扰用户：不弹既有窗口。
+pub fn should_activate_on_second_launch(args: impl IntoIterator<Item = impl AsRef<str>>) -> bool {
+    !is_silent_startup(args)
+}
+
+/// 启动可见性：普通启动立即显示主窗口；静默启动窗口保持配置的不可见，只留托盘。
+pub fn setup_startup_visibility(app: &AppHandle, silent: bool) {
+    if !silent {
+        show_main(app);
+    }
+}
+
 pub fn install(app: &AppHandle) -> tauri::Result<()> {
     let menu = Menu::new(app)?;
     menu.append(&MenuItem::with_id(app, "open", "显示主界面", true, None::<&str>)?)?;
@@ -117,5 +142,32 @@ pub fn show_main(app: &AppHandle) {
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
+    }
+}
+
+#[cfg(test)]
+mod silent_startup_tests {
+    use super::{is_silent_startup, should_activate_on_second_launch, SILENT_STARTUP_ARG};
+
+    #[test]
+    fn silent_arg_matches_exactly() {
+        assert!(is_silent_startup(["--hidden"]));
+        assert!(is_silent_startup(["qoder-switch.exe", "--hidden"]));
+        assert!(!is_silent_startup(Vec::<&str>::new()));
+    }
+
+    #[test]
+    fn silent_arg_never_matches_substrings() {
+        assert!(!is_silent_startup(["--hidden-x"]));
+        assert!(!is_silent_startup(["x--hidden"]));
+        assert!(!is_silent_startup(["--hiddenextra"]));
+        assert!(!is_silent_startup(["--debug"]));
+    }
+
+    #[test]
+    fn second_launch_activates_unless_exact_silent_arg() {
+        assert!(should_activate_on_second_launch(["qoder-switch.exe"]));
+        assert!(!should_activate_on_second_launch([SILENT_STARTUP_ARG]));
+        assert!(should_activate_on_second_launch(["--hidden-x"]));
     }
 }

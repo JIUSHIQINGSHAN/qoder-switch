@@ -216,7 +216,6 @@ const QODER_UNAVAILABLE: Record<string, string> = {
   open_permission_settings: "Windows 无 macOS 那套磁盘权限限制",
   reveal_app_in_finder: "macOS 专属操作",
   relaunch_app: "webui 宿主请直接重启 qs-switch-server 进程",
-  set_launch_at_login_enabled: "本构建未接管开机自启",
 };
 
 /**
@@ -268,8 +267,8 @@ const QODER_EMPTY: Record<string, () => unknown> = {
     keepalive_days: 0,
     lazy_refresh_hours: 0,
   }),
-  // 本构建没接管开机自启，所以状态就是"关"；开关按下去会说清为什么没生效。
-  get_launch_at_login_enabled: () => false,
+  // 开机自启的读写已由后端接管（tauri-plugin-autostart），不再在此占位。
+  // webui 宿主不渲染这张卡片，也不会发起同名调用。
   get_checkin_status: () => ({ ok: false, resources: [] }),
   get_codebuddy_cli_status: () => ({
     configured: false,
