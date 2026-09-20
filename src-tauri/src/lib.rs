@@ -16,6 +16,7 @@ pub fn run() {
             tray::show_main(app);
         }))
         .plugin(tauri_plugin_opener::init())
+        .manage(compat::ProgressCell::default())
         .setup(|app| {
             tray::install(&app.handle().clone())?;
             Ok(())
@@ -46,7 +47,18 @@ pub fn run() {
             compat::get_accounts,
             compat::switch_account,
             compat::import_local,
-            compat::delete_account
+            compat::delete_account,
+            compat::switch_progress,
+            compat::get_auto_rotate_config,
+            compat::save_auto_rotate_config,
+            compat::rotate_status,
+            compat::run_rotate,
+            compat::get_rotate_logs,
+            compat::export_accounts,
+            compat::export_accounts_to_path,
+            compat::preview_import_accounts,
+            compat::import_accounts,
+            compat::get_capabilities
         ])
         .run(tauri::generate_context!())
         .expect("Qoder Switch 启动失败");

@@ -53,7 +53,7 @@ function UpdateCenter({ running }: { running: boolean | undefined }) {
       <section className="mt-auto border-t border-sidebar-border px-2 pt-3 text-xs">
         <div className="flex items-center gap-2 text-[13px] text-sidebar-foreground">
           <StatusDot on={Boolean(running)} />
-          <span className="min-w-0 flex-1 truncate">WorkBuddy</span>
+          <span className="min-w-0 flex-1 truncate">Qoder</span>
           <div className="flex shrink-0 items-center gap-1.5">
             <span className="text-sidebar-foreground/50">v{version || "?"}</span>
             {hasUpdate && (
@@ -117,7 +117,7 @@ function Layout() {
                 fontWeight: 640,
               }}
             >
-              WorkBuddy Switch
+              Qoder Switch
             </div>
             {demoModeEnabled && (
               <Badge variant="secondary" className="mt-1 h-5 border-0 px-1.5 text-[10px] text-sidebar-foreground/60 shadow-none">

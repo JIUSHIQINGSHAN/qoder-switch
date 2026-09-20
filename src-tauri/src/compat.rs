@@ -6,12 +6,12 @@
 //!
 //! 与 `commands.rs`（Qoder 原生接口）并存：界面走本模块，命令行工具与脚本走原生接口。
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use qs_switch_core::modules::config::PathRoots;
 use qs_switch_core::modules::variant::{QoderTarget, QoderVariant};
-use qs_switch_core::modules::{auth_codec, bundle, process, switch};
+use qs_switch_core::modules::{auth_codec, bundle, export_import, process, rotate, switch};
 
 /// 与前端 `WbVariant` 对齐：国内版 `cn`、国际版 `ai`（沿用前端的键名以免改 UI）。
 fn variant_from_str(s: Option<&str>) -> QoderVariant {
@@ -155,6 +155,7 @@ fn target_from_str(s: Option<&str>) -> QoderTarget {
 #[tauri::command]
 pub async fn switch_account(
     app: tauri::AppHandle,
+    cell: tauri::State<'_, ProgressCell>,
     args: serde_json::Value,
 ) -> Result<SwitchResult, String> {
     use tauri::Emitter;
@@ -177,13 +178,31 @@ pub async fn switch_account(
     let req = switch::Request { account_id: account_id.clone(), variant, target, restart };
     let actor = if forced { switch::Actor::RealForced } else { switch::Actor::Real };
     let handle = app.clone();
-    let journal = tauri::async_runtime::spawn_blocking(move || {
+    let prog: ProgressCell = (*cell).clone();
+    let prog_done = prog.clone();
+    prog.set(true, Some("准备切换".into()));
+    let journal = match tauri::async_runtime::spawn_blocking(move || {
+        let inner = prog.clone();
         switch::execute(&roots, &store, &req, actor, &mut |m| {
             let _ = handle.emit("switch-progress", m.to_string());
+            inner.set(true, Some(m.to_string()));
         })
     })
     .await
-    .map_err(|e| format!("切换任务异常终止: {e}"))??;
+    {
+        Ok(Ok(j)) => j,
+        // 无论正常返回还是线程崩掉，都必须把 running 清零，
+        // 否则前端的进度对话框会一直转下去。
+        Ok(Err(e)) => {
+            prog_done.set(false, None);
+            return Err(e);
+        }
+        Err(e) => {
+            prog_done.set(false, None);
+            return Err(format!("切换任务异常终止: {e}"));
+        }
+    };
+    prog_done.set(false, None);
 
     let mut message = format!("已切到 {}（{:?}）", journal.account_id, journal.phase);
     if ignored_session {
@@ -231,9 +250,400 @@ pub fn delete_account(account_id: String) -> Result<serde_json::Value, String> {
     Ok(json!({ "ok": true }))
 }
 
+/// 切换进度。前端对话框轮询 `switch_progress`，桌面端另有事件通道，两条路共用这份状态。
+/// 用 Arc 包一层，才能把句柄带进 spawn_blocking 的闭包里更新、并在收尾时清零。
+#[derive(Clone, Default)]
+pub struct ProgressCell(pub std::sync::Arc<std::sync::Mutex<ProgressState>>);
+
+#[derive(Default, Clone)]
+pub struct ProgressState {
+    pub running: bool,
+    pub progress: Option<String>,
+}
+
+impl ProgressCell {
+    pub fn set(&self, running: bool, msg: Option<String>) {
+        if let Ok(mut g) = self.0.lock() {
+            g.running = running;
+            g.progress = msg;
+        }
+    }
+}
+
+/// 前端在切换对话框里轮询这个；桌面端主要靠事件，但契约要求它存在。
+#[tauri::command]
+pub fn switch_progress(cell: tauri::State<'_, ProgressCell>) -> serde_json::Value {
+    let g = cell.0.lock().unwrap_or_else(|p| p.into_inner());
+    json!({ "running": g.running, "progress": g.progress })
+}
+
+/// 自动轮换配置。只有 `enabled` 与两个阈值在 Qoder 侧有真实语义：
+/// 阈值按天而不是按小时，且**永不自动执行切换**（见 README 的安全模型）。
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UiRotateConfig {
+    pub enabled: bool,
+    pub check_interval_minutes: u32,
+    pub cooldown_minutes: u32,
+    pub min_gap_hours: u32,
+    pub min_urgency_hours: u32,
+    pub active_guard_minutes: u32,
+    pub min_remaining_credits: u32,
+}
+
+impl Default for UiRotateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            check_interval_minutes: 60,
+            cooldown_minutes: 120,
+            min_gap_hours: (rotate::RotateConfig::default().min_gap_days * 24).max(0) as u32,
+            min_urgency_hours: (rotate::RotateConfig::default().min_urgency_days * 24) as u32,
+            active_guard_minutes: 0,
+            min_remaining_credits: 0,
+        }
+    }
+}
+
+fn ui_config_path(store: &std::path::Path) -> std::path::PathBuf {
+    store.join("auto_rotate_config.json")
+}
+
+fn read_ui_config(store: &std::path::Path) -> UiRotateConfig {
+    std::fs::read(ui_config_path(store))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn get_auto_rotate_config() -> UiRotateConfig {
+    read_ui_config(&qs_switch_core::modules::config::switch_root())
+}
+
+#[tauri::command]
+pub fn save_auto_rotate_config(
+    config: serde_json::Value,
+) -> Result<UiRotateConfig, String> {
+    let store = qs_switch_core::modules::config::switch_root();
+    let merged = {
+        let mut cur = read_ui_config(&store);
+        if let Some(v) = config.get("enabled").and_then(|x| x.as_bool()) {
+            cur.enabled = v;
+        }
+        for key in [
+            "check_interval_minutes",
+            "cooldown_minutes",
+            "min_gap_hours",
+            "min_urgency_hours",
+        ] {
+            if let Some(n) = config.get(key).and_then(|x| x.as_u64()) {
+                match key {
+                    "check_interval_minutes" => cur.check_interval_minutes = n as u32,
+                    "cooldown_minutes" => cur.cooldown_minutes = n as u32,
+                    "min_gap_hours" => cur.min_gap_hours = n as u32,
+                    _ => cur.min_urgency_hours = n as u32,
+                }
+            }
+        }
+        cur
+    };
+    let json = serde_json::to_vec_pretty(&merged).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&store).map_err(|e| e.to_string())?;
+    std::fs::write(ui_config_path(&store), json).map_err(|e| format!("写轮换配置失败: {e}"))?;
+    Ok(merged)
+}
+
+/// 把前端的"小时"阈值换成本地判定用的"天"。
+fn core_config(c: &UiRotateConfig) -> rotate::RotateConfig {
+    rotate::RotateConfig {
+        min_urgency_days: (c.min_urgency_hours as i64).div_euclid(24).max(1),
+        min_gap_days: (c.min_gap_hours as i64).div_euclid(24).max(1),
+    }
+}
+
+#[tauri::command]
+pub fn rotate_status() -> serde_json::Value {
+    let roots = PathRoots::real();
+    let store = qs_switch_core::modules::config::switch_root();
+    let cfg = read_ui_config(&store);
+    let v = QoderVariant::Cn;
+    let cur = auth_codec::read_desktop_auth(&roots, v).ok();
+    json!({
+        "config": cfg,
+        // CLI 指针在 Qoder 侧没有对应机制（CLI 不落盘凭据），恒为 false。
+        "cliConfigured": false,
+        "activeAccountId": cur.as_ref().map(|a| a.user.id.clone()),
+        "activeAccountName": cur.as_ref().map(|a| a.user.name.clone()),
+        "lastCheckAt": bundle::compact_to_ms(&qs_switch_core::modules::config::now_ts()),
+        "lastSwitchAt": read_last_switch_at(&store),
+    })
+}
+
+fn read_last_switch_at(store: &std::path::Path) -> Option<u64> {
+    let st = rotate::read_state(store).ok()?;
+    st.last_suggested_at.as_deref().and_then(bundle::compact_to_ms)
+}
+
+/// 手动跑一次轮换检查。只产出建议并记日志，**不执行切换**。
+#[tauri::command]
+pub fn run_rotate(variant: Option<String>) -> serde_json::Value {
+    let roots = PathRoots::real();
+    let store = qs_switch_core::modules::config::switch_root();
+    let v = variant_from_str(variant.as_deref());
+    let uicfg = read_ui_config(&store);
+    let cfg = core_config(&uicfg);
+    match rotate::suggest(&roots, &store, v, &cfg) {
+        Ok(s) if s.decision.switch_to.is_some() => json!({
+            "status": "suggested",
+            "to": s.decision.switch_to,
+            "reason": s.decision.reason,
+            "notify": {
+                "title": "轮换建议",
+                "body": format!("{}（不会自动执行，需你确认）", s.decision.reason),
+            },
+        }),
+        Ok(s) => json!({ "status": "hold", "reason": s.decision.reason }),
+        Err(e) => json!({ "status": "error", "error": e }),
+    }
+}
+
+#[tauri::command]
+pub fn get_rotate_logs() -> serde_json::Value {
+    let store = qs_switch_core::modules::config::switch_root();
+    let logs: Vec<serde_json::Value> = rotate::read_state(&store)
+        .map(|st| {
+            st.history
+                .into_iter()
+                .filter_map(|(ts, to, reason)| {
+                    Some(json!({
+                        "ts": bundle::compact_to_ms(&ts)?,
+                        "action": "suggest",
+                        "reason": reason,
+                        "from": null,
+                        "to": { "id": to, "name": to },
+                    }))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    json!({ "logs": logs })
+}
+
+/// 导出为前端可保存的记录（我们的记录是凭据文件副本，不含 token 明文）。
+#[tauri::command]
+pub fn export_accounts(account_ids: Vec<String>) -> Result<serde_json::Value, String> {
+    let store = qs_switch_core::modules::config::switch_root();
+    let mut records = Vec::new();
+    let mut errors = Vec::new();
+    for id in &account_ids {
+        match export_import::export_account(&store, id).and_then(|e| export_import::to_bytes(&e)) {
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes).to_string();
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&text).unwrap_or_else(|_| json!({}));
+                let bundle0 = match parsed.get("bundles").and_then(|b| b.as_array()) {
+                    Some(a) => a.first().cloned().unwrap_or(json!({})),
+                    None => json!({}),
+                };
+                let ident = bundle0.get("identity").cloned().unwrap_or(json!({}));
+                records.push(json!({
+                    "id": id,
+                    "uid": ident.get("uid"),
+                    "nickname": ident.get("name"),
+                    "email": ident.get("email"),
+                    "variant": variant_key(variant_from_str(
+                        bundle0.get("variant").and_then(|x| x.as_str()),
+                    )),
+                    "expiresAt": ident
+                        .get("expires_at")
+                        .and_then(|x| x.as_str())
+                        .and_then(bundle::iso_to_ms),
+                    // 凭据文件副本，base64 形态；导入时按哈希校验还原。
+                    "payload": text,
+                }));
+            }
+            Err(e) => errors.push(format!("{id}: {e}")),
+        }
+    }
+    if records.is_empty() {
+        return Err(if errors.is_empty() {
+            "没有可导出的账号".into()
+        } else {
+            errors.join("; ")
+        });
+    }
+    Ok(json!({ "ok": true, "accounts": records, "warnings": errors }))
+}
+
+#[tauri::command]
+pub fn export_accounts_to_path(
+    account_ids: Vec<String>,
+    path: String,
+) -> Result<serde_json::Value, String> {
+    let v = export_accounts(account_ids)?;
+    let text = serde_json::to_string_pretty(&v["accounts"])
+        .map_err(|e| e.to_string())?;
+    std::fs::write(&path, text).map_err(|e| format!("写 {path} 失败: {e}"))?;
+    Ok(json!({ "ok": true, "path": path }))
+}
+
+/// 预览导入文件：只解析与校验，不写盘。
+#[tauri::command]
+pub fn preview_import_accounts(file_text: String) -> Result<serde_json::Value, String> {
+    let v: serde_json::Value = serde_json::from_str(&file_text)
+            .map_err(|e| format!("备份文件不是合法 JSON: {e}"))?;
+    let arr = v
+        .as_array()
+        .cloned()
+        .or_else(|| v.get("accounts").and_then(|x| x.as_array()).cloned())
+        .unwrap_or_default();
+    let accounts: Vec<serde_json::Value> = arr
+        .iter()
+        .filter_map(|r| {
+            let id = r.get("id").and_then(|x| x.as_str())?;
+            Some(json!({
+                "id": id,
+                "uid": r.get("uid").and_then(|x| x.as_str()),
+                "nickname": r.get("nickname").and_then(|x| x.as_str()),
+                "email": r.get("email").and_then(|x| x.as_str()),
+                "variant": r.get("variant").and_then(|x| x.as_str()),
+                "expiresAt": r.get("expiresAt").and_then(|x| x.as_u64()),
+            }))
+        })
+        .collect();
+    Ok(json!({ "accounts": accounts, "total": accounts.len() }))
+}
+
+/// 导入。`indexes` 是用户在预览里勾选的下标。
+#[tauri::command]
+pub fn import_accounts(
+    file_text: String,
+    indexes: Option<Vec<usize>>,
+) -> Result<serde_json::Value, String> {
+    let store = qs_switch_core::modules::config::switch_root();
+    let v: serde_json::Value = serde_json::from_str(&file_text)
+        .map_err(|e| format!("备份文件不是合法 JSON: {e}"))?;
+    let arr = v
+        .as_array()
+        .cloned()
+        .unwrap_or_else(|| v.get("accounts").and_then(|x| x.as_array()).cloned().unwrap_or_default());
+    let picked: Vec<&serde_json::Value> = match indexes {
+        Some(ix) => ix.into_iter().filter_map(|i| arr.get(i)).collect(),
+        None => arr.iter().collect(),
+    };
+    let (mut imported, mut skipped, mut overwritten) = (0usize, 0usize, 0usize);
+    for rec in picked {
+        let Some(payload) = rec.get("payload").and_then(|x| x.as_str()) else {
+            skipped += 1;
+            continue;
+        };
+        let existed = rec
+            .get("id")
+            .and_then(|x| x.as_str())
+            .map(|id| {
+                qs_switch_core::modules::bundle::accounts_root_in(&store)
+                    .join(id)
+                    .is_dir()
+            })
+            .unwrap_or(false);
+        match export_import::import(&store, payload.as_bytes(), true) {
+            Ok(r) => {
+                imported += r.written.len();
+                skipped += r.skipped.len();
+                if existed {
+                    overwritten += 1;
+                }
+            }
+            Err(e) => return Err(format!("导入失败: {e}")),
+        }
+    }
+    Ok(json!({
+        "ok": imported > 0,
+        "imported": imported,
+        "skipped": skipped,
+        "overwritten": overwritten,
+    }))
+}
+
+/// 前端逐项确认"哪些能力在 Qoder 侧不存在"，用于在界面上写明而不是装作能用。
+#[tauri::command]
+pub fn get_capabilities() -> serde_json::Value {
+    json!({
+        "supported": [
+            "账号包认领与列表",
+            "一键切换（含备份、写后校验、失败回滚）",
+            "账号包导出与导入",
+            "token 到期与轮换建议",
+            "凭据快照与差分",
+            "托盘快捷切换"
+        ],
+        "unavailable": [
+            { "name": "每日签到", "reason": "Qoder 无签到接口" },
+            { "name": "Buddy 旅行", "reason": "WorkBuddy 专有玩法" },
+            { "name": "积分统计与额度查询", "reason": "官方接口未取证，拒绝猜测调用" },
+            { "name": "会话跨账号复制", "reason": "Qoder 会话不按账号归属，复制会串数据" },
+            { "name": "OAuth 扫码添加账号", "reason": "设备流程端点未取证" },
+            { "name": "主动刷新 token", "reason": "刷新接口未取证" },
+            { "name": "自动轮换执行", "reason": "换号需重启用户正在用的 IDE，只出建议" },
+            { "name": "限速钩子与 429 归因", "reason": "未实现" },
+            { "name": "自动更新", "reason": "未配置发布源" }
+        ]
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ui_config_defaults_roundtrip_through_core_config() {
+        let cfg = UiRotateConfig::default();
+        let core = core_config(&cfg);
+        assert!(core.min_urgency_days >= 1, "小时换算成天不得归零");
+        assert!(core.min_gap_days >= 1);
+    }
+
+    #[test]
+    fn capabilities_are_explicit_about_what_is_missing() {
+        let v = get_capabilities();
+        assert!(v["unavailable"].as_array().unwrap().len() >= 6);
+        let names: Vec<String> = v["unavailable"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x["name"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert!(names.iter().any(|n| n.contains("签到")));
+        assert!(names.iter().any(|n| n.contains("会话")));
+    }
+
+    #[test]
+    fn run_rotate_never_claims_to_have_switched() {
+        let r = run_rotate(Some("cn".into()));
+        let status = r.get("status").and_then(|x| x.as_str()).unwrap_or("");
+        assert!(
+            matches!(status, "suggested" | "hold" | "error"),
+            "轮换只允许产出建议，实得 {r}"
+        );
+        assert_ne!(status, "switched");
+    }
+
+    #[test]
+    fn rotate_logs_and_status_are_wellformed() {
+        let s = rotate_status();
+        assert_eq!(s["cliConfigured"], false, "Qoder 无 CLI 指针机制");
+        assert!(s.get("config").is_some());
+        let l = get_rotate_logs();
+        assert!(l["logs"].is_array());
+    }
+
+    #[test]
+    fn preview_import_rejects_garbage() {
+        assert!(preview_import_accounts("不是 JSON".into()).is_err());
+        let ok = preview_import_accounts(r#"[{"id":"a","uid":"u"}]"#.into()).unwrap();
+        assert_eq!(ok["total"], 1);
+    }
 
     #[test]
     fn variant_keys_match_frontend_contract() {

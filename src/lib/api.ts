@@ -175,7 +175,7 @@ async function httpCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       body: route.method === "POST" ? JSON.stringify(args ?? {}) : undefined,
     });
   } catch {
-    throw new Error(`无法连接 workbuddy-switch 服务（${API_BASE}），请先运行 \`workbuddy-switch\``);
+    throw new Error(`无法连接 qoder-switch 服务（${API_BASE}），请先运行 \`qs-switch-server\``);
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -184,7 +184,56 @@ async function httpCall<T>(cmd: string, args?: Record<string, unknown>): Promise
   return data as T;
 }
 
+/**
+ * Qoder 侧不存在的能力。保留参考实现的版式与按钮，但点下去要说清楚为什么没反应，
+ * 而不是假装成功或静默失败 —— 宁可不给数据，也不给假数据。
+ * 依据见 README 的「当前能力 / 已知边界」。
+ */
+const QODER_UNAVAILABLE: Record<string, string> = {
+  checkin: "Qoder 无签到接口",
+  checkin_all: "Qoder 无签到接口",
+  get_checkin_status: "Qoder 无签到接口",
+  get_checkin_logs: "Qoder 无签到接口",
+  get_auto_checkin_config: "Qoder 无签到接口",
+  save_auto_checkin_config: "Qoder 无签到接口",
+  get_travel_status: "Buddy 旅行是 WorkBuddy 专有玩法",
+  get_auto_travel_config: "Buddy 旅行是 WorkBuddy 专有玩法",
+  save_auto_travel_config: "Buddy 旅行是 WorkBuddy 专有玩法",
+  get_credit_expiry: "额度接口未取证",
+  get_credit_statistics: "额度接口未取证",
+  get_token_statistics: "Token 用量统计未实现",
+  oauth_start: "设备登录流程端点未取证，请用「导入本机账号」",
+  oauth_status: "设备登录流程端点未取证",
+  refresh_account_token: "刷新接口未取证",
+  list_sessions: "Qoder 会话不按账号归属，跨账号复制会串数据",
+  copy_sessions: "Qoder 会话不按账号归属，跨账号复制会串数据",
+  session_links_preview: "Qoder 会话不按账号归属，跨账号复制会串数据",
+  get_rate_limits: "限速归因未实现",
+  get_rate_limit_hook_status: "限速钩子未实现",
+  install_rate_limit_hook: "限速钩子未实现",
+  uninstall_rate_limit_hook: "限速钩子未实现",
+  get_rate_limit_config: "限速钩子未实现",
+  save_rate_limit_config: "限速钩子未实现",
+  check_update: "未配置发布源",
+  get_codebuddy_cli_status: "Qoder CLI 不落盘凭据，无独立账号指针",
+  install_codebuddy_cli_helper: "Qoder CLI 不落盘凭据，无独立账号指针",
+  switch_codebuddy_cli_account: "Qoder CLI 不落盘凭据，改桌面端即随之生效",
+  get_codebuddy_cn_ide_status: "对应 Qoder 桌面端，请用主切换按钮",
+  switch_codebuddy_cn_ide_account: "对应 Qoder 桌面端，请用主切换按钮",
+  detect_codebuddy_cn_ide_account: "对应 Qoder 桌面端，请用主切换按钮",
+  get_codebuddy_ide_status: "国际版桌面端尚无独立状态命令",
+  switch_codebuddy_ide_account: "国际版桌面端尚无独立状态命令",
+  detect_codebuddy_ide_account: "国际版桌面端尚无独立状态命令",
+  get_github_config: "自动更新未配置发布源",
+  save_github_config: "自动更新未配置发布源",
+  check_auth_permission: "Windows 无 macOS 那套磁盘权限限制",
+  open_permission_settings: "Windows 无 macOS 那套磁盘权限限制",
+  reveal_app_in_finder: "macOS 专属操作",
+};
+
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  const why = QODER_UNAVAILABLE[cmd];
+  if (why) throw new Error(`此项在 Qoder 侧不适用：${why}`);
   if (demoModeEnabled) {
     if (cmd === "get_credit_statistics" && args?.refresh === true) {
       throw new Error(DEMO_UNAVAILABLE_MESSAGE);

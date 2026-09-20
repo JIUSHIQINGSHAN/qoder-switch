@@ -755,14 +755,14 @@ export default function AccountsPage() {
           <div className="min-w-0">
             <h1 className="text-[28px] font-semibold tracking-tight">账号管理</h1>
             <p className="mt-2 text-sm leading-6 text-muted-foreground">
-              统一管理 WorkBuddy、CodeBuddy IDE 与 CodeBuddy CLI 账号、积分和签到状态。
+              统一管理 Qoder 桌面客户端与 Qoder CLI 的账号包、token 到期与切换。
             </p>
             <Tabs
               className="mt-4 gap-0"
               value={variant}
               onValueChange={(value) => setVariant(normalizeVariant(value))}
             >
-              <TabsList aria-label="WorkBuddy 档位">
+              <TabsList aria-label="Qoder 档位">
                 <TabsTrigger value="cn">国内版</TabsTrigger>
                 <TabsTrigger value="ai">国际版</TabsTrigger>
               </TabsList>
