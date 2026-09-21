@@ -29,6 +29,12 @@ if (!fs.existsSync(path.join(dist, "index.html"))) {
   process.exit(1);
 }
 
+const userArgs = process.argv
+  .slice(2)
+  .map((arg) => (arg.includes(" ") || arg.includes('"') ? `"${arg.replace(/"/g, '\\"')}"` : arg))
+  .join(" ");
+const extra = userArgs ? ` ${userArgs}` : "";
+
 console.log("Qoder Switch webui 已就绪。运行下面这行启动（默认 127.0.0.1:57891）：");
-console.log(`  "${exe}" --dist "${dist}"`);
+console.log(`  "${exe}" --dist "${dist}"${extra}`);
 console.log("自定义端口：在命令后追加 --port <1-65535>。浏览器打开 http://127.0.0.1:57891");
