@@ -19,6 +19,9 @@ use crate::Result;
 
 pub const FORMAT_VERSION: u32 = 1;
 
+/// 单个凭据文件最大允许导入 10MB（真实凭据文件通常在几十 KB 以内，防止 OOM 资源耗尽攻击）。
+pub const MAX_IMPORT_FILE_BYTES: usize = 10 * 1024 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportedFile {
     /// 角色名（`FileRole` 的 Debug 形态，与 bundle 内文件名一致）。
@@ -138,11 +141,23 @@ pub fn import(store: &Path, raw: &[u8], overwrite: bool) -> Result<ImportReport>
             .map_err(|e| format!("创建 {:?} 失败: {e}", dir))?;
 
         let mut members = Vec::new();
+        let mut seen_roles = std::collections::HashSet::new();
         for f in &b.files {
             let role = parse_role(&f.role)?;
+            if !seen_roles.insert(role) {
+                return Err(format!("分片含重复角色 {:?}，拒绝导入", role));
+            }
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(&f.data)
                 .map_err(|e| format!("{:?} base64 解码失败: {e}", f.role))?;
+            if bytes.len() > MAX_IMPORT_FILE_BYTES {
+                return Err(format!(
+                    "{:?} 超过单文件最大限制（{} 字节 > {} 字节）",
+                    role,
+                    bytes.len(),
+                    MAX_IMPORT_FILE_BYTES
+                ));
+            }
             let actual = sha256_of(&bytes);
             if actual != f.sha256 {
                 return Err(format!(
@@ -162,6 +177,14 @@ pub fn import(store: &Path, raw: &[u8], overwrite: bool) -> Result<ImportReport>
                 size: bytes.len() as u64,
                 critical: variant::role_is_critical(role),
             });
+        }
+        if b.target == QoderTarget::Desktop && !members.iter().any(|m| m.critical) {
+            return Err(format!(
+                "分片 {}/{}/{} 缺少关键凭据文件（无任何 critical 文件），拒绝导入",
+                b.account_id,
+                variant_label(b.variant),
+                target_label(b.target)
+            ));
         }
         let nb = bundle::Bundle {
             account_id: b.account_id.clone(),
@@ -326,5 +349,56 @@ mod tests {
         let err = import(&dest, &raw, false).unwrap_err();
         assert!(err.contains("格式版本"), "{err}");
         std::fs::remove_dir_all(dest).ok();
+    }
+
+    #[test]
+    fn import_rejects_duplicate_role_in_bundle() {
+        let (_roots, _store, tmp) = sandbox();
+        let other = tmp.join("other-store");
+        std::fs::create_dir_all(&other).unwrap();
+        let bad_json = r#"{
+            "format": 1,
+            "exported_at": "2026-09-21T00:00:00Z",
+            "bundles": [{
+                "account_id": "dup-test",
+                "variant": "cn",
+                "target": "desktop",
+                "created_at": "2026-09-21T00:00:00Z",
+                "identity": {},
+                "files": [
+                    {"role": "AuthMain", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "data": ""},
+                    {"role": "AuthMain", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "data": ""}
+                ]
+            }]
+        }"#;
+        let res = import(&other, bad_json.as_bytes(), false);
+        assert!(res.is_err(), "重复角色必须拒绝");
+        assert!(res.unwrap_err().contains("重复角色"));
+        std::fs::remove_dir_all(tmp).ok();
+    }
+
+    #[test]
+    fn import_rejects_desktop_without_critical_files() {
+        let (_roots, _store, tmp) = sandbox();
+        let other = tmp.join("other-store");
+        std::fs::create_dir_all(&other).unwrap();
+        let bad_json = r#"{
+            "format": 1,
+            "exported_at": "2026-09-21T00:00:00Z",
+            "bundles": [{
+                "account_id": "no-crit-test",
+                "variant": "cn",
+                "target": "desktop",
+                "created_at": "2026-09-21T00:00:00Z",
+                "identity": {},
+                "files": [
+                    {"role": "StatusEcho", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "data": ""}
+                ]
+            }]
+        }"#;
+        let res = import(&other, bad_json.as_bytes(), false);
+        assert!(res.is_err(), "桌面端缺少关键凭据文件必须拒绝");
+        assert!(res.unwrap_err().contains("缺少关键凭据文件"));
+        std::fs::remove_dir_all(tmp).ok();
     }
 }
