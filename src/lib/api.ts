@@ -44,7 +44,9 @@ import { screenshotDemoResponse } from "./screenshot-demo";
  */
 // 本项目的 HTTP 宿主（qs-switch-server）默认 57891；刻意与参考实现的 57890 错开，
 // 因为本机可能同时装着 workbuddy-switch 的 webui。
-const API_BASE = "http://127.0.0.1:57891";
+const API_BASE =
+  (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_API_BASE) ||
+  "http://127.0.0.1:57891";
 
 const DEMO_READ_COMMANDS = new Set([
   "get_status", "get_accounts", "get_codebuddy_cli_status", "get_codebuddy_cn_ide_status", "get_codebuddy_ide_status", "get_checkin_status",
@@ -178,8 +180,9 @@ async function httpCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       },
       body: route.method === "POST" ? JSON.stringify(args ?? {}) : undefined,
     });
-  } catch {
-    throw new Error(`无法连接 qoder-switch 服务（${API_BASE}），请先运行 \`qs-switch-server\``);
+  } catch (err) {
+    const detail = err instanceof Error ? `: ${err.message}` : "";
+    throw new Error(`无法连接 qoder-switch 服务（${API_BASE}）${detail}，请先运行 \`qs-switch-server\``);
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
