@@ -394,8 +394,8 @@ pub fn restore(
             Ok(h) => mismatches.push(format!(
                 "{:?} 期望 {}.. 实际 {}..",
                 t.role,
-                &t.want_sha[..8],
-                &h[..8]
+                &t.want_sha[..t.want_sha.len().min(8)],
+                &h[..h.len().min(8)]
             )),
             Err(e) => mismatches.push(format!("{:?} 读回失败: {e}", t.role)),
         }
