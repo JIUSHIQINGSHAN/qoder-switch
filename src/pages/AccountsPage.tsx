@@ -171,6 +171,7 @@ export default function AccountsPage() {
   const [cliSwitchTarget, setCliSwitchTarget] = useState<AccountMeta | null>(null);
   /** 删除账号确认目标（null=关闭） */
   const [deleteTarget, setDeleteTarget] = useState<AccountMeta | null>(null);
+  const [deleting, setDeleting] = useState(false);
   /** 当前档位下的账号：列表、计数、签到、积分等一律只作用于当前档位。 */
   const visibleAccounts = useMemo(
     () => accounts.filter((account) => accountVariant(account) === variant),
@@ -418,14 +419,17 @@ export default function AccountsPage() {
   }
 
   async function confirmDelete() {
-    if (!deleteTarget) return;
+    if (!deleteTarget || deleting) return;
     const a = deleteTarget;
-    setDeleteTarget(null);
+    setDeleting(true);
     try {
       await deleteAccount(a.id);
+      setDeleteTarget(null);
       toast.success("账号已删除");
     } catch (e) {
       toast.error("删除失败", { description: api.asError(e) });
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -910,7 +914,7 @@ export default function AccountsPage() {
                 </p>
               </>
             ) : (
-              "暂无账号。点击上方按钮导入本机账号或扫码登录。"
+              "暂无账号。点击上方按钮导入本机账号或从文件导入。"
             )}
           </div>
         ) : (
@@ -1047,10 +1051,11 @@ export default function AccountsPage() {
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteTarget(null)}>
+            <Button variant="outline" disabled={deleting} onClick={() => setDeleteTarget(null)}>
               取消
             </Button>
-            <Button variant="destructive" onClick={() => void confirmDelete()}>
+            <Button variant="destructive" disabled={deleting} onClick={() => void confirmDelete()}>
+              {deleting ? <Loader2 className="animate-spin mr-1.5 size-4" /> : null}
               删除
             </Button>
           </DialogFooter>
