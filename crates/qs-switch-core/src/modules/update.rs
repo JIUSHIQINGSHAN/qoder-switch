@@ -150,6 +150,8 @@ pub fn compare_versions(a: &str, b: &str) -> i64 {
 
 /// updater manifest 候选 URL（按优先级）。
 pub fn updater_manifest_urls(owner: &str, repo: &str, os: &str, arch: &str) -> Vec<String> {
+    let owner = owner.trim().trim_matches('/');
+    let repo = repo.trim().trim_matches('/');
     let os_slug = match os {
         "macos" | "darwin" => "macos",
         other => other,
@@ -363,5 +365,19 @@ mod tests {
         assert_eq!(compare_versions("0.10.0", "0.10.0-rc.1"), 1);
         // 预发布版本之间的排序
         assert_eq!(compare_versions("0.10.0-rc.1", "0.10.0-rc.2"), -1);
+    }
+
+    #[test]
+    fn updater_manifest_urls_trims_slashes_and_whitespace() {
+        let urls = updater_manifest_urls(" JIUSHIQINGSHAN/ ", " /qoder-switch/ ", "windows", "x86_64");
+        assert_eq!(urls.len(), 2);
+        assert_eq!(
+            urls[0],
+            "https://github.com/JIUSHIQINGSHAN/qoder-switch/releases/latest/download/latest.json"
+        );
+        assert_eq!(
+            urls[1],
+            "https://github.com/JIUSHIQINGSHAN/qoder-switch/releases/latest/download/latest-windows-x86_64.json"
+        );
     }
 }
