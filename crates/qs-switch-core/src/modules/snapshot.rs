@@ -14,6 +14,9 @@ use crate::modules::config::{
 };
 use crate::modules::variant::{credentials, QoderTarget, QoderVariant};
 
+/// 快照目录最多保留的历史记录数量，防止无界刷盘堆积磁盘。
+pub const MAX_SNAPSHOTS_RETAINED: usize = 30;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     pub variant: QoderVariant,
@@ -87,8 +90,12 @@ impl Snapshot {
     }
 
     pub fn save(&self) -> std::io::Result<PathBuf> {
-        let dir = snapshots_dir();
-        std::fs::create_dir_all(&dir)?;
+        self.save_in(&snapshots_dir())
+    }
+
+    /// 保存快照到指定目录，并自动修剪超过 `MAX_SNAPSHOTS_RETAINED` 的历史快照。
+    pub fn save_in(&self, dir: &std::path::Path) -> std::io::Result<PathBuf> {
+        std::fs::create_dir_all(dir)?;
         let path = dir.join(format!("{}.json", self.taken_at));
         // 与全库其它写入同一条原子路径：快照中途被杀不能留下截断的 json，
         // 否则 latest() 从此每次都失败（含每次 selfcheck）。
@@ -96,6 +103,22 @@ impl Snapshot {
             &path,
             &serde_json::to_vec_pretty(self).unwrap_or_default(),
         )?;
+
+        // 修剪旧快照：按文件名字典序升序（最旧的排在前面），超出上限则删除多余文件
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            let mut files: Vec<PathBuf> = entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false))
+                .collect();
+            files.sort();
+            if files.len() > MAX_SNAPSHOTS_RETAINED {
+                let to_remove = files.len() - MAX_SNAPSHOTS_RETAINED;
+                for p in files.into_iter().take(to_remove) {
+                    let _ = std::fs::remove_file(p);
+                }
+            }
+        }
+
         Ok(path)
     }
 
@@ -110,11 +133,15 @@ impl Snapshot {
     /// 解析失败的文件（历史残留/截断）跳过而不是硬失败：快照是辅助观测，
     /// 不该因为一张坏文件让 snapshot_now / selfcheck 永久报错。
     pub fn latest() -> std::io::Result<Option<Self>> {
-        let dir = snapshots_dir();
+        Self::latest_in(&snapshots_dir())
+    }
+
+    /// 从指定目录获取最新快照（单测沙箱与隔离使用）。
+    pub fn latest_in(dir: &std::path::Path) -> std::io::Result<Option<Self>> {
         if !dir.is_dir() {
             return Ok(None);
         }
-        let mut names: Vec<PathBuf> = std::fs::read_dir(&dir)?
+        let mut names: Vec<PathBuf> = std::fs::read_dir(dir)?
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false))
             .collect();
@@ -122,7 +149,9 @@ impl Snapshot {
         while let Some(p) = names.pop() {
             match Self::load(&p) {
                 Ok(s) => return Ok(Some(s)),
-                Err(e) => eprintln!("跳过无法解析的快照 {:?}: {e}", p),
+                Err(_) => {
+                    // 坏文件静默跳过继续找前一张，不污染控制台输出
+                }
             }
         }
         Ok(None)
@@ -286,6 +315,38 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn save_prunes_old_snapshots_beyond_capacity() {
+        let tmp = std::env::temp_dir().join(format!("qs-snap-test-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // 模拟连续存入 35 张快照
+        for i in 0..35 {
+            let snap = Snapshot {
+                taken_at: format!("20260921T1200{:02}Z", i),
+                entries: vec![],
+            };
+            snap.save_in(&tmp).unwrap();
+        }
+
+        let files: Vec<_> = std::fs::read_dir(&tmp)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
+            .collect();
+        assert_eq!(
+            files.len(),
+            MAX_SNAPSHOTS_RETAINED,
+            "快照文件数量应被严格限制在上限内"
+        );
+
+        // 最新的快照（20260921T120034Z）应存在，最早的（00..04）应已被修剪
+        let latest = Snapshot::latest_in(&tmp).unwrap().expect("有最新快照");
+        assert_eq!(latest.taken_at, "20260921T120034Z");
+
+        let _ = std::fs::remove_dir_all(tmp);
     }
 
     /// 沙箱里造一个"换号"：只动 critical 文件就必须被判定为 Modified。
