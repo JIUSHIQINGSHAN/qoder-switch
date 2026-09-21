@@ -71,7 +71,7 @@ cargo run --example qs-snapshot -- take      # 凭据文件快照（只读）
 cargo run --example qs-snapshot -- diff      # 比对最近两张快照
 cargo run --example qs-account  -- capture <名字> [cn|global] [desktop|cli|work]
 cargo run --example qs-account  -- list
-cargo test --workspace                       # 108 项测试全绿（core 76 / server 19 / 桌面宿主 13）
+cargo test --workspace                       # 117 项测试全绿（core 83 / server 20 / 桌面宿主 14）
 ```
 
 ## 无头自检
@@ -160,6 +160,8 @@ qoder-switch.exe --self-check && echo OK
   默认值）。前端把 HTTP body 原样当作 `invoke` 的返回值，所以这里返回**裸契约对象**，
   不套 `{ok,data}` 信封；多包一层会让 `{accounts}` 解成 `undefined`、整页空白，
   而网络面板里全是 200。`router.rs` 里有对应的回归测试。
+- 开机自启：基于 `tauri-plugin-autostart` 实现开机时携带 `--hidden` 参数静默启动到托盘
+- 应用内自动更新：集成 `tauri-plugin-updater`，基于 minisign 签名校验 GitHub Releases 产物，发布源与安装包完全公开可溯源
 
 ## 已知边界
 
