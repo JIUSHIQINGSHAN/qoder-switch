@@ -27,7 +27,8 @@ interface Props {
 
 /** 导入预览账号展示名（脱敏展示：昵称/邮箱/uid）。 */
 function previewLabel(a: ImportPreviewAccount): string {
-  return a.nickname || a.email || a.uid || `第 ${a.index + 1} 项`;
+  const indexText = typeof a.index === "number" ? `第 ${a.index + 1} 项` : "未命名账号";
+  return a.nickname || a.email || a.uid || indexText;
 }
 
 /** 导入账号弹框：选 JSON 文件 → 后端解析预览 → 勾选账号 → 导入合并。 */
@@ -83,6 +84,13 @@ export function ImportAccountsDialog({
       const text = String(reader.result ?? "");
       setFileName(file.name);
       setFileText(text);
+      if (!text.trim()) {
+        setParsing(false);
+        setPreview([]);
+        setSelected(new Set());
+        setError("所选文件为空，请选择有效的账号备份 JSON 文件");
+        return;
+      }
       setParsing(true);
       setError("");
       api
