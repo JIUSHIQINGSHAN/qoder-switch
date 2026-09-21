@@ -16,6 +16,9 @@ use qs_switch_core::modules::{bundle, switch};
 /// 托盘项 id 前缀，便于在事件里反解出要切的账号。
 const PREFIX: &str = "acct:";
 
+/// 托盘图标全局固定 ID
+pub const TRAY_ID: &str = "main-tray";
+
 /// 静默启动参数：注册开机自启时由插件注入（见 lib.rs 的 autostart 初始化）。
 pub const SILENT_STARTUP_ARG: &str = "--hidden";
 
@@ -41,7 +44,8 @@ pub fn setup_startup_visibility(app: &AppHandle, silent: bool) {
     }
 }
 
-pub fn install(app: &AppHandle) -> tauri::Result<()> {
+/// 构建最新账号列表对应的托盘菜单
+pub fn build_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let menu = Menu::new(app)?;
     menu.append(&MenuItem::with_id(app, "open", "显示主界面", true, None::<&str>)?)?;
     menu.append(&PredefinedMenuItem::separator(app)?)?;
@@ -76,8 +80,22 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
     }
     menu.append(&PredefinedMenuItem::separator(app)?)?;
     menu.append(&MenuItem::with_id(app, "quit", "退出 Qoder Switch", true, None::<&str>)?)?;
+    Ok(menu)
+}
 
-    let mut builder = TrayIconBuilder::new()
+/// 刷新托盘菜单（账号库有变动时由 UI 或内部调用）。
+pub fn refresh_tray_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let menu = build_menu(app)?;
+        tray.set_menu(Some(menu))?;
+    }
+    Ok(())
+}
+
+pub fn install(app: &AppHandle) -> tauri::Result<()> {
+    let menu = build_menu(app)?;
+
+    let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
         .tooltip("Qoder Switch · 关窗后仍在托盘常驻")
         .on_menu_event(move |app, event| {
@@ -110,6 +128,16 @@ fn spawn_switch(app: AppHandle, payload: String) {
             return;
         }
     };
+
+    // 检查 ProgressCell，避免在已有切号进行时并发重入
+    if let Some(cell) = app.try_state::<crate::compat::ProgressCell>() {
+        let g = cell.0.lock().unwrap_or_else(|p| p.into_inner());
+        if g.running {
+            let _ = app.emit("switch-progress", "已有切换正在进行中，请稍候".to_string());
+            return;
+        }
+    }
+
     let req = switch::Request {
         account_id: account_id.to_string(),
         variant,
@@ -120,15 +148,22 @@ fn spawn_switch(app: AppHandle, payload: String) {
         let roots = PathRoots::real();
         let store: PathBuf = qs_switch_core::modules::config::switch_root();
         let handle = app.clone();
+        if let Some(cell) = handle.try_state::<crate::compat::ProgressCell>() {
+            cell.set(true, Some("托盘正在切号".into()));
+        }
         let result = switch::execute(&roots, &store, &req, switch::Actor::Real, &mut |m| {
             let _ = handle.emit("switch-progress", m.to_string());
         });
+        if let Some(cell) = app.try_state::<crate::compat::ProgressCell>() {
+            cell.set(false, None);
+        }
         match result {
             Ok(j) => {
                 let _ = app.emit(
                     "switch-progress",
                     format!("托盘切换完成：{} → {:?}", j.account_id, j.phase),
                 );
+                let _ = refresh_tray_menu(&app);
             }
             Err(e) => {
                 let _ = app.emit("switch-progress", format!("托盘切换失败：{e}"));
@@ -169,5 +204,11 @@ mod silent_startup_tests {
         assert!(should_activate_on_second_launch(["qoder-switch.exe"]));
         assert!(!should_activate_on_second_launch([SILENT_STARTUP_ARG]));
         assert!(should_activate_on_second_launch(["--hidden-x"]));
+    }
+
+    #[test]
+    fn tray_id_constant_is_fixed() {
+        use super::TRAY_ID;
+        assert_eq!(TRAY_ID, "main-tray");
     }
 }

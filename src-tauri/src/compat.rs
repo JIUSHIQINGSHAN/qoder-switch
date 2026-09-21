@@ -133,7 +133,10 @@ pub async fn switch_account(
     })
     .await
     {
-        Ok(Ok(j)) => j,
+        Ok(Ok(j)) => {
+            let _ = crate::tray::refresh_tray_menu(&app);
+            j
+        }
         // 无论正常返回还是线程崩掉，都必须把 running 清零，
         // 否则前端的进度对话框会一直转下去。
         Ok(Err(e)) => {
@@ -155,11 +158,12 @@ pub async fn switch_account(
 /// 缺省包名由档位推出。
 #[tauri::command]
 pub async fn import_local(
+    app: tauri::AppHandle,
     account_id: Option<String>,
     variant: Option<String>,
     target: Option<String>,
 ) -> Result<Value, String> {
-    off_main(move || {
+    let res = off_main(move || {
         let roots = PathRoots::real();
         let store = switch_root();
         let v = variant_of(variant.as_deref());
@@ -174,12 +178,14 @@ pub async fn import_local(
         }
         Ok(json!({ "ok": true, "account": view::account_meta(&b) }))
     })
-    .await
+    .await?;
+    let _ = crate::tray::refresh_tray_menu(&app);
+    Ok(res)
 }
 
 #[tauri::command]
-pub async fn delete_account(account_id: String) -> Result<Value, String> {
-    off_main(move || {
+pub async fn delete_account(app: tauri::AppHandle, account_id: String) -> Result<Value, String> {
+    let res = off_main(move || {
         // account_id 是 store 路径的组成部分，delete 又是 remove_dir_all ——
         // 不校验就是"一次 invoke 删任意目录"的原语（绝对路径 join 会整体替换基目录）。
         bundle::validate_account_id(&account_id)?;
@@ -194,7 +200,9 @@ pub async fn delete_account(account_id: String) -> Result<Value, String> {
         std::fs::remove_dir_all(&dir).map_err(|e| format!("删除 {} 失败: {e}", dir.display()))?;
         Ok(json!({ "ok": true }))
     })
-    .await
+    .await?;
+    let _ = crate::tray::refresh_tray_menu(&app);
+    Ok(res)
 }
 
 #[tauri::command]
@@ -273,13 +281,16 @@ pub async fn preview_import_accounts(file_text: String) -> Result<Value, String>
 /// 导入。`indexes` 是用户在预览里勾选的下标。
 #[tauri::command]
 pub async fn import_accounts(
+    app: tauri::AppHandle,
     file_text: String,
     indexes: Option<Vec<usize>>,
 ) -> Result<Value, String> {
-    off_main(move || {
+    let res = off_main(move || {
         view::import_records(&switch_root(), &file_text, indexes.as_deref())
     })
-    .await
+    .await?;
+    let _ = crate::tray::refresh_tray_menu(&app);
+    Ok(res)
 }
 
 /// 前端逐项确认"哪些能力在 Qoder 侧不存在"，用于在界面上写明而不是装作能用。
