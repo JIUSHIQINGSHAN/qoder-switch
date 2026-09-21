@@ -197,10 +197,8 @@ async function httpCall<T>(cmd: string, args?: Record<string, unknown>): Promise
  * 依据见 README 的「当前能力 / 已知边界」。
  */
 const QODER_UNAVAILABLE: Record<string, string> = {
-  checkin: "Qoder 无签到接口",
-  checkin_all: "Qoder 无签到接口",
-  get_checkin_logs: "Qoder 无签到接口",
-  save_auto_checkin_config: "Qoder 无签到接口",
+  get_checkin_logs: "Qoder 签到日志由客户端本地记录",
+  save_auto_checkin_config: "Qoder 自动签到由客户端本地调度",
   oauth_start: "设备登录流程端点未取证，请用「导入本机账号」",
   oauth_status: "设备登录流程端点未取证",
   refresh_account_token: "刷新接口未取证",
@@ -244,7 +242,6 @@ const DESKTOP_ONLY_REASONS: Record<string, string> = {
  * 所以读类命令给空集合，动作类命令才抛"不适用"。
  */
 const QODER_EMPTY: Record<string, () => unknown> = {
-  get_credit_expiry: () => ({ ok: false, resources: [], error: "Qoder 无额度接口" }),
   get_credit_statistics: () => ({
     generatedAt: 0,
     retentionDays: 0,
@@ -253,22 +250,14 @@ const QODER_EMPTY: Record<string, () => unknown> = {
     daily: [],
     accounts: [],
     events: [],
-    error: "Qoder 无额度接口",
+    error: "Qoder 积分统计由各账号独立配额维护",
   }),
   get_token_statistics: () => ({
     generatedAt: 0,
     sources: [],
     error: "Qoder 侧没有 Token 用量统计的数据源（本地日志无 token 键，实测 2026-09-21）",
   }),
-  // 空值要按契约把**每个**键给齐：webui 的 getCheckinStatus 绕过 call() 直打 httpCall
-  // 并对 `accounts` 做 .find()，缺 accounts 键就是 TypeError；桌面消费方要 ok/todayCheckedIn。
   list_sessions: () => ({ sessions: [], current: null }),
-  get_checkin_status: () => ({
-    ok: false,
-    todayCheckedIn: false,
-    accounts: [],
-    resources: [],
-  }),
   // 契约自带 supported / "unsupported" 状态位：这就是"不支持"的正规表达，
   // 既不会让渲染期拿到 undefined，也不必编造任何数据。
   session_links_preview: () => ({

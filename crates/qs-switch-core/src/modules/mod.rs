@@ -4,6 +4,7 @@ pub mod config;
 pub mod export_import;
 pub mod notifications;
 pub mod process;
+pub mod quota;
 pub mod rotate;
 pub mod snapshot;
 pub mod switch;

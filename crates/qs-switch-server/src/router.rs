@@ -504,6 +504,10 @@ mod compat {
         "notifications",
         "notifications/record",
         "notifications/clear",
+        "credits",
+        "checkin/status",
+        "checkin",
+        "checkin/all",
     ];
 
     /// 命中则处理并返回 Some，未命中返回 None 交给自有端点。
@@ -685,6 +689,21 @@ mod compat {
             "notifications/clear" => {
                 notifications::clear_at(store)?;
                 Ok(json!({ "cleared": true }))
+            }
+            "credits" => {
+                let id = account_id(&input)?;
+                Ok(qs_switch_core::modules::quota::fetch_credit_expiry_sync(roots, store, &id, v))
+            }
+            "checkin/status" => {
+                let id = account_id(&input)?;
+                Ok(qs_switch_core::modules::quota::get_checkin_status_sync(roots, store, &id, v))
+            }
+            "checkin" => {
+                let id = account_id(&input)?;
+                Ok(qs_switch_core::modules::quota::checkin_sync(roots, store, &id, v))
+            }
+            "checkin/all" => {
+                Ok(qs_switch_core::modules::quota::checkin_all_sync(roots, store, v))
             }
             _ => Err(format!("契约路由漏了 {cmd}")),
         };

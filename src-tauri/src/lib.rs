@@ -89,7 +89,11 @@ pub fn run() {
             compat::get_github_config,
             compat::save_github_config,
             compat::check_update,
-            compat::relaunch_app
+            compat::relaunch_app,
+            compat::get_credit_expiry,
+            compat::get_checkin_status,
+            compat::checkin,
+            compat::checkin_all
         ])
         .run(tauri::generate_context!())
         .expect("Qoder Switch 启动失败");

@@ -348,6 +348,48 @@ pub async fn check_update(proxy: Option<String>, force: Option<bool>) -> Value {
 /// 已知边缘：restart 会原样保留 argv——若本次进程是自启带 `--hidden` 拉起的，
 /// 重启后仍处于静默驻留（可从托盘唤起主界面），不影响更新本身。
 #[tauri::command]
+pub async fn get_credit_expiry(account_id: String, variant: Option<String>) -> Value {
+    let roots = PathRoots::real();
+    let store = switch_root();
+    let v = variant_of(variant.as_deref());
+    qs_switch_core::modules::quota::fetch_credit_expiry(&roots, &store, &account_id, v).await
+}
+
+#[tauri::command]
+pub async fn get_checkin_status(account_id: String, variant: Option<String>) -> Value {
+    let roots = PathRoots::real();
+    let store = switch_root();
+    let v = variant_of(variant.as_deref());
+    qs_switch_core::modules::quota::get_checkin_status(&roots, &store, &account_id, v).await
+}
+
+#[tauri::command]
+pub async fn checkin(account_id: String, variant: Option<String>) -> Value {
+    let roots = PathRoots::real();
+    let store = switch_root();
+    let v = variant_of(variant.as_deref());
+    qs_switch_core::modules::quota::checkin(&roots, &store, &account_id, v).await
+}
+
+#[tauri::command]
+pub async fn checkin_all(variant: Option<String>) -> Value {
+    let roots = PathRoots::real();
+    let store = switch_root();
+    let v = variant_of(variant.as_deref());
+    let accounts = bundle::list_all(&store);
+    let mut success_count = 0;
+    for b in accounts {
+        if b.variant == v && b.target == QoderTarget::Desktop {
+            let res = qs_switch_core::modules::quota::checkin(&roots, &store, &b.account_id, v).await;
+            if res.get("result").and_then(|r| r.as_str()) == Some("success") {
+                success_count += 1;
+            }
+        }
+    }
+    json!({ "result": "success", "count": success_count })
+}
+
+#[tauri::command]
 pub fn relaunch_app(_app: tauri::AppHandle) {
     _app.restart();
 }
