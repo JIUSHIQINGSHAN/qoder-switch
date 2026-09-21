@@ -532,10 +532,24 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
         ) : !credit ? (
           <div className="py-3 text-sm text-muted-foreground">等待积分数据…</div>
         ) : !credit.ok ? (
-          <div className="flex min-w-0 items-center gap-2 py-3 text-sm text-destructive" title={credit.error}>
-            <Coins className="size-4 shrink-0" />
-            <span className="min-w-0 truncate">{credit.error || "积分查询失败"}</span>
-          </div>
+          credit.error?.includes("无额度接口") ? (
+            <div className="flex min-w-0 flex-col justify-center gap-1.5 py-2.5 text-xs">
+              <div className="flex items-center gap-2 text-foreground">
+                <Clock3 className="size-4 shrink-0 text-muted-foreground" />
+                <span className="font-medium text-[13px]">
+                  {account.expiresAt ? `Token 有效期至 ${formatFullDate(account.expiresAt)}` : "Token 长期有效"}
+                </span>
+              </div>
+              <div className="text-[11px] text-muted-foreground">
+                Qoder 采用套餐制，无单独积分消耗接口
+              </div>
+            </div>
+          ) : (
+            <div className="flex min-w-0 items-center gap-2 py-3 text-sm text-destructive" title={credit.error}>
+              <Coins className="size-4 shrink-0" />
+              <span className="min-w-0 truncate">{credit.error || "积分查询失败"}</span>
+            </div>
+          )
         ) : (
           <>
             <div className="flex items-baseline gap-x-3 gap-y-1">
