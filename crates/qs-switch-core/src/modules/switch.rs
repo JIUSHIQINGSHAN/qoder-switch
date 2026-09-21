@@ -161,6 +161,38 @@ pub fn journal_dir(store: &Path) -> PathBuf {
     store.join("journal")
 }
 
+/// 已经完结的切换日志保留上限（避免磁盘无界增长，待恢复的异常日志绝不修剪）。
+pub const MAX_COMPLETED_JOURNALS_RETAINED: usize = 30;
+
+/// 清理过多的已完结 journal（Completed / RolledBack），释放磁盘空间；待恢复条目永不删除。
+fn prune_completed_journals(store: &Path) {
+    let dir = journal_dir(store);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let mut completed = Vec::new();
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.extension().map(|x| x != "json").unwrap_or(true) {
+            continue;
+        }
+        if let Ok(bytes) = std::fs::read(&p) {
+            if let Ok(j) = serde_json::from_slice::<Journal>(&bytes) {
+                if !j.phase.needs_recovery() {
+                    completed.push((j.started_at, p));
+                }
+            }
+        }
+    }
+    if completed.len() > MAX_COMPLETED_JOURNALS_RETAINED {
+        completed.sort_by(|a, b| a.0.cmp(&b.0));
+        let to_remove = completed.len() - MAX_COMPLETED_JOURNALS_RETAINED;
+        for (_, p) in completed.into_iter().take(to_remove) {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+}
+
 fn write_journal(store: &Path, j: &Journal) -> Result<()> {
     let dir = journal_dir(store);
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建 journal 目录失败: {e}"))?;
@@ -300,6 +332,7 @@ pub fn execute(
 
     j.phase = Phase::Completed;
     write_journal(store, &j)?;
+    prune_completed_journals(store);
     Ok(j)
 }
 
@@ -367,6 +400,7 @@ pub fn recover(store: &Path, j: &Journal) -> Result<Phase> {
     let mut done = j.clone();
     done.phase = Phase::RolledBack;
     write_journal(store, &done)?;
+    prune_completed_journals(store);
     Ok(Phase::RolledBack)
 }
 
@@ -555,6 +589,61 @@ mod tests {
         assert!(recover(&s.store, &list[0]).unwrap() == Phase::RolledBack);
         assert_eq!(live(&s.roots), b"authB", "恢复后应退回 B");
         assert!(unfinished(&s.store).unwrap().is_empty(), "恢复后不该再被挑出");
+        std::fs::remove_dir_all(s.tmp).ok();
+    }
+
+    #[test]
+    fn prune_completed_journals_keeps_unrecovered() {
+        let s = sandbox();
+        let bk = s.store.join("backups").join("bk1");
+        std::fs::create_dir_all(&bk).unwrap();
+
+        // 写入 35 个已完成的 journal
+        for i in 0..35 {
+            let j = Journal {
+                id: format!("completed-{i}"),
+                account_id: "acct-test".into(),
+                variant: Cn,
+                target: QoderTarget::Desktop,
+                started_at: format!("2026-09-21T10:{:02}:00Z", i),
+                phase: Phase::Completed,
+                backup_dir: bk.clone(),
+                note: None,
+            };
+            write_journal(&s.store, &j).unwrap();
+        }
+
+        // 写入 1 个未完成（待恢复）的异常 journal（时间甚至比已完成的还要早）
+        let stranded = Journal {
+            id: "stranded-unrecovered".into(),
+            account_id: "acct-test".into(),
+            variant: Cn,
+            target: QoderTarget::Desktop,
+            started_at: "2026-09-21T00:00:00Z".into(),
+            phase: Phase::TargetClosed,
+            backup_dir: bk.clone(),
+            note: None,
+        };
+        write_journal(&s.store, &stranded).unwrap();
+
+        // 触发清理
+        prune_completed_journals(&s.store);
+
+        // 验证：已完成的被修剪到最多 30 个
+        let dir = journal_dir(&s.store);
+        let files: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
+            .collect();
+        // 30 个已完成 + 1 个未完成 = 31 个
+        assert_eq!(files.len(), MAX_COMPLETED_JOURNALS_RETAINED + 1);
+
+        // 未完成的日志绝不能被误删
+        let unfin = unfinished(&s.store).unwrap();
+        assert_eq!(unfin.len(), 1);
+        assert_eq!(unfin[0].id, "stranded-unrecovered");
+
         std::fs::remove_dir_all(s.tmp).ok();
     }
 }
