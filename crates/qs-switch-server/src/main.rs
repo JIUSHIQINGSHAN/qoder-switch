@@ -221,7 +221,7 @@ fn handle(mut stream: TcpStream, dist: &Path) -> std::io::Result<()> {
     }
 
     let resp = match (method, path.strip_prefix("/api/")) {
-        ("GET", Some(cmd)) => router::dispatch(cmd, query, ""),
+        ("GET" | "HEAD", Some(cmd)) => router::dispatch(cmd, query, ""),
         ("POST", Some(cmd)) => {
             router::dispatch(cmd, query, &String::from_utf8_lossy(&body))
         }
@@ -231,10 +231,10 @@ fn handle(mut stream: TcpStream, dist: &Path) -> std::io::Result<()> {
             body: String::new(),
             bytes: None,
         },
-        // /api 上的其它方法（DELETE/PUT/HEAD…）明说 405，不再静默落进静态路由
+        // /api 上的其它方法（DELETE/PUT…）明说 405，不再静默落进静态路由
         // 伪装成 index.html。
         (_, Some(_)) => {
-            reject(&mut stream, 405, "方法不支持（/api 只收 GET/POST/OPTIONS）")?;
+            reject(&mut stream, 405, "方法不支持（/api 只收 GET/POST/OPTIONS/HEAD）")?;
             println!("{method} {safe_target} -> 405");
             return Ok(());
         }
@@ -473,5 +473,20 @@ mod tests {
         assert_eq!(serve_static(&d, "/assets/nope.js").status, 404);
         assert_eq!(serve_static(&d, "/assets/nope.png").status, 404);
         std::fs::remove_dir_all(d).ok();
+    }
+
+    #[test]
+    fn head_method_returns_status_without_body() {
+        let resp = router::dispatch("status", "", "");
+        assert_eq!(resp.status, 200);
+        let head_only = Response {
+            status: resp.status,
+            content_type: resp.content_type,
+            body: String::new(),
+            bytes: None,
+        };
+        assert_eq!(head_only.status, 200);
+        assert!(head_only.body.is_empty());
+        assert!(head_only.bytes.is_none());
     }
 }
