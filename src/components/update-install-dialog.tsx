@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dialog";
 import * as api from "@/lib/api";
 import { GITHUB_RELEASE_URL, openReleaseUrl } from "@/lib/update";
+import { cn } from "@/lib/utils";
 import type { UpdateInfo } from "@/lib/types";
 
 type UpdateStage = "checking" | "downloading" | "latest" | "success" | "error";
@@ -64,6 +65,7 @@ interface UpdateInstallDialogProps {
 }
 
 function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 KB";
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
@@ -226,7 +228,10 @@ export function UpdateInstallDialog({
             </div>
             <div className="h-2 overflow-hidden rounded-full bg-muted">
               <div
-                className="h-full rounded-full bg-primary transition-[width] duration-200"
+                className={cn(
+                  "h-full rounded-full bg-primary transition-[width] duration-200",
+                  percent === null && "animate-pulse"
+                )}
                 style={{ width: `${percent ?? 30}%` }}
               />
             </div>
