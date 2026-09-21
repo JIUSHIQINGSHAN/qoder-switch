@@ -147,7 +147,9 @@ const tokenTotal = (value: TokenStatsTotals) =>
   value.input + value.output + value.cacheWrite;
 
 const percentage = (value: number, sum: number) =>
-  sum > 0 ? `${((value / sum) * 100).toFixed(1)}%` : "—";
+  Number.isFinite(value) && Number.isFinite(sum) && sum > 0
+    ? `${((value / sum) * 100).toFixed(1)}%`
+    : "—";
 
 const pad2 = (value: number) => String(value).padStart(2, "0");
 
@@ -226,7 +228,8 @@ function fillRangePoints(points: TokenStatsGroup[], range: RangeKey): TokenStats
   const cursor = new Date(`${start}T12:00:00`);
   const endDate = new Date(`${end}T12:00:00`);
   const filled: TokenStatsGroup[] = [];
-  while (cursor <= endDate) {
+  let maxSteps = 400;
+  while (cursor <= endDate && --maxSteps > 0) {
     const key = dateKey(cursor);
     const point = byDate.get(key);
     filled.push(
