@@ -90,8 +90,10 @@ function formatCredits(value: number | null | undefined): string {
 function formatDateTime(ts: number | null | undefined): string {
   // 0 不是"1970 年"，是"没有采集过"：Qoder 侧没有额度接口，采集时刻就是空。
   // 不挡住 0 的话，页面会显示"当前数据更新于 01/01 08:00"，像真有一个采集时刻。
-  if (!ts) return "—";
-  return new Date(ts).toLocaleString("zh-CN", {
+  if (!ts || !Number.isFinite(ts) || ts <= 0) return "—";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("zh-CN", {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
@@ -100,8 +102,10 @@ function formatDateTime(ts: number | null | undefined): string {
 }
 
 function formatDate(ts: number | null | undefined): string {
-  if (ts === null || ts === undefined) return "—";
-  return new Date(ts).toLocaleDateString("zh-CN", {
+  if (ts === null || ts === undefined || !Number.isFinite(ts) || ts <= 0) return "—";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString("zh-CN", {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
