@@ -27,11 +27,11 @@ function accountLabel(a: AccountMeta): string {
   return a.nickname || a.email || a.uid || a.id;
 }
 
-/** 导出文件名：wb-switch-accounts-YYYY-MM-DD.json */
+/** 导出文件名：qoder-switch-accounts-YYYY-MM-DD.json */
 function exportFileName(): string {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
-  return `wb-switch-accounts-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}.json`;
+  return `qoder-switch-accounts-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}.json`;
 }
 
 /** 前端 Blob 下载（webui 浏览器用）。 */
