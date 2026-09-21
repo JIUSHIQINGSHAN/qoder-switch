@@ -129,11 +129,11 @@ pub fn current_days(roots: &PathRoots, variant: QoderVariant) -> Option<i64> {
     current_scene(roots, variant).1
 }
 
-/// 收集某版本下所有桌面账号包的到期紧迫度。
-pub fn candidates(roots: &PathRoots, variant: QoderVariant) -> Vec<Candidate> {
+/// 收集某版本下所有桌面账号包的到期紧迫度（支持注入账号存储根，保证单测与沙箱隔离）。
+pub fn candidates_in(roots: &PathRoots, store: &Path, variant: QoderVariant) -> Vec<Candidate> {
     let mut out = Vec::new();
     let (live_uid, live_days) = current_scene(roots, variant);
-    for b in bundle::list_all(&crate::modules::config::switch_root()) {
+    for b in bundle::list_all(store) {
         if b.variant != variant || b.target != QoderTarget::Desktop {
             continue;
         }
@@ -151,6 +151,11 @@ pub fn candidates(roots: &PathRoots, variant: QoderVariant) -> Vec<Candidate> {
     out
 }
 
+/// 收集某版本下所有桌面账号包的到期紧迫度（默认全局目录）。
+pub fn candidates(roots: &PathRoots, variant: QoderVariant) -> Vec<Candidate> {
+    candidates_in(roots, &crate::modules::config::switch_root(), variant)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Suggestion {
     pub variant: QoderVariant,
@@ -164,7 +169,7 @@ pub struct Suggestion {
 
 /// 产出一次建议。只读：不写产品目录，不杀进程。
 pub fn suggest(roots: &PathRoots, store: &Path, variant: QoderVariant, cfg: &RotateConfig) -> Result<Suggestion> {
-    let cands = candidates(roots, variant);
+    let cands = candidates_in(roots, store, variant);
     let cur = current_days(roots, variant);
     let decision = decide(&cands, cur, cfg);
     // 探测失败按"在跑"处理（保守方向）：建议只会更谨慎，不会催着用户切。
@@ -309,6 +314,27 @@ mod tests {
         let back = read_state(&dir).unwrap();
         assert_eq!(back.last_suggested_account.as_deref(), Some("a"));
         assert_eq!(back.history.len(), 60);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn suggest_uses_isolated_store_without_global_leak() {
+        let dir = std::env::temp_dir().join(format!("qs-rotate-iso-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let roots = PathRoots::sandbox(&dir);
+        let store = dir.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+
+        // 空沙箱 store 中应无候选
+        let cands = candidates_in(&roots, &store, QoderVariant::Cn);
+        assert!(cands.is_empty(), "沙箱 store 必须为空，不得穿透至全局账号库");
+
+        let res = suggest(&roots, &store, QoderVariant::Cn, &CFG);
+        assert!(res.is_ok());
+        let s = res.unwrap();
+        assert!(s.decision.switch_to.is_none());
+        assert!(s.decision.reason.contains("没有可判定"));
+
         std::fs::remove_dir_all(dir).ok();
     }
 }
