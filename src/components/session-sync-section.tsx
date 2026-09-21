@@ -65,7 +65,11 @@ const VERDICT_BADGE: Record<SessionSyncVerdict, "success" | "warning" | "outline
 function primaryMode(group: SessionLinkPreviewGroup): SessionSyncMode | null {
   // 后端由 view.rs 统一给形状；这里仍对旧后端缺键做守卫（少一键=整树白屏的历史教训）。
   const modes = group.availableModes ?? [];
-  return modes.length > 0 ? modes[0] : null;
+  const first = modes.length > 0 ? modes[0] : null;
+  if (first === "fastForward" || first === "overwrite") {
+    return first;
+  }
+  return null;
 }
 
 function isActionable(group: SessionLinkPreviewGroup): boolean {
@@ -106,6 +110,8 @@ function summarySentence(group: SessionLinkPreviewGroup, targetLabel: string): s
       return "无需同步";
     case "unknown":
       return "暂时无法确认两边内容，本次不会同步";
+    default:
+      return "状态未说明，本次不会同步";
   }
 }
 
