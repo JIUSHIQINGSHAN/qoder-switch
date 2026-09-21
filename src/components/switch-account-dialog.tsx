@@ -95,8 +95,13 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
       return () => clearInterval(timer);
     }
     let unlisten: (() => void) | undefined;
-    listen<{ message: string }>("switch-progress", (e) => {
-      setProgress(e.payload.message);
+    listen<unknown>("switch-progress", (e) => {
+      const p = e.payload;
+      if (typeof p === "string") {
+        setProgress(p);
+      } else if (p && typeof p === "object" && "message" in p) {
+        setProgress(String((p as any).message));
+      }
     }).then((fn) => {
       unlisten = fn;
     });
@@ -504,8 +509,16 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
     </>
   );
 
+  function handleOpenChange(nextOpen: boolean) {
+    if (!nextOpen && !busy) {
+      setError("");
+      setProgress("");
+    }
+    onOpenChange(nextOpen);
+  }
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         showCloseButton={!busy}
         className="flex max-h-[min(90vh,calc(100vh-2rem))] min-w-0 flex-col overflow-hidden"
