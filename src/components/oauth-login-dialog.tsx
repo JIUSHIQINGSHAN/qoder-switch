@@ -76,6 +76,8 @@ export function OAuthLoginDialog({ open, onOpenChange, variant = DEFAULT_VARIANT
     const poll = async () => {
       try {
         const res = await api.oauthStatus(loginId);
+        // 挂起期间组件可能已清理：续期与状态写入都必须先判过期，否则轮询自我续期泄漏。
+        if (cancelled) return;
         if (res.done) {
           if (res.result) {
             await reconcileAccounts();
@@ -86,7 +88,7 @@ export function OAuthLoginDialog({ open, onOpenChange, variant = DEFAULT_VARIANT
           if (timer !== undefined) window.clearInterval(timer);
           return;
         }
-        timer = window.setTimeout(poll, 1500);
+        if (!cancelled) timer = window.setTimeout(poll, 1500);
       } catch (e) {
         if (!cancelled) setError(api.asError(e));
         if (timer !== undefined) window.clearInterval(timer);

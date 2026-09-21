@@ -55,8 +55,9 @@ fn desktop_version(roots: &PathRoots, v: QoderVariant) -> String {
 /// 前端 `AppStatus`。
 pub fn app_status(roots: &PathRoots, v: QoderVariant) -> Value {
     let auth = auth_codec::read_desktop_auth(roots, v).ok();
+    // 探测失败按"在跑"处理（保守）：界面会倾向谨慎提示，而不是谎报"没在跑"。
     json!({
-        "running": !process::running_pids(QoderTarget::Desktop.images(v)).is_empty(),
+        "running": process::running_pids(QoderTarget::Desktop.images(v)).map_or(true, |p| !p.is_empty()),
         "authFile": auth_file_path(roots, v),
         "current": auth.as_ref().map(|a| json!({
             "uid": a.user.id,
@@ -162,19 +163,26 @@ fn importable_records(file_text: &str) -> Result<Vec<Value>, String> {
 }
 
 /// 预览导入：只解析与校验，不写盘。
+///
+/// `index` 是该记录在可导入序列里的**原始下标**（含无 id 而不在预览里展示的记录），
+/// `import_records` 的 `indexes` 按同一序列取下标 —— 两边必须同源，勾选才不会错位。
+/// `hasToken` 对应"该记录带凭据载荷"，前端用它在预览里标"缺少 token"。
 pub fn preview_import(file_text: &str) -> Result<Value, String> {
     let arr = importable_records(file_text)?;
     let accounts: Vec<Value> = arr
         .iter()
-        .filter_map(|r| {
+        .enumerate()
+        .filter_map(|(i, r)| {
             let id = r.get("id").and_then(|x| x.as_str())?;
             Some(json!({
+                "index": i,
                 "id": id,
                 "uid": r.get("uid").and_then(|x| x.as_str()),
                 "nickname": r.get("nickname").and_then(|x| x.as_str()),
                 "email": r.get("email").and_then(|x| x.as_str()),
                 "variant": r.get("variant").and_then(|x| x.as_str()),
                 "expiresAt": r.get("expiresAt").and_then(|x| x.as_u64()),
+                "hasToken": r.get("payload").and_then(|x| x.as_str()).is_some(),
             }))
         })
         .collect();
@@ -198,6 +206,10 @@ pub fn import_records(
             skipped += 1;
             continue;
         };
+        // 记录里的 id 只用于"已存在"判定，但仍会拼路径 —— 统一过白名单。
+        if let Some(id) = rec.get("id").and_then(|x| x.as_str()) {
+            bundle::validate_account_id(id)?;
+        }
         let existed = rec
             .get("id")
             .and_then(|x| x.as_str())
@@ -221,14 +233,24 @@ pub fn import_records(
 
 /// 切换结果。`shareSessions` 在 Qoder 侧没有对应机制，必须在 message 里说清"没做"，
 /// 而不是收下参数静默忽略 —— 用户会以为会话已经跟着迁走了。
+///
+/// 键名按前端 `SwitchResult` 契约：`account`（不是 accountId）、`backup`（备份目录，
+/// 无则 null）、`variant`。`restarted`/`message` 是契约之外的附加信息，前端可无视。
 pub fn switch_result(j: &switch::Journal, restart: bool, ignored_session: bool) -> Value {
     let mut message = format!("已切到 {}（{:?}）", j.account_id, j.phase);
     if ignored_session {
         message.push_str("；会话复制未执行 —— Qoder 的会话不按账号归属，跨账号复制会串数据");
     }
+    let backup = if j.backup_dir.as_os_str().is_empty() {
+        Value::Null
+    } else {
+        json!(j.backup_dir.display().to_string())
+    };
     json!({
         "ok": j.phase == switch::Phase::Completed,
-        "accountId": j.account_id,
+        "account": j.account_id,
+        "variant": variant_key(j.variant),
+        "backup": backup,
         "restarted": restart,
         "message": message,
     })
@@ -546,5 +568,83 @@ mod tests {
             return;
         }
         assert!(arr.iter().any(|a| a["expiresAt"].is_number()));
+    }
+
+    /// 预览下标与导入下标必须同源：前端把预览里勾的 `index` 原样传回 `import_records`。
+    /// 历史坑：预览曾只给 `id`（契约要 `index`/`hasToken`），前端勾选全乱；webui 还把
+    /// 坏 indexes 静默吞成"缺省=全部导入"。这条测试钉死两边的同源关系与形状。
+    #[test]
+    fn preview_indexes_align_with_import_records() {
+        let tmp = std::env::temp_dir().join(format!("qs-view-{}", uuid::Uuid::new_v4().simple()));
+        let roots = PathRoots::sandbox(&tmp);
+        let store = tmp.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let d = crate::modules::variant::desktop_dir(&roots, QoderVariant::Cn);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("auth.v1.dat"), b"authA").unwrap();
+        std::fs::write(d.join("Local State"), b"keyA").unwrap();
+        std::fs::write(d.join("auth.machine-id"), b"m1").unwrap();
+        let cli = roots.home.join(".qoder-cn");
+        std::fs::create_dir_all(&cli).unwrap();
+        std::fs::write(cli.join(".qoder-app-status.json"), b"{\"email\":\"a@x.com\"}").unwrap();
+        bundle::capture(&roots, &store, "acct-a", QoderVariant::Cn, QoderTarget::Desktop).unwrap();
+
+        let raw = export_import::to_bytes(&export_import::export_account(&store, "acct-a").unwrap())
+            .map_err(|e| e.to_string())
+            .unwrap();
+        let file_text = serde_json::to_string(&json!([
+            { "id": "acct-a", "nickname": "A", "payload": String::from_utf8(raw).unwrap() },
+            { "id": "no-token", "nickname": "B" },
+            { "uid": "no-id" },
+        ]))
+        .unwrap();
+
+        let pv = preview_import(&file_text).unwrap();
+        let arr = pv["accounts"].as_array().unwrap();
+        assert_eq!(pv["total"], 2, "无 id 的记录不进预览，实得 {pv}");
+        assert_eq!(arr[0]["index"], 0, "{pv}");
+        assert_eq!(arr[0]["hasToken"], true, "{pv}");
+        assert_eq!(arr[1]["index"], 1, "下标必须按原始序列取（含被隐藏的无 id 记录）：{pv}");
+        assert_eq!(arr[1]["hasToken"], false, "{pv}");
+
+        // 勾 index 1（无 token 记录）→ 只 skip、零写入；勾 index 0 → 真正写入全部分片。
+        let rep = import_records(&store, &file_text, Some(&[1])).unwrap();
+        assert_eq!(rep["imported"], 0, "{rep}");
+        assert_eq!(rep["skipped"], 1, "{rep}");
+        let rep = import_records(&store, &file_text, Some(&[0])).unwrap();
+        assert_eq!(
+            rep["imported"], 1,
+            "勾 index 0 必须只导入那一条记录（一个分片）: {rep}"
+        );
+        std::fs::remove_dir_all(tmp).ok();
+    }
+
+    /// `switch_result` 的键必须对齐前端 `SwitchResult` 契约：`account`（不是 accountId）、
+    /// `backup`、`variant`。此前输出 `accountId` 且缺 `backup`，切换成功后备份路径提示
+    /// 永远不显示。
+    #[test]
+    fn switch_result_matches_frontend_contract() {
+        let j = switch::Journal {
+            id: "j1".into(),
+            account_id: "acct-a".into(),
+            variant: QoderVariant::Cn,
+            target: QoderTarget::Desktop,
+            started_at: "20260921T000000Z".into(),
+            phase: switch::Phase::Completed,
+            backup_dir: std::path::PathBuf::from("E:/backup/dir"),
+            note: None,
+        };
+        let v = switch_result(&j, true, false);
+        for k in ["ok", "account", "variant", "backup"] {
+            assert!(v.get(k).is_some(), "契约键 {k} 缺失: {v}");
+        }
+        assert_eq!(v["account"], "acct-a");
+        assert_eq!(v["backup"], "E:/backup/dir");
+        assert_eq!(v["variant"], "cn");
+        assert!(v.get("accountId").is_none(), "契约键是 account 不是 accountId: {v}");
+        // journal 尚未产生备份目录时 backup 必须是 null，不是空字符串。
+        let mut j2 = j.clone();
+        j2.backup_dir = std::path::PathBuf::new();
+        assert_eq!(switch_result(&j2, false, false)["backup"], serde_json::Value::Null);
     }
 }

@@ -61,11 +61,12 @@ pub fn export_account(store: &Path, account_id: &str) -> Result<Export> {
                 .map_err(|e| format!("读包内 {:?} 失败: {e}", m.file_name))?;
             let actual = sha256_of(&bytes);
             if actual != m.sha256 {
+                // bundle.json 可能被截断出短哈希，别让错误消息本身先 panic。
                 return Err(format!(
                     "包内 {:?} 已损坏（期望 {}.. 实际 {}..），拒绝导出",
                     m.file_name,
-                    &m.sha256[..8],
-                    &actual[..8]
+                    &m.sha256[..m.sha256.len().min(8)],
+                    &actual[..actual.len().min(8)]
                 ));
             }
             files.push(ExportedFile {
@@ -119,6 +120,10 @@ pub fn import(store: &Path, raw: &[u8], overwrite: bool) -> Result<ImportReport>
     let mut skipped = Vec::new();
 
     for b in &export.bundles {
+        // account_id 来自被导入的外部文件，是 store 路径的组成部分 —— 不校验就是
+        // "导入一个分享文件 = 在任意目录种凭据副本"的写原语。
+        bundle::validate_account_id(&b.account_id)
+            .map_err(|e| format!("导出文件含非法账号名: {e}"))?;
         let dir = bundle::bundle_dir_in(store, &b.account_id, b.variant, b.target);
         if !overwrite && dir.join("bundle.json").is_file() {
             skipped.push(format!(
@@ -143,8 +148,8 @@ pub fn import(store: &Path, raw: &[u8], overwrite: bool) -> Result<ImportReport>
                 return Err(format!(
                     "{:?} 哈希不符（期望 {}.. 实际 {}..），整个导入中止",
                     role,
-                    &f.sha256[..8],
-                    &actual[..8]
+                    &f.sha256[..f.sha256.len().min(8)],
+                    &actual[..actual.len().min(8)]
                 ));
             }
             let file_name = format!("{:?}", role).to_lowercase();

@@ -42,16 +42,24 @@ pub(crate) fn hide_console(cmd: &mut std::process::Command) {
 
 /// 目标在跑哪些进程。Windows 用 `tasklist` 的 CSV 输出，一次拿全再按镜像名过滤，
 /// 避免每个镜像名起一个进程。
-pub fn running_pids(images: &[&str]) -> Vec<u32> {
+///
+/// 失败（tasklist 缺失/被策略阻止/输出异常）返回 Err，**不折叠成空列表**：
+/// "探测不到"与"没在跑"是两回事，折叠会让关进程门 fail-open。
+pub fn running_pids(images: &[&str]) -> std::result::Result<Vec<u32>, String> {
     let mut cmd = std::process::Command::new("tasklist");
     cmd.args(["/nh", "/fo", "csv"]);
     hide_console(&mut cmd);
-    let out = match cmd.output()
-    {
+    let out = match cmd.output() {
         Ok(o) if o.status.success() => o.stdout,
-        _ => return Vec::new(),
+        Ok(o) => {
+            return Err(format!(
+                "tasklist 退出码 {:?}（被策略阻止？）",
+                o.status.code()
+            ))
+        }
+        Err(e) => return Err(format!("tasklist 无法启动: {e}")),
     };
-    String::from_utf8_lossy(&out)
+    Ok(String::from_utf8_lossy(&out)
         .lines()
         .filter_map(|line| {
             // "IMAGE NAME","PID","SESSION NAME",...
@@ -60,11 +68,13 @@ pub fn running_pids(images: &[&str]) -> Vec<u32> {
             let pid = cols.next()?.trim().parse::<u32>().ok()?;
             images.iter().any(|i| image_matches(name, i)).then_some(pid)
         })
-        .collect()
+        .collect())
 }
 
+/// 便捷判定。探测失败按"没在跑"返回 false —— 只给纯展示场景兜底；
+/// 决定是否写盘/关进程的路径必须用 [`running_pids`] 自己 fail-closed。
 pub fn is_running(variant: QoderVariant, target: QoderTarget) -> bool {
-    !running_pids(target.images(variant)).is_empty()
+    running_pids(target.images(variant)).map_or(false, |p| !p.is_empty())
 }
 
 /// 当前进程的祖先链镜像名（含自身，从近到远）。
@@ -230,7 +240,9 @@ pub fn close(
     verdict: &Hosted,
 ) -> Result<()> {
     let images = target.images(variant);
-    let pids = running_pids(images);
+    // 关进程路径上探测失败必须报错而不是当"没在跑"放行：那等于与活着的
+    // Qoder 赛跑写凭据。
+    let pids = running_pids(images)?;
     if pids.is_empty() {
         return Ok(());
     }
@@ -255,25 +267,25 @@ pub fn close(
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_s);
     while std::time::Instant::now() < deadline {
-        if running_pids(images).is_empty() {
+        if running_pids(images).map_or(true, |p| p.is_empty()) {
             return Ok(());
         }
         std::thread::sleep(std::time::Duration::from_millis(300));
     }
-    for pid in running_pids(images) {
+    let survivors = running_pids(images).unwrap_or_default();
+    for pid in survivors {
         let mut cmd = std::process::Command::new("taskkill");
         cmd.args(["/PID", &pid.to_string(), "/F", "/T"]);
         hide_console(&mut cmd);
         let _ = cmd.output();
     }
-    if running_pids(images).is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
+    if running_pids(images).map_or(false, |p| !p.is_empty()) {
+        return Err(format!(
             "{:?}·{:?} 仍有进程未退出，放弃写入（继续写会撞上正在重写 auth 的进程）",
             variant, target
-        ))
+        ));
     }
+    Ok(())
 }
 
 /// 启动目标。DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP，使其不随调用方退出。
@@ -297,7 +309,7 @@ mod tests {
     /// 探测本身不能抛异常，且必须能在开发机上看到真实在跑的桌面端。
     #[test]
     fn detects_live_desktop() {
-        let running = running_pids(QoderVariant::Cn.desktop_images());
+        let running = running_pids(QoderVariant::Cn.desktop_images()).unwrap_or_default();
         // 本机 Qoder CN 桌面端在跑；若哪天没跑，本测试转为提示。
         if running.is_empty() {
             eprintln!("NOTE: 本机当前没有 Qoder CN 桌面进程");
@@ -422,7 +434,7 @@ mod tests {
 
     #[test]
     fn close_refuses_when_not_clean() {
-        if running_pids(QoderVariant::Cn.desktop_images()).is_empty() {
+        if running_pids(QoderVariant::Cn.desktop_images()).map_or(true, |p| p.is_empty()) {
             eprintln!("NOTE: 没有 Qoder CN 进程，close 会直接返回 Ok");
             return;
         }

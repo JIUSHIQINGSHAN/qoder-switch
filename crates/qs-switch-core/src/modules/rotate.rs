@@ -113,22 +113,38 @@ fn state_path(store: &Path) -> PathBuf {
     store.join("rotate_state.json")
 }
 
+/// 现场登录态：uid + token 剩余天数（同一次解密，保证两者属于同一个账号）。
+pub fn current_scene(roots: &PathRoots, variant: QoderVariant) -> (Option<String>, Option<i64>) {
+    match auth_codec::read_desktop_auth(roots, variant) {
+        Ok(auth) => {
+            let uid = Some(auth.user.id.clone()).filter(|s| !s.trim().is_empty());
+            (uid, bundle::days_until(&auth.expires_at))
+        }
+        Err(_) => (None, None),
+    }
+}
+
 /// 读当前桌面登录态的 token 剩余天数（用于"当前账号"这一侧的判定）。
 pub fn current_days(roots: &PathRoots, variant: QoderVariant) -> Option<i64> {
-    let auth = auth_codec::read_desktop_auth(roots, variant).ok()?;
-    bundle::days_until(&auth.expires_at)
+    current_scene(roots, variant).1
 }
 
 /// 收集某版本下所有桌面账号包的到期紧迫度。
 pub fn candidates(roots: &PathRoots, variant: QoderVariant) -> Vec<Candidate> {
     let mut out = Vec::new();
+    let (live_uid, live_days) = current_scene(roots, variant);
     for b in bundle::list_all(&crate::modules::config::switch_root()) {
         if b.variant != variant || b.target != QoderTarget::Desktop {
             continue;
         }
         let days = b.identity.token_days_left().or_else(|| {
-            // 认领时没解出来（例如包是旧版建的）就直接读现场文件试一次。
-            current_days(roots, variant)
+            // 只有确认这个包就是现场登录的那个账号，才允许读现场文件补到期；
+            // 否则陌生包会被塞进"当前账号"的天数，decide() 据此把它当成紧迫候选。
+            if live_uid.is_some() && b.identity.uid == live_uid {
+                live_days
+            } else {
+                None
+            }
         });
         out.push(Candidate { account_id: b.account_id.clone(), days_left: days });
     }
@@ -151,7 +167,9 @@ pub fn suggest(roots: &PathRoots, store: &Path, variant: QoderVariant, cfg: &Rot
     let cands = candidates(roots, variant);
     let cur = current_days(roots, variant);
     let decision = decide(&cands, cur, cfg);
-    let running = !process::running_pids(QoderTarget::Desktop.images(variant)).is_empty();
+    // 探测失败按"在跑"处理（保守方向）：建议只会更谨慎，不会催着用户切。
+    let running = process::running_pids(QoderTarget::Desktop.images(variant))
+        .map_or(true, |p| !p.is_empty());
     let hosted = matches!(
         process::hosted_by(variant, QoderTarget::Desktop),
         process::Hosted::No
@@ -161,11 +179,10 @@ pub fn suggest(roots: &PathRoots, store: &Path, variant: QoderVariant, cfg: &Rot
     } else if !hosted {
         "本进程被目标客户端托管，从这里执行会连同会话一起终止".into()
     } else {
-        format!(
-            "切换会终止并重开 {:?} 客户端（共 {} 个进程在跑），需人工确认",
-            variant,
-            process::running_pids(QoderTarget::Desktop.images(variant)).len()
-        )
+        let n = process::running_pids(QoderTarget::Desktop.images(variant))
+            .map(|p| p.len())
+            .unwrap_or(0);
+        format!("切换会终止并重开 {:?} 客户端（共 {n} 个进程在跑），需人工确认", variant)
     };
     let s = Suggestion {
         variant,

@@ -56,13 +56,23 @@ pub fn now_ts() -> String {
 }
 
 /// 原子写：同目录临时文件 + rename。目标目录由调用方保证存在。
+///
+/// rename 前先把数据 `sync_all` 推到盘上：journal、备份清单这些崩溃恢复依据
+/// 都走这里，断电后"原子"文件绝不能是 0 字节或截断的。
 pub fn atomic_write_bytes(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
     let stem = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".to_string());
     let tmp = path.with_file_name(format!("{stem}.tmp-{}", uuid::Uuid::new_v4().simple()));
-    std::fs::write(&tmp, content).map_err(|e| {
+    let write = || -> std::io::Result<()> {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(content)?;
+        f.sync_all()?;
+        Ok(())
+    };
+    write().map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         e
     })?;
@@ -79,9 +89,14 @@ pub fn read_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
 /// 流式无关的小文件哈希；读不到（锁/权限）返回 Err 而不是伪造摘要。
 pub fn sha256_hex(path: &Path) -> std::io::Result<String> {
     let bytes = std::fs::read(path)?;
+    Ok(sha256_hex_bytes(&bytes))
+}
+
+/// 字节串的 SHA-256 十六进制摘要（校验内存里的数据时用，不必绕道磁盘）。
+pub fn sha256_hex_bytes(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
-    h.update(&bytes);
-    Ok(hex::encode(h.finalize()))
+    h.update(bytes);
+    hex::encode(h.finalize())
 }
 
 pub fn mtime_ms(path: &Path) -> std::io::Result<u64> {

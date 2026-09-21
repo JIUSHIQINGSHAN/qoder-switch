@@ -143,6 +143,25 @@ pub fn accounts_root_in(store: &Path) -> PathBuf {
     store.join("accounts")
 }
 
+/// 账号名的唯一合法形态。它是 store 路径的组成部分，而 delete 端点会对解析出的
+/// 目录执行 `remove_dir_all` —— 含路径分隔符、`..`、盘符的 id 会把删除/写入带出
+/// `store/accounts/`。在 capture / load / import / delete 的入口统一收口。
+pub fn validate_account_id(account_id: &str) -> Result<()> {
+    let ok = !account_id.is_empty()
+        && account_id.len() <= 64
+        && !account_id.starts_with('.')
+        && account_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "账号名 {account_id:?} 不合法：只允许字母/数字/点/下划线/连字符（1–64 位，不以点开头）"
+        ))
+    }
+}
+
 pub fn bundle_dir_in(
     store: &Path,
     account_id: &str,
@@ -163,6 +182,7 @@ pub fn capture(
     variant: QoderVariant,
     target: QoderTarget,
 ) -> Result<Bundle> {
+    validate_account_id(account_id)?;
     let files = credentials(roots, variant, target);
     let dir = bundle_dir_in(store, account_id, variant, target);
     std::fs::create_dir_all(&dir)
@@ -180,6 +200,18 @@ pub fn capture(
         let bytes = read_bytes(&f.path).map_err(|e| {
             format!("读取 {:?} 失败（进程占用或权限不足）: {e}", f.path)
         })?;
+        // 目标进程可能正在重写该文件（Qoder 会话期持续重写 auth，见 restore 的注释）。
+        // 读两次、哈希一致才收：单次读盘可能拿到撕裂的半写文件，而它的摘要会被记成
+        // 正台账 —— 此后包内校验、写回校验、导出校验全按这份坏摘要比对，一路绿灯。
+        let bytes2 = read_bytes(&f.path).map_err(|e| {
+            format!("复核读取 {:?} 失败: {e}", f.path)
+        })?;
+        if sha256_of(&bytes) != sha256_of(&bytes2) {
+            return Err(format!(
+                "{:?} 正在被写入（两次读取内容不一致），请先关闭目标客户端再认领",
+                f.path
+            ));
+        }
         let file_name = f.stored_name();
         atomic_write_bytes(&dir.join(&file_name), &bytes)
             .map_err(|e| format!("写入包内文件 {file_name} 失败: {e}"))?;
@@ -226,6 +258,7 @@ pub fn load(
     variant: QoderVariant,
     target: QoderTarget,
 ) -> Result<Bundle> {
+    validate_account_id(account_id)?;
     let path = bundle_dir_in(store, account_id, variant, target).join("bundle.json");
     let bytes = read_bytes(&path).map_err(|e| format!("读 {:?} 失败: {e}", path))?;
     serde_json::from_slice(&bytes).map_err(|e| format!("{path:?} 解析失败: {e}"))
@@ -306,10 +339,14 @@ pub fn restore(
         } else {
             None
         };
+        let sha256 = saved_name.as_ref().and_then(|name| {
+            sha256_hex(&backup_dir.join(name)).ok()
+        });
         items.push(BackupItem {
             role: t.role,
             path: t.path.clone(),
             saved_name,
+            sha256,
         });
     }
     // 清单必须先于任何写入落盘：进程在这中间被杀掉，事后才有依据退回去。
@@ -384,6 +421,10 @@ struct BackupItem {
     /// Some(name) = 备份前现场存在，文件存于备份目录下的 `name`；
     /// None = 备份前不存在，回滚时应删除我们创建出来的文件。
     saved_name: Option<String>,
+    /// 备份文件的期望哈希。Option 只为兼容旧清单（字段缺失按不校验处理）：
+    /// 断电后备份文件可能截断，没有这道校验，恢复会把损坏凭据当"原状"写回现场。
+    #[serde(default)]
+    sha256: Option<String>,
 }
 
 /// 落盘的备份清单。有了它，回滚就不再依赖内存 —— 进程被杀或断电后，
@@ -421,24 +462,28 @@ pub fn undo_backup(backup_dir: &Path) -> Result<()> {
     restore_from_backup(backup_dir, &m.items)
 }
 
-/// 备份目录内可见的清单条目（供 UI 展示"这次动了哪些文件"）。
-pub fn backup_items(backup_dir: &Path) -> Result<Vec<(FileRole, PathBuf, bool)>> {
-    let bytes = read_bytes(&backup_dir.join(MANIFEST_FILE))
-        .map_err(|e| format!("读备份清单失败: {e}"))?;
-    let m: BackupManifest = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("备份清单解析失败: {e}"))?;
-    Ok(m.items
-        .into_iter()
-        .map(|i| (i.role, i.path, i.saved_name.is_some()))
-        .collect())
-}
-
 fn restore_from_backup(backup_dir: &Path, backups: &[BackupItem]) -> Result<()> {
     let mut errs = Vec::new();
     for b in backups {
         if let Some(name) = &b.saved_name {
+            let write_back = |bytes: &[u8]| -> Result<()> {
+                // 断电后备份文件可能截断/为空：带期望哈希的清单必须先把损坏的备份
+                // 拦下，绝不能把损坏凭据当"原状"无声写回现场。旧清单无哈希则照旧。
+                if let Some(want) = &b.sha256 {
+                    let actual = crate::modules::config::sha256_hex_bytes(bytes);
+                    if actual != *want {
+                        return Err(format!(
+                            "备份文件 {name} 已损坏（期望 {}.. 实际 {}..），拒绝按它恢复",
+                            &want[..8.min(want.len())],
+                            &actual[..8.min(actual.len())]
+                        ));
+                    }
+                }
+                atomic_write_bytes(&b.path, bytes)
+                    .map_err(|e| format!("写回 {:?} 失败: {e}", b.path))
+            };
             match read_bytes(&backup_dir.join(name)).and_then(|bytes| {
-                atomic_write_bytes(&b.path, &bytes)
+                write_back(&bytes).map_err(std::io::Error::other)
             }) {
                 Ok(()) => {}
                 Err(e) => errs.push(format!("{:?}: {e}", b.path)),
@@ -745,11 +790,13 @@ mod tests {
                     role: FileRole::AuthMain,
                     path: restored_path.clone(),
                     saved_name: Some("saved".into()),
+                    sha256: None,
                 },
                 BackupItem {
                     role: FileRole::CliUser,
                     path: created_path.clone(),
                     saved_name: None,
+                    sha256: None,
                 },
             ],
         )

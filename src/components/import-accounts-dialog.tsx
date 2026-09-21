@@ -38,6 +38,9 @@ export function ImportAccountsDialog({
   variant = DEFAULT_VARIANT,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // 预览请求的过期令牌：慢的旧文件响应回来时不得覆盖新文件的状态，
+  // 否则"界面展示 A 的账号、实际导入 B 的同下标记录"。关闭重开时同理。
+  const previewTokenRef = useRef(0);
   const [fileName, setFileName] = useState("");
   const [fileText, setFileText] = useState("");
   const [preview, setPreview] = useState<ImportPreviewAccount[]>([]);
@@ -48,6 +51,7 @@ export function ImportAccountsDialog({
 
   useEffect(() => {
     if (open) {
+      previewTokenRef.current += 1;
       setFileName("");
       setFileText("");
       setPreview([]);
@@ -67,8 +71,15 @@ export function ImportAccountsDialog({
     // 清空 value，允许再次选择同一文件
     e.target.value = "";
     if (!file) return;
+    const token = ++previewTokenRef.current;
     const reader = new FileReader();
+    reader.onerror = () => {
+      if (token !== previewTokenRef.current) return;
+      setParsing(false);
+      setError("读取文件失败");
+    };
     reader.onload = () => {
+      if (token !== previewTokenRef.current) return;
       const text = String(reader.result ?? "");
       setFileName(file.name);
       setFileText(text);
@@ -77,15 +88,19 @@ export function ImportAccountsDialog({
       api
         .previewImportAccounts(text)
         .then((res) => {
+          if (token !== previewTokenRef.current) return;
           setPreview(res.accounts);
           setSelected(new Set(res.accounts.map((a) => a.index)));
         })
         .catch((err) => {
+          if (token !== previewTokenRef.current) return;
           setPreview([]);
           setSelected(new Set());
           setError(api.asError(err));
         })
-        .finally(() => setParsing(false));
+        .finally(() => {
+          if (token === previewTokenRef.current) setParsing(false);
+        });
     };
     reader.readAsText(file);
   }
@@ -152,6 +167,12 @@ export function ImportAccountsDialog({
           <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
             <Loader2 className="animate-spin" /> 正在解析…
           </div>
+        )}
+
+        {!parsing && fileText && preview.length === 0 && !error && (
+          <p className="py-4 text-sm text-muted-foreground">
+            文件解析成功，但里面没有可导入的账号（每条记录需要 id 与 payload 字段）。
+          </p>
         )}
 
         {!parsing && preview.length > 0 && (

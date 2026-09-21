@@ -105,8 +105,10 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
     };
   }, []);
 
-  // 打开时按目标账号档位加载当前账号会话（会话列表按档位取自各自的登录态）
+  // 打开时按目标账号档位加载当前账号会话（会话列表按档位取自各自的登录态）。
+  // 守卫：关 A 开 B 时，A 的迟到响应不得写进 B 的弹窗（与 session-sync-section 同法）。
   useEffect(() => {
+    let cancelled = false;
     if (open && account) {
       setSelected(new Set());
       setExpanded(new Set());
@@ -119,12 +121,20 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
       api
         .listSessions(accountVariant(account))
         .then((res) => {
+          if (cancelled) return;
           setSessions(res.sessions);
           setCurrentUid(res.current);
         })
-        .catch((e) => setError(api.asError(e)))
-        .finally(() => setLoadingSessions(false));
+        .catch((e) => {
+          if (!cancelled) setError(api.asError(e));
+        })
+        .finally(() => {
+          if (!cancelled) setLoadingSessions(false);
+        });
     }
+    return () => {
+      cancelled = true;
+    };
   }, [open, account]);
 
   function toggleSession(id: string) {
@@ -165,6 +175,9 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
     try {
       const res = await api.switchAccount({
         accountId: account.id,
+        // 账号自身档位必须下发：后端缺省按国内版处理，Global 账号不传会切错档位的文件。
+        // 国内版保持缺省（不带 variant），与改造前的请求体逐字一致。
+        variant: accountVariant(account) === "ai" ? "ai" : undefined,
         copySessionIds: requestedCopy ? [...selected] : undefined,
         // 勾选绑定预览凭据；执行前后端会重新校验，版本变化则跳过该项。
         syncSelections: requestedSync ? syncSelections : undefined,

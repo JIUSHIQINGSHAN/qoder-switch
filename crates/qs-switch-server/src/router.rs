@@ -250,6 +250,58 @@ mod tests {
         assert!(r.body.contains("confirm=switch"), "{}", r.body);
     }
 
+    /// 知情标记必须能从 POST body 进来：前端 `httpCall` 对 POST 不拼 query，body 是
+    /// 唯一通道。此前只认 query，webui 的切换永远 400 —— 核心功能在浏览器宿主从未跑通。
+    /// 门通过后的下一站是"账号不存在"，据此区分门被拒与门已过。
+    #[test]
+    fn switch_accepts_confirmation_from_post_body() {
+        let r = dispatch(
+            "switch",
+            "",
+            r#"{"account_id":"no-such-account-xyz","confirm":"switch","target":"desktop"}"#,
+        );
+        assert_eq!(r.status, 400);
+        assert!(
+            !r.body.contains("confirm") && !r.body.contains("知情"),
+            "body 知情标记应放行门禁，实得: {}",
+            r.body
+        );
+        // query 通道保留：脚本/curl 仍可 ?confirm=switch。
+        let r = dispatch(
+            "switch",
+            "confirm=switch",
+            r#"{"account_id":"no-such-account-xyz","target":"desktop"}"#,
+        );
+        assert!(!r.body.contains("知情"), "query 知情标记应放行门禁: {}", r.body);
+    }
+
+    /// indexes 解析失败必须报错：此前 `.ok()` 把坏值吞成 None（=全量导入），
+    /// 用户只勾一个、实际全部写盘。
+    #[test]
+    fn import_rejects_malformed_indexes_instead_of_importing_all() {
+        let r = dispatch("import", "", r#"{"fileText":"[]","indexes":[null]}"#);
+        assert_eq!(r.status, 400);
+        assert!(r.body.contains("indexes"), "{}", r.body);
+    }
+
+    /// 通知端点的返回必须对齐前端契约（{recorded}/{cleared}），不能是裸 null：
+    /// 未来任何读 `.recorded` 的调用方都会在 null 上炸。
+    #[test]
+    fn notification_endpoints_return_contract_shapes() {
+        let r = dispatch(
+            "notifications/record",
+            "",
+            r#"{"level":"info","title":"测试"}"#,
+        );
+        assert_eq!(r.status, 200, "{}", r.body);
+        let v: Value = serde_json::from_str(&r.body).unwrap();
+        assert_eq!(v["recorded"], true, "{v}");
+        let r = dispatch("notifications/clear", "", "");
+        assert_eq!(r.status, 200, "{}", r.body);
+        let v: Value = serde_json::from_str(&r.body).unwrap();
+        assert_eq!(v["cleared"], true, "{v}");
+    }
+
     #[test]
     fn bad_variant_and_missing_target_are_reported() {
         let r = dispatch("capture", "", r#"{"account_id":"x","variant":"eu","target":"desktop"}"#);
@@ -458,9 +510,13 @@ mod compat {
             }
             "delete" => {
                 let id = account_id(&input)?;
+                // 与桌面端同一条防线：id 是 store 路径组成部分，delete 是 remove_dir_all。
+                bundle::validate_account_id(&id)?;
                 let dir = qs_switch_core::modules::bundle::accounts_root_in(&store).join(&id);
-                if !dir.is_dir() {
-                    return Err(format!("账号目录不存在: {}", dir.display()));
+                let meta = std::fs::symlink_metadata(&dir)
+                    .map_err(|e| format!("账号目录不存在: {e}"))?;
+                if meta.is_symlink() || !meta.is_dir() {
+                    return Err(format!("账号目录不存在或不是真实目录: {}", dir.display()));
                 }
                 std::fs::remove_dir_all(&dir)
                     .map_err(|e| format!("删除失败: {e}"))?;
@@ -491,15 +547,25 @@ mod compat {
                     .get("fileText")
                     .and_then(|x| x.as_str())
                     .ok_or_else(|| "缺 fileText".to_string())?;
-                let idx: Option<Vec<usize>> =
-                    input.get("indexes").and_then(|x| serde_json::from_value(x.clone()).ok());
+                // 解析失败必须报错而不是吞成"缺省=全部"：用户只勾了一个，静默全量导入
+                // 等于把数据面悄悄放大。此前 `.ok()` 正是这么干的。
+                let idx: Option<Vec<usize>> = match input.get("indexes") {
+                    Some(x) => Some(serde_json::from_value(x.clone())
+                        .map_err(|e| format!("indexes 不是合法的下标数组: {e}"))?),
+                    None => None,
+                };
                 view::import_records(&store, text, idx.as_deref())
             }
             "switch" => {
                 // 这道门不能因为换了宿主就消失：compat 路由接管 switch 后同样要求知情标记。
-                if !query.split('&').any(|q| q == "confirm=switch") {
+                // 知情标记收 query（`?confirm=switch`，脚本/curl 用）**或** POST body 里的
+                // `confirm:"switch"`（前端 httpCall 对 POST 不拼 query，body 是唯一通道；
+                // 跨站表单发不出 application/json body，防护理由不变）。
+                let confirmed_by_body =
+                    input.get("confirm").and_then(|x| x.as_str()) == Some("switch");
+                if !confirmed_by_body && !query.split('&').any(|q| q == "confirm=switch") {
                     return Err(
-                        "切换账号会终止并重开目标客户端，必须带 ?confirm=switch 表示知情".into(),
+                        "切换账号会终止并重开目标客户端，必须带 ?confirm=switch（query）或 {\"confirm\":\"switch\"}（body）表示知情".into(),
                     );
                 }
                 let id = account_id(&input)?;
@@ -510,7 +576,14 @@ mod compat {
                     target: t,
                     restart: input.get("restart").and_then(|x| x.as_bool()).unwrap_or(true),
                 };
-                let j = switch::execute(&roots, &store, &req, switch::Actor::Real, &mut |_| {})?;
+                // 与桌面端对齐：forced 走 RealForced（跳过软失败项）。
+                // 之前固定 Real，同一操作两个宿主结果会分叉。
+                let actor = if input.get("forced").and_then(|x| x.as_bool()).unwrap_or(false) {
+                    switch::Actor::RealForced
+                } else {
+                    switch::Actor::Real
+                };
+                let j = switch::execute(&roots, &store, &req, actor, &mut |_| {})?;
                 Ok(view::switch_result(&j, req.restart, false))
             }
             // webui 的切换是同步的，走到这里一定是空闲；契约要求这个端点存在，
@@ -537,11 +610,13 @@ mod compat {
                     input.get("title").and_then(|x| x.as_str()).unwrap_or(""),
                     input.get("description").and_then(|x| x.as_str()),
                 )?;
-                Ok(Value::Null)
+                // 契约声明返回 {recorded:true}；裸 null 会让未来任何读 `.recorded` 的
+                // 调用方在 null 上炸掉。
+                Ok(json!({ "recorded": true }))
             }
             "notifications/clear" => {
                 notifications::clear()?;
-                Ok(Value::Null)
+                Ok(json!({ "cleared": true }))
             }
             _ => Err(format!("契约路由漏了 {cmd}")),
         };

@@ -16,24 +16,33 @@ use router::Response;
 
 const DEFAULT_PORT: u16 = 57891;
 
+/// 所有 /api 请求必须携带的自定义头。
+///
+/// 这道门专防**浏览器携带型攻击**：跨站表单（含 enctype=text/plain 的经典 JSON
+/// 绕过）与 `<img>` 发不出自定义头；fetch 带自定义头会触发 CORS 预检，而本服务
+/// 从不回 ACAO，预检必挂。对本地进程无效（curl -H 人人会写）——但本地进程本来
+/// 就能直接删文件，API 没有给它任何新增能力。
+const CLIENT_HEADER: &str = "x-qoder-switch";
+
 fn main() {
     let mut port = DEFAULT_PORT;
     let mut dist: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--port" => {
-                port = args
-                    .next()
-                    .and_then(|p| p.parse().ok())
-                    .unwrap_or(DEFAULT_PORT)
-            }
+            "--port" => match args.next().map(|p| p.parse::<u16>()) {
+                Some(Ok(p)) => port = p,
+                _ => {
+                    eprintln!("--port 需要一个 0-65535 的数字");
+                    std::process::exit(2);
+                }
+            },
             "--dist" => dist = args.next().map(PathBuf::from),
             "-h" | "--help" => {
                 println!(
-                    "用法: qs-switch-server [--port <{}>] [--dist <前端产物目录>]\n\
-                     只监听 127.0.0.1。破坏性端点需带 ?confirm=switch。",
-                    DEFAULT_PORT
+                    "用法: qs-switch-server [--port <{DEFAULT_PORT}>] [--dist <前端产物目录>]\n\
+                     只监听 127.0.0.1。所有 /api 请求必须带头 {CLIENT_HEADER}: 1；\n\
+                     破坏性端点另需知情标记 ?confirm=switch（query）或 body 里的 confirm:\"switch\"。",
                 );
                 return;
             }
@@ -59,11 +68,19 @@ fn main() {
         match stream {
             Ok(s) => {
                 let dist = std::sync::Arc::clone(&dist);
-                std::thread::spawn(move || {
-                    if let Err(e) = handle(s, &dist) {
-                        eprintln!("连接处理结束: {e}");
-                    }
-                });
+                // 线程耗尽时 spawn 会失败——发生在 accept 循环里就是整个服务器退出。
+                // 改用 Builder 并在失败时限速重试，accept 循环必须活着。
+                let spawned = std::thread::Builder::new()
+                    .name("qs-conn".into())
+                    .spawn(move || {
+                        if let Err(e) = handle(s, &dist) {
+                            eprintln!("连接处理结束: {e}");
+                        }
+                    });
+                if spawned.is_err() {
+                    eprintln!("建线程失败，稍候重试");
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
             }
             Err(e) => eprintln!("accept 失败: {e}"),
         }
@@ -86,52 +103,99 @@ fn default_dist() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("dist"))
 }
 
+/// 读一行（含换行），行内容超过 `cap` 字节返回 Err。手写解析没有框架的兜底：
+/// 一个不发换行的连接就能让无界 read_line 涨到 OOM。
+fn read_line_capped<R: BufRead>(reader: &mut R, cap: usize) -> std::io::Result<std::io::Result<String>> {
+    let mut buf = Vec::new();
+    let mut limited = (&mut *reader).take(cap as u64 + 1);
+    let n = limited.read_until(b'\n', &mut buf)?;
+    drop(limited);
+    if n == 0 {
+        return Ok(Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "eof",
+        )));
+    }
+    if n == cap + 1 && *buf.last().unwrap_or(&0) != b'\n' {
+        return Ok(Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "line too long",
+        )));
+    }
+    Ok(Ok(String::from_utf8_lossy(&buf).into_owned()))
+}
+
+fn reject(stream: &mut TcpStream, status: u16, msg: &str) -> std::io::Result<()> {
+    write(
+        stream,
+        &Response {
+            status,
+            content_type: "application/json",
+            body: format!(r#"{{"ok":false,"error":"{msg}"}}"#),
+            bytes: None,
+        },
+    )
+}
+
 fn handle(mut stream: TcpStream, dist: &Path) -> std::io::Result<()> {
-    // 本机工具，但慢客户端不该把线程一直挂着。
+    // 本机工具，但慢客户端不该把线程一直挂着（读和写都要有界）。
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(30)));
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(30)));
     let peer = stream.peer_addr()?;
     if !peer.ip().is_loopback() {
         // 绑定已经挡了外部地址；这里再兜一层，防止将来有人改成 0.0.0.0。
-        return write(
-            &mut stream.try_clone()?,
-            &Response {
-                status: 403,
-                content_type: "application/json",
-                body: r#"{"ok":false,"error":"只允许回环地址访问"}"#.into(),
-                bytes: None,
-            },
-        );
+        return reject(&mut stream, 403, "只允许回环地址访问");
     }
     let mut reader = BufReader::new(stream.try_clone()?);
-    let mut line = String::new();
-    reader.read_line(&mut line)?;
+
+    // 请求行 ≤ 8KB。
+    let line = match read_line_capped(&mut reader, 8 * 1024)? {
+        Ok(l) if !l.trim().is_empty() => l,
+        Ok(_) => return Ok(()), // 空请求行：连接开着没发东西，直接断
+        Err(_) => return reject(&mut stream, 400, "请求行过长"),
+    };
+
+    // 头 ≤ 100 行、总量 ≤ 64KB。
     let mut headers = Vec::new();
+    let mut headers_total = 0usize;
     loop {
-        let mut h = String::new();
-        if reader.read_line(&mut h)? == 0 || h.trim().is_empty() {
+        let h = match read_line_capped(&mut reader, 8 * 1024)? {
+            Ok(h) => h,
+            Err(_) => return reject(&mut stream, 431, "请求头过长"),
+        };
+        if h.trim().is_empty() || headers.len() >= 100 || headers_total > 64 * 1024 {
+            if headers.len() >= 100 || headers_total > 64 * 1024 {
+                return reject(&mut stream, 431, "请求头过多");
+            }
             break;
         }
+        headers_total += h.len();
         headers.push(h);
     }
-    let len = headers
-        .iter()
-        .find_map(|h| {
-            let (k, v) = h.split_once(':')?;
-            (k.trim().eq_ignore_ascii_case("content-length"))
-                .then(|| v.trim().parse::<usize>().ok())
-                .flatten()
-        })
-        .unwrap_or(0);
+
+    // 一个 body 只能有一种长度；chunked 是另一套编码，本服务不实现（明确拒绝，
+    // 不静默当空 body 处理）。
+    if headers.iter().any(|h| {
+        h.split_once(':')
+            .map_or(false, |(k, _)| k.trim().eq_ignore_ascii_case("transfer-encoding"))
+    }) {
+        return reject(&mut stream, 501, "不支持 Transfer-Encoding，请用 Content-Length");
+    }
+    let mut len: Option<usize> = None;
+    for h in &headers {
+        let Some((k, v)) = h.split_once(':') else { continue };
+        if k.trim().eq_ignore_ascii_case("content-length") {
+            let parsed = v.trim().parse::<usize>();
+            match (parsed, len) {
+                (Ok(n), None) => len = Some(n),
+                (Ok(n), Some(prev)) if n == prev => {}
+                _ => return reject(&mut stream, 400, "Content-Length 冲突或非法"),
+            }
+        }
+    }
+    let len = len.unwrap_or(0);
     if len > 8 * 1024 * 1024 {
-        return write(
-            &mut stream,
-            &Response {
-                status: 413,
-                content_type: "application/json",
-                body: r#"{"ok":false,"error":"请求体过大"}"#.into(),
-                bytes: None,
-            },
-        );
+        return reject(&mut stream, 413, "请求体过大");
     }
     let mut body = vec![0u8; len];
     if len > 0 {
@@ -142,6 +206,19 @@ fn handle(mut stream: TcpStream, dist: &Path) -> std::io::Result<()> {
     let method = parts.next().unwrap_or("GET");
     let target = parts.next().unwrap_or("/");
     let (path, query) = target.split_once('?').map(|(p, q)| (p, q)).unwrap_or((target, ""));
+
+    // 终端日志注入：target 是外部输入，控制字符（含 ANSI ESC、\r）打印前过滤。
+    let safe_target: String = target.chars().map(|c| if c.is_control() { '?' } else { c }).collect();
+
+    if path.starts_with("/api/") && !client_header_present(&headers) {
+        reject(
+            &mut stream,
+            403,
+            "缺少 x-qoder-switch: 1 请求头（防跨站携带型攻击；curl 请加 -H \"x-qoder-switch: 1\"）",
+        )?;
+        println!("{method} {safe_target} -> 403");
+        return Ok(());
+    }
 
     let resp = match (method, path.strip_prefix("/api/")) {
         ("GET", Some(cmd)) => router::dispatch(cmd, query, ""),
@@ -154,11 +231,29 @@ fn handle(mut stream: TcpStream, dist: &Path) -> std::io::Result<()> {
             body: String::new(),
             bytes: None,
         },
+        // /api 上的其它方法（DELETE/PUT/HEAD…）明说 405，不再静默落进静态路由
+        // 伪装成 index.html。
+        (_, Some(_)) => {
+            reject(&mut stream, 405, "方法不支持（/api 只收 GET/POST/OPTIONS）")?;
+            println!("{method} {safe_target} -> 405");
+            return Ok(());
+        }
         _ => serve_static(dist, path),
     };
     let status_line = resp.status;
-    write(&mut stream, &resp)?;
-    println!("{method} {target} -> {status_line}");
+    if method == "HEAD" {
+        // HEAD 只回头不回体。
+        let head_only = Response {
+            status: resp.status,
+            content_type: resp.content_type,
+            body: String::new(),
+            bytes: None,
+        };
+        write(&mut stream, &head_only)?;
+    } else {
+        write(&mut stream, &resp)?;
+    }
+    println!("{method} {safe_target} -> {status_line}");
     Ok(())
 }
 
@@ -190,10 +285,23 @@ fn reason(status: u16) -> &'static str {
         400 => "Bad Request",
         403 => "Forbidden",
         404 => "Not Found",
+        405 => "Method Not Allowed",
         413 => "Payload Too Large",
+        431 => "Request Header Fields Too Large",
         500 => "Internal Server Error",
+        501 => "Not Implemented",
         _ => "Unknown",
     }
+}
+
+/// 头门判定（抽出为纯函数以便单测）：名字大小写不敏感，值必须恰为 "1"。
+fn client_header_present(headers: &[String]) -> bool {
+    headers.iter().any(|h| {
+        h.split_once(':')
+            .map_or(false, |(k, v)| {
+                k.trim().eq_ignore_ascii_case(CLIENT_HEADER) && v.trim() == "1"
+            })
+    })
 }
 
 /// 静态文件：只允许 dist 目录内的白名单后缀，路径必须解析到 dist 之下。
@@ -281,6 +389,34 @@ fn mime_for(ext: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 头门：名字大小写不敏感、值必须恰为 "1"、其它头不算数。
+    /// 这道门是 text/plain 表单 CSRF 的解药（表单发不出自定义头）。
+    #[test]
+    fn client_header_gate_is_exact() {
+        assert!(client_header_present(&["x-qoder-switch: 1".into()]));
+        assert!(client_header_present(&["X-Qoder-Switch:1".into()]));
+        assert!(client_header_present(&["accept: */*".into(), "x-qoder-switch: 1 ".into()]));
+        assert!(!client_header_present(&Vec::<String>::new()));
+        assert!(!client_header_present(&["x-qoder-switch: 0".into()]));
+        assert!(!client_header_present(&["x-qoder-switch: yes".into()]));
+        assert!(!client_header_present(&["other: 1".into()]));
+    }
+
+    /// 无界 read_line 的解药：超长行必须报错，正常行照读。
+    #[test]
+    fn read_line_capped_rejects_long_lines() {
+        let mut ok = std::io::Cursor::new(b"GET / HTTP/1.1\r\n".to_vec());
+        assert_eq!(
+            read_line_capped(&mut ok, 8 * 1024).unwrap().unwrap(),
+            "GET / HTTP/1.1\r\n"
+        );
+        let big = vec![b'a'; 9 * 1024];
+        let mut bad = std::io::Cursor::new(big);
+        assert!(read_line_capped(&mut bad, 8 * 1024).unwrap().is_err());
+        let mut eof = std::io::Cursor::new(Vec::new());
+        assert!(read_line_capped(&mut eof, 8 * 1024).unwrap().is_err());
+    }
 
     fn tmp_dist() -> PathBuf {
         let d = std::env::temp_dir().join(format!("qs-dist-{}", uuid::Uuid::new_v4().simple()));

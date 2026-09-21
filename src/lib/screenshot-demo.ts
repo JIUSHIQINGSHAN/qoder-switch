@@ -508,7 +508,7 @@ function demoTokenStatistics(days?: number): TokenStatistics {
 /** Read-only demo response provider. It never reads or mutates real user data. */
 export function screenshotDemoResponse(command: string, args?: Record<string, unknown>): unknown {
   const demoAccounts = hydratedAccounts();
-  const appStatus: AppStatus = { running: true, authFile: "/demo/workbuddy/auth.json", current: { uid: demoAccounts[0].uid, nickname: demoAccounts[0].nickname, email: demoAccounts[0].email }, appPath: "/demo/Qoder.app", version: "0.1.24" };
+  const appStatus: AppStatus = { running: true, authFile: "/demo/qoder/auth.v1.dat", current: { uid: demoAccounts[0].uid, nickname: demoAccounts[0].nickname, email: demoAccounts[0].email }, appPath: "/demo/Qoder CN.exe", version: "0.1.4" };
   const activeIndex = Math.max(0, demoAccounts.findIndex((account) => account.id === demoActiveCliAccountId));
   const activeAccount = demoAccounts[activeIndex] ?? demoAccounts[0];
   const cliStatus: CodeBuddyCliStatus = { configured: true, settingsPresent: true, helperPresent: true, helperSupportsAccountIds: true, activeIndex, activeAccountId: activeAccount.id, activeAccountName: activeAccount.nickname, activeAccountVariant: accountVariant(activeAccount), accountCount: demoAccounts.length, statePath: "/demo/codebuddy-cli-state.json" };
@@ -570,12 +570,13 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
     case "get_checkin_logs": return { logs: checkinLogs() };
     case "get_rate_limits": return rateLimits();
     case "get_rate_limit_hook_status": return rateLimitHookStatus();
-    case "get_rate_limit_config": return { enabled: true };
+    // 契约要求三个键全给：设置页的限额卡片会直接读 hookOptOut/scanIdeLogs。
+    case "get_rate_limit_config": return { enabled: true, hookOptOut: false, scanIdeLogs: false };
     case "get_auto_rotate_config": return config;
     case "rotate_status": return rotateStatus;
     case "get_rotate_logs": return { logs: rotateLogs() };
     case "get_github_config": return githubConfig;
-    case "check_update": return { ok: true, current: "0.1.24", latest: "0.1.25", latestTag: "v0.1.25", hasUpdate: true, releaseName: "更新提示演示", releaseUrl: "https://github.com/changexbc/workbuddy-switch/releases/tag/v0.1.25" };
+    case "check_update": return { ok: true, current: "0.1.4", latest: "0.1.5", latestTag: "v0.1.5", hasUpdate: true, releaseName: "更新提示演示", releaseUrl: "https://github.com/JIUSHIQINGSHAN/qoder-switch/releases/tag/v0.1.5" };
     case "get_launch_at_login_enabled": return true;
     case "switch_progress": return { running: false, progress: null };
     default: throw new Error(`演示模式缺少只读数据: ${command}`);

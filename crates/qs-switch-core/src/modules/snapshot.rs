@@ -90,7 +90,12 @@ impl Snapshot {
         let dir = snapshots_dir();
         std::fs::create_dir_all(&dir)?;
         let path = dir.join(format!("{}.json", self.taken_at));
-        std::fs::write(&path, serde_json::to_vec_pretty(self).unwrap_or_default())?;
+        // 与全库其它写入同一条原子路径：快照中途被杀不能留下截断的 json，
+        // 否则 latest() 从此每次都失败（含每次 selfcheck）。
+        crate::modules::config::atomic_write_bytes(
+            &path,
+            &serde_json::to_vec_pretty(self).unwrap_or_default(),
+        )?;
         Ok(path)
     }
 
@@ -101,6 +106,9 @@ impl Snapshot {
     }
 
     /// 最新一张快照（按文件名里的 UTC 时间戳，字典序即时间序）。
+    ///
+    /// 解析失败的文件（历史残留/截断）跳过而不是硬失败：快照是辅助观测，
+    /// 不该因为一张坏文件让 snapshot_now / selfcheck 永久报错。
     pub fn latest() -> std::io::Result<Option<Self>> {
         let dir = snapshots_dir();
         if !dir.is_dir() {
@@ -111,10 +119,13 @@ impl Snapshot {
             .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false))
             .collect();
         names.sort();
-        match names.pop() {
-            Some(p) => Ok(Some(Self::load(&p)?)),
-            None => Ok(None),
+        while let Some(p) = names.pop() {
+            match Self::load(&p) {
+                Ok(s) => return Ok(Some(s)),
+                Err(e) => eprintln!("跳过无法解析的快照 {:?}: {e}", p),
+            }
         }
+        Ok(None)
     }
 
     /// `self` 为前，`other` 为后。只报有变化的项，`Unchanged` 不出现。

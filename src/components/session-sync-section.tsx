@@ -63,7 +63,9 @@ const VERDICT_BADGE: Record<SessionSyncVerdict, "success" | "warning" | "outline
 
 /** 可勾选的模式：判定只允许一个模式，取后端给出的第一个。 */
 function primaryMode(group: SessionLinkPreviewGroup): SessionSyncMode | null {
-  return group.availableModes.length > 0 ? group.availableModes[0] : null;
+  // 后端由 view.rs 统一给形状；这里仍对旧后端缺键做守卫（少一键=整树白屏的历史教训）。
+  const modes = group.availableModes ?? [];
+  return modes.length > 0 ? modes[0] : null;
 }
 
 function isActionable(group: SessionLinkPreviewGroup): boolean {
@@ -331,8 +333,9 @@ function SessionLinkCard({
             <span className="min-w-0 flex-1 truncate text-sm font-medium" title={group.title}>
               {title}
             </span>
-            <Badge variant={VERDICT_BADGE[group.verdict]} className="shrink-0 text-[10px]">
-              {VERDICT_LABEL[group.verdict]}
+            {/* 未知 verdict 字符串落到"无法确认"而不是空徽标（表查空守卫）。 */}
+            <Badge variant={VERDICT_BADGE[group.verdict] ?? "outline"} className="shrink-0 text-[10px]">
+              {VERDICT_LABEL[group.verdict] ?? VERDICT_LABEL.unknown}
             </Badge>
             <CollapsibleTrigger asChild>
               <Button
@@ -364,8 +367,8 @@ function SessionLinkCard({
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="block w-fit cursor-help" tabIndex={0}>
-              {`内容条数：当前账号 ${group.recordCount.source} 条 · 目标账号 ${group.recordCount.target} 条`}
-              {group.recordCount.baseline !== null && ` · 上次一致 ${group.recordCount.baseline} 条`}
+              {`内容条数：当前账号 ${group.recordCount?.source ?? "—"} 条 · 目标账号 ${group.recordCount?.target ?? "—"} 条`}
+              {(group.recordCount?.baseline ?? null) !== null && ` · 上次一致 ${group.recordCount?.baseline} 条`}
               {group.extraB > 0 && ` · 目标账号独有 ${group.extraB} 条`}
             </span>
           </TooltipTrigger>

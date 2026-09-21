@@ -68,6 +68,8 @@ export function ExportAccountsDialog({ open, onOpenChange, accounts, onExported 
   const [error, setError] = useState("");
   /** 桌面端导出成功后的文件路径（webui 用浏览器下载，无此状态）。 */
   const [savedPath, setSavedPath] = useState<string | null>(null);
+  // 部分账号解包失败时后端照常返回成功；必须显式展示，否则"勾 3 备 2"被当成全备。
+  const [exportWarnings, setExportWarnings] = useState<string[]>([]);
 
   useEffect(() => {
     if (open) {
@@ -75,6 +77,7 @@ export function ExportAccountsDialog({ open, onOpenChange, accounts, onExported 
       setBusy(false);
       setError("");
       setSavedPath(null);
+      setExportWarnings([]);
     }
   }, [open]);
 
@@ -103,8 +106,9 @@ export function ExportAccountsDialog({ open, onOpenChange, accounts, onExported 
         // webui：浏览器 Blob 下载
         const res = await api.exportAccounts(ids);
         downloadJson(exportFileName(), res.accounts);
+        setExportWarnings(res.warnings ?? []);
         onExported?.(res.accounts.length);
-        onOpenChange(false);
+        if (!res.warnings?.length) onOpenChange(false);
       } else {
         // 桌面端：系统保存对话框选位置 → 后端写入该路径（WKWebView 不支持 `<a download>`）
         const { save } = await import("@tauri-apps/plugin-dialog");
@@ -116,7 +120,9 @@ export function ExportAccountsDialog({ open, onOpenChange, accounts, onExported 
         if (!path) return; // 用户取消保存对话框
         const res = await api.exportAccountsToPath(ids, path);
         setSavedPath(res.path);
-        onExported?.(ids.length);
+        // 计数必须用后端实际写出的条数：部分失败时 ids.length 会虚报成功数。
+        setExportWarnings(res.warnings ?? []);
+        onExported?.(res.exported);
       }
     } catch (e) {
       setError(api.asError(e));
@@ -177,12 +183,33 @@ export function ExportAccountsDialog({ open, onOpenChange, accounts, onExported 
           </Alert>
         )}
 
+        {exportWarnings.length > 0 && (
+          <Alert variant="warning">
+            <AlertTitle>部分账号未导出</AlertTitle>
+            <AlertDescription>
+              <ul className="list-disc space-y-1 pl-4 text-xs">
+                {exportWarnings.map((w) => (
+                  <li key={w}>{w}</li>
+                ))}
+              </ul>
+            </AlertDescription>
+          </Alert>
+        )}
+
         {savedPath && (
           <Alert>
             <AlertTitle>导出成功</AlertTitle>
             <AlertDescription className="space-y-2">
               <span className="block break-all font-mono text-xs">{savedPath}</span>
-              <Button variant="outline" size="sm" onClick={() => void revealInFinder(savedPath)}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  // opener 插件失败（路径被移动/插件缺失）以前是 unhandled rejection，
+                  // 用户看不见原因；现在落到错误区。
+                  revealInFinder(savedPath).catch((e) => setError(`打开所在目录失败：${api.asError(e)}`));
+                }}
+              >
                 <FolderOpen />
                 {revealLabel()}
               </Button>

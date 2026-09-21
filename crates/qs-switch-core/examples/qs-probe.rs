@@ -25,7 +25,7 @@ fn main() {
     println!("{:<10} {:<9} {:<22} {:>6}  {}", "版本", "目标", "镜像名", "在跑", "托管判定");
     for (v, t) in all_axes() {
         let images = t.images(v);
-        let n = process::running_pids(images).len();
+        let n = process::running_pids(images).map(|p| p.len()).unwrap_or(0);
         let verdict = match process::hosted_by(v, t) {
             process::Hosted::Yes(why) => format!("会（拒绝执行）— {why}"),
             process::Hosted::No => "不会".to_string(),

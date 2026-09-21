@@ -37,38 +37,54 @@ pub struct SnapshotReport {
     pub changes: Vec<snapshot::Change>,
 }
 
+/// 与 compat::off_main 同一件事：把阻塞式采集挪出主线程。
+/// Tauri 的非 async 命令在主线程执行，probe_all 一次要 tasklist + 最多 6 次
+/// PowerShell（实测约 1.4s），apply_rotation 更长 —— 同步写法窗口就是假死。
+async fn off_main<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("后台任务异常终止: {e}"))?
+}
+
 #[tauri::command]
-pub fn probe_all() -> Vec<AxisStatus> {
-    let roots = PathRoots::real();
-    let mut out = Vec::new();
-    for (variant, target) in QoderVariant::ALL.into_iter().flat_map(|v| {
-        QoderTarget::ALL
-            .into_iter()
-            .map(move |t| (v, t))
-    }) {
-        out.push(AxisStatus {
-            running_pids: process::running_pids(target.images(variant)),
-            hosted: process::hosted_by(variant, target),
-            exe: qs_switch_core::modules::variant::executable(&roots, variant, target)
-                .map(|p| p.display().to_string()),
-            credentials: qs_switch_core::modules::variant::credentials(&roots, variant, target)
+pub async fn probe_all() -> Result<Vec<AxisStatus>, String> {
+    off_main(move || {
+        let roots = PathRoots::real();
+        let mut out = Vec::new();
+        for (variant, target) in QoderVariant::ALL.into_iter().flat_map(|v| {
+            QoderTarget::ALL
                 .into_iter()
-                .map(|f| CredentialView {
-                    role: format!("{:?}", f.role),
-                    path: f.path.display().to_string(),
-                    critical: f.critical,
-                    exists: f.exists(),
-                    size: std::fs::metadata(&f.path).ok().map(|m| m.len()),
-                })
-                .collect(),
-            variant,
-            target,
-            variant_label: variant.label(),
-            target_label: target.label(),
-            images: target.images(variant),
-        });
-    }
-    out
+                .map(move |t| (v, t))
+        }) {
+            out.push(AxisStatus {
+                // 探测失败按空列表展示：这里是纯展示层；决定写盘/关进程的路径
+                // 在 switch::execute 里对 probe_error fail-closed。
+                running_pids: process::running_pids(target.images(variant)).unwrap_or_default(),
+                hosted: process::hosted_by(variant, target),
+                exe: qs_switch_core::modules::variant::executable(&roots, variant, target)
+                    .map(|p| p.display().to_string()),
+                credentials: qs_switch_core::modules::variant::credentials(&roots, variant, target)
+                    .into_iter()
+                    .map(|f| CredentialView {
+                        role: format!("{:?}", f.role),
+                        path: f.path.display().to_string(),
+                        critical: f.critical,
+                        exists: f.exists(),
+                        size: std::fs::metadata(&f.path).ok().map(|m| m.len()),
+                    })
+                    .collect(),
+                variant,
+                target,
+                variant_label: variant.label(),
+                target_label: target.label(),
+                images: target.images(variant),
+            });
+        }
+        Ok(out)
+    })
+    .await
 }
 
 #[tauri::command]

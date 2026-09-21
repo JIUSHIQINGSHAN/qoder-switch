@@ -82,28 +82,30 @@ pub fn switch_progress(cell: tauri::State<'_, ProgressCell>) -> Value {
     json!({ "running": g.running, "progress": g.progress })
 }
 
-/// 前端签名：switchAccount({ accountId, restart, shareSessions, ... , variant })。
+/// 前端签名：switchAccount({ accountId, restart, shareSessions, variant })。
 /// 会话复制（shareSessions）在 Qoder 侧没有可用的归属机制，故意忽略并在 message 里说明。
+///
+/// 参数必须是**命名参数**：Tauri v2 按参数名从 invoke 载荷里逐键取值，`args: Value`
+/// 会要求载荷里有个叫 "args" 的键 —— 前端发的是扁平对象，之前这样写等于桌面端切换
+/// 永远报 `missing required key args`（测试测不到宏参数绑定，真机一点就炸）。
+/// snake_case 在 Tauri 侧自动对上 camelCase 键（accountId 等）。
 #[tauri::command]
 pub async fn switch_account(
     app: tauri::AppHandle,
     cell: tauri::State<'_, ProgressCell>,
-    args: Value,
+    account_id: String,
+    restart: Option<bool>,
+    forced: Option<bool>,
+    share_sessions: Option<bool>,
+    target: Option<String>,
+    variant: Option<String>,
 ) -> Result<Value, String> {
     use tauri::Emitter;
-    let account_id = args
-        .get("accountId")
-        .and_then(|x| x.as_str())
-        .ok_or_else(|| "缺 accountId".to_string())?
-        .to_string();
-    let variant = variant_of(args.get("variant").and_then(|x| x.as_str()));
-    let target = target_of(args.get("target").and_then(|x| x.as_str()));
-    let restart = args.get("restart").and_then(|x| x.as_bool()).unwrap_or(true);
-    let forced = args.get("forced").and_then(|x| x.as_bool()).unwrap_or(false);
-    let ignored_session = args
-        .get("shareSessions")
-        .and_then(|x| x.as_bool())
-        .unwrap_or(false);
+    let variant = variant_of(variant.as_deref());
+    let target = target_of(target.as_deref());
+    let restart = restart.unwrap_or(true);
+    let forced = forced.unwrap_or(false);
+    let ignored_session = share_sessions.unwrap_or(false);
 
     let roots = PathRoots::real();
     let store = switch_root();
@@ -178,9 +180,16 @@ pub async fn import_local(
 #[tauri::command]
 pub async fn delete_account(account_id: String) -> Result<Value, String> {
     off_main(move || {
+        // account_id 是 store 路径的组成部分，delete 又是 remove_dir_all ——
+        // 不校验就是"一次 invoke 删任意目录"的原语（绝对路径 join 会整体替换基目录）。
+        bundle::validate_account_id(&account_id)?;
         let dir = bundle::accounts_root_in(&switch_root()).join(&account_id);
-        if !dir.is_dir() {
-            return Err(format!("账号目录不存在: {}", dir.display()));
+        // 深度防御：即便 id 本身合法，也拒绝删除符号链接/junction（防止库内条目
+        // 被换成指向别处的链接后被整树删除）。
+        let meta = std::fs::symlink_metadata(&dir)
+            .map_err(|e| format!("账号目录不存在: {e}"))?;
+        if meta.is_symlink() || !meta.is_dir() {
+            return Err(format!("账号目录不存在或不是真实目录: {}", dir.display()));
         }
         std::fs::remove_dir_all(&dir).map_err(|e| format!("删除 {} 失败: {e}", dir.display()))?;
         Ok(json!({ "ok": true }))
@@ -242,7 +251,15 @@ pub async fn export_accounts_to_path(
         let v = view::export_records(&switch_root(), &account_ids)?;
         let text = serde_json::to_string_pretty(&v["accounts"]).map_err(|e| e.to_string())?;
         std::fs::write(&path, text).map_err(|e| format!("写 {path} 失败: {e}"))?;
-        Ok(json!({ "ok": true, "path": path }))
+        // 部分账号解包失败会进 warnings（records 非空则整体不算错）；必须原样回传，
+        // 否则"勾 3 备 2"被报成成功导出 3 个 —— 对凭据备份等于静默少备。
+        let exported = v["accounts"].as_array().map(|a| a.len()).unwrap_or(0);
+        Ok(json!({
+            "ok": true,
+            "path": path,
+            "exported": exported,
+            "warnings": v["warnings"].clone(),
+        }))
     })
     .await
 }
@@ -426,5 +443,84 @@ mod tests {
             view::app_status(&roots, QoderVariant::Global));
         assert_eq!(get_capabilities(), view::capabilities());
         assert_eq!(get_rotate_logs(), view::rotate_logs(&switch_root()));
+    }
+
+    /// 绑定漂移门禁（P0 级历史缺陷）：Tauri v2 按**参数名**从 invoke 载荷逐键取值，
+    /// `args: Value` 要求载荷里有 `"args"` 键 —— 前端发的是扁平对象，当年桌面切换
+    /// 因此从未跑通过，而任何行为测试都碰不到宏的参数绑定（编译与运行都正常，
+    /// 一点就报 missing required key）。这里用源码对拍钉死这条盲区：
+    /// 前端 switchAccount 声明的每个键，必须是命令认识的参数或刻意忽略的附加键。
+    #[test]
+    fn frontend_switch_payload_matches_command_params() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let api = std::fs::read_to_string(manifest.join("../src/lib/api.ts"))
+            .expect("读前端 api.ts 失败");
+        let compat = std::fs::read_to_string(manifest.join("src/compat.rs"))
+            .expect("读本文件失败");
+
+        // 前端：switchAccount(args: { ... }) 的参数对象键。
+        let fe_block = api
+            .split("export function switchAccount(args: {")
+            .nth(1)
+            .and_then(|rest| rest.split("}): Promise").next().map(String::from))
+            .expect("api.ts 里找不到 switchAccount 签名");
+        let mut fe_keys: Vec<String> = Vec::new();
+        for line in fe_block.lines() {
+            let t = line.trim();
+            if let Some(k) = t.strip_suffix(";").map(|x| x.split(':').next().unwrap_or("")) {
+                let k = k.trim_end_matches('?');
+                if !k.is_empty() && !k.starts_with("//") {
+                    fe_keys.push(k.to_string());
+                }
+            }
+        }
+        assert!(fe_keys.contains(&"accountId".to_string()), "{fe_keys:?}");
+
+        // 命令：pub async fn switch_account(...) 的命名参数（snake→camel）。
+        let cmd_block = compat
+            .split("pub async fn switch_account(")
+            .nth(1)
+            .and_then(|rest| rest.split(") -> Result").next().map(String::from))
+            .expect("compat.rs 里找不到 switch_account 签名");
+        let params: Vec<String> = cmd_block
+            .lines()
+            .filter_map(|l| l.split(':').next())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && *s != "app" && !s.starts_with("cell"))
+            .map(|s| {
+                let mut out = String::new();
+                let mut up = false;
+                for c in s.chars() {
+                    if c == '_' {
+                        up = true;
+                    } else if up {
+                        out.extend(c.to_uppercase());
+                        up = false;
+                    } else {
+                        out.push(c);
+                    }
+                }
+                out
+            })
+            .collect();
+
+        // 刻意忽略的附加键：confirm 是 webui 知情门用的（桌面宏忽略未知键）；
+        // 会话复制两键在 Qoder 侧无对应机制，收下后由 message 说明"没做"。
+        const DELIBERATELY_IGNORED: &[&str] =
+            &["confirm", "copySessionIds", "syncSelections"];
+        for k in &fe_keys {
+            assert!(
+                params.iter().any(|p| p == k) || DELIBERATELY_IGNORED.contains(&k.as_str()),
+                "前端键 {k} 既不是命令参数也不在刻意忽略清单里 —— \
+                 要么改名对上，要么在 DELIBERATELY_IGNORED 里说明理由（并确认后果）"
+            );
+        }
+        // 反向：命令的必填参数必须都在前端键里（缺一个就是运行时绑定失败）。
+        for p in &params {
+            assert!(
+                fe_keys.contains(p) || *p == "forced" || *p == "target" || *p == "variant",
+                "命令参数 {p} 在前端 switchAccount 里没有对应键: {fe_keys:?}"
+            );
+        }
     }
 }

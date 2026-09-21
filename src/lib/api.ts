@@ -170,7 +170,12 @@ async function httpCall<T>(cmd: string, args?: Record<string, unknown>): Promise
         : `${API_BASE}${route.path}`;
     res = await fetch(url, {
       method: route.method,
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        // 与服务端的头门配套：跨站表单/img 发不出自定义头，fetch 带自定义头会触发
+        // 预检而服务端从不回 ACAO —— 这条头就是 webui 的 CSRF 防线。
+        "x-qoder-switch": "1",
+      },
       body: route.method === "POST" ? JSON.stringify(args ?? {}) : undefined,
     });
   } catch {
@@ -252,7 +257,15 @@ const QODER_EMPTY: Record<string, () => unknown> = {
     sources: [],
     error: "Qoder 侧没有 Token 用量统计的数据源（本地日志无 token 键，实测 2026-09-21）",
   }),
-  list_sessions: () => ({ sessions: [] }),
+  // 空值要按契约把**每个**键给齐：webui 的 getCheckinStatus 绕过 call() 直打 httpCall
+  // 并对 `accounts` 做 .find()，缺 accounts 键就是 TypeError；桌面消费方要 ok/todayCheckedIn。
+  list_sessions: () => ({ sessions: [], current: null }),
+  get_checkin_status: () => ({
+    ok: false,
+    todayCheckedIn: false,
+    accounts: [],
+    resources: [],
+  }),
   // 契约自带 supported / "unsupported" 状态位：这就是"不支持"的正规表达，
   // 既不会让渲染期拿到 undefined，也不必编造任何数据。
   session_links_preview: () => ({
@@ -282,7 +295,8 @@ const QODER_EMPTY: Record<string, () => unknown> = {
   }),
   // 开机自启的读写已由后端接管（tauri-plugin-autostart），不再在此占位。
   // webui 宿主不渲染这张卡片，也不会发起同名调用。
-  get_checkin_status: () => ({ ok: false, resources: [] }),
+  // （get_checkin_status 的空值占位已并入上方 list_sessions 处：webui 分支绕过 call()
+  // 直打 httpCall，两处必须给同一个形状，分开写早晚会漂移。）
   get_codebuddy_cli_status: () => ({
     configured: false,
     settingsPresent: false,
@@ -297,6 +311,16 @@ const QODER_EMPTY: Record<string, () => unknown> = {
 };
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  // demo 是编译期构建形态，必须先于空值/不适用短路判定：否则 screenshot-demo
+  // 的整套演示 fixture 会被 QODER_EMPTY/QODER_UNAVAILABLE 架在前面而不可达，
+  // 演示页每张卡都渲染成"Qoder 无额度接口"的错误态。真实模式零变化。
+  if (demoModeEnabled) {
+    if (cmd === "get_credit_statistics" && args?.refresh === true) {
+      throw new Error(DEMO_UNAVAILABLE_MESSAGE);
+    }
+    if (!DEMO_READ_COMMANDS.has(cmd)) throw new Error(DEMO_UNAVAILABLE_MESSAGE);
+    return screenshotDemoResponse(cmd, args) as T;
+  }
   const desktopOnly = DESKTOP_ONLY_REASONS[cmd];
   if (desktopOnly && isWebui()) {
     throw new Error(`此项仅在桌面端可用：${desktopOnly}`);
@@ -305,13 +329,6 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
   if (empty) return empty() as T;
   const why = QODER_UNAVAILABLE[cmd];
   if (why) throw new Error(`此项在 Qoder 侧不适用：${why}`);
-  if (demoModeEnabled) {
-    if (cmd === "get_credit_statistics" && args?.refresh === true) {
-      throw new Error(DEMO_UNAVAILABLE_MESSAGE);
-    }
-    if (!DEMO_READ_COMMANDS.has(cmd)) throw new Error(DEMO_UNAVAILABLE_MESSAGE);
-    return screenshotDemoResponse(cmd, args) as T;
-  }
   if (!isWebui()) return invoke<T>(cmd, args);
   return httpCall<T>(cmd, args);
 }
@@ -428,7 +445,9 @@ export function importLocal(variant?: WbVariant): Promise<{ ok: boolean; account
   return call("import_local", variantArgs(variant));
 }
 
-export function exportAccounts(accountIds: string[]): Promise<{ ok: boolean; accounts: AccountRecord[] }> {
+export function exportAccounts(
+  accountIds: string[],
+): Promise<{ ok: boolean; accounts: AccountRecord[]; warnings?: string[] }> {
   return call("export_accounts", { accountIds });
 }
 
@@ -436,7 +455,7 @@ export function exportAccounts(accountIds: string[]): Promise<{ ok: boolean; acc
 export function exportAccountsToPath(
   accountIds: string[],
   path: string,
-): Promise<{ ok: boolean; path: string }> {
+): Promise<{ ok: boolean; path: string; exported: number; warnings?: string[] }> {
   return call("export_accounts_to_path", { accountIds, path });
 }
 
@@ -453,11 +472,20 @@ export function importAccounts(fileText: string, indexes: number[]): Promise<Imp
 export function switchAccount(args: {
   accountId: string;
   restart?: boolean;
+  forced?: boolean;
+  /** 账号自身档位；Global 账号必须下发，否则后端按国内版处理（切错档位文件）。 */
+  variant?: WbVariant;
+  target?: "desktop" | "cli" | "work";
   shareSessions?: boolean;
   copySessionIds?: string[];
   syncSelections?: SessionSyncSelection[];
 }): Promise<SwitchResult> {
-  return call("switch_account", args as unknown as Record<string, unknown>);
+  return call("switch_account", {
+    ...args,
+    // webui 的知情门在 POST body 里（httpCall 对 POST 不拼 query，router 只认这个）；
+    // 桌面端 Tauri 忽略多余键，带上无害。
+    confirm: "switch",
+  } as unknown as Record<string, unknown>);
 }
 
 /** 切换进度（webui 轮询用；桌面端走事件，此函数无副作用）。 */

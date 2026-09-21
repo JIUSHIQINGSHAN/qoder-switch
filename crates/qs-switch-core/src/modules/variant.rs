@@ -240,12 +240,25 @@ pub fn launcher_state_ini(roots: &PathRoots, v: QoderVariant) -> PathBuf {
 }
 
 /// 从 `state.ini` 解析 `installDir` + `appExecutable` 得到 exe 绝对路径。
+///
+/// 两个值都可能被手改：`appExecutable` 若是绝对路径或根相对（`\x.exe`），
+/// `join` 会整段丢掉 `installDir` 或换掉叶子，最终从任意位置拉起可执行文件。
+/// 解析完必须校验它仍在 `installDir` 之下，越界就当没解析出来（restart 降级为
+/// "请手动打开"，与 executable() 返回 None 的既有行为一致）。
 pub fn launcher_exe(roots: &PathRoots, v: QoderVariant) -> Option<PathBuf> {
     let text = std::fs::read_to_string(launcher_state_ini(roots, v)).ok()?;
-    let install_dir = ini_get(&text, "installDir")?;
-    let exe_rel = ini_get(&text, "appExecutable")?;
+    let install_dir_raw = ini_get(&text, "installDir")?;
+    let exe_rel_raw = ini_get(&text, "appExecutable")?;
+    let install_dir = install_dir_raw.trim_matches('"');
+    let exe_rel = exe_rel_raw.trim_matches('"');
     let exe = PathBuf::from(install_dir).join(exe_rel);
-    exe.is_file().then_some(exe)
+    // installDir 与解析出的 exe 都必须规范化到同一根下才可比。
+    let exe_canon = exe.canonicalize().ok()?;
+    let dir_canon = PathBuf::from(install_dir).canonicalize().ok()?;
+    if !exe_canon.starts_with(&dir_canon) {
+        return None;
+    }
+    exe_canon.is_file().then_some(exe_canon)
 }
 
 /// 该目标的可执行文件；桌面与 Work 目前共用 Launcher 解析路径。
@@ -441,6 +454,53 @@ mod tests {
         assert!(exe.to_string_lossy().contains("Qoder CN.exe"));
     }
 
+    /// state.ini 可被手改：`appExecutable` 写成绝对路径或 `..\` 根相对路径时，
+    /// `join` 会整段丢掉/替换 installDir，最终从任意位置拉起 exe。必须校验解析结果
+    /// 仍在 installDir 之下，越界按"解析不出"降级（restart 变为提示手动打开）。
+    #[test]
+    fn launcher_exe_rejects_paths_escaping_install_dir() {
+        let tmp = std::env::temp_dir().join(format!("qs-launcher-{}", uuid::Uuid::new_v4().simple()));
+        let roots = PathRoots::sandbox(&tmp);
+        let v = QoderVariant::Cn;
+        let install = tmp.join("install");
+        std::fs::create_dir_all(&install).unwrap();
+        std::fs::create_dir_all(launcher_state_ini(&roots, v).parent().unwrap()).unwrap();
+        // installDir 内一个真实存在的 exe。
+        std::fs::write(install.join("ok.exe"), b"MZ").unwrap();
+        // installDir 外一个真实存在的 exe（越界目标）。
+        std::fs::write(tmp.join("evil.exe"), b"MZ").unwrap();
+
+        let write_ini = |app_exec: &str| {
+            std::fs::write(
+                launcher_state_ini(&roots, v),
+                format!("installDir={install}\nappExecutable={app_exec}\n", install = install.display()),
+            )
+            .unwrap();
+        };
+
+        // 正常的相对路径：解析得到、且规范路径就是 install 内那个。
+        write_ini("ok.exe");
+        let exe = executable(&roots, v, QoderTarget::Desktop).expect("合法相对路径应解析出来");
+        assert!(exe.ends_with("ok.exe"), "{exe:?}");
+
+        // 绝对路径越界。
+        write_ini(&tmp.join("evil.exe").display().to_string());
+        assert_eq!(
+            executable(&roots, v, QoderTarget::Desktop),
+            None,
+            "绝对 appExecutable 指向 installDir 之外，必须拒绝"
+        );
+
+        // 根相对 / `..` 逃逸。
+        write_ini("..\\evil.exe");
+        assert_eq!(
+            executable(&roots, v, QoderTarget::Desktop),
+            None,
+            "相对但越界的 appExecutable 必须拒绝"
+        );
+        std::fs::remove_dir_all(tmp).ok();
+    }
+
     #[test]
     fn ini_parsing_is_tolerant_of_spaces_and_crlf() {
         let ini = "[launcher]\r\ninstallDir=E:\\Qoder CN\r\n appExecutable = .qoder-versions\\0.3.4\\Qoder CN.exe \r\n";
@@ -468,13 +528,22 @@ mod tests {
 /// 角色是否属于"换号必须成组替换"集合。
 ///
 /// 真相仍然只在 `credentials()` 的表里：这里取该角色在所有 (版本·目标) 下出现过的
-/// critical 标记的并集，避免调用方各自复制一份判断。
+/// critical 标记的并集，避免调用方各自复制一份判断。并集与机器无关（critical 是
+/// 每个 (role,target) 的静态属性，credentials 的分支也不看文件是否存在），故
+/// 进程内算一次缓存起来 —— import 对每个成员都会调它，别每次重走一遍全轴。
 pub fn role_is_critical(role: FileRole) -> bool {
-    let roots = PathRoots::real();
-    all_axes()
-        .into_iter()
-        .flat_map(|(v, t)| credentials(&roots, v, t))
-        .any(|f| f.role == role && f.critical)
+    static SET: std::sync::OnceLock<std::collections::HashSet<FileRole>> =
+        std::sync::OnceLock::new();
+    SET.get_or_init(|| {
+        let roots = PathRoots::real();
+        all_axes()
+            .into_iter()
+            .flat_map(|(v, t)| credentials(&roots, v, t))
+            .filter(|f| f.critical)
+            .map(|f| f.role)
+            .collect()
+    })
+    .contains(&role)
 }
 
 /// 供上层按 `(版本,目标)` 组合遍历。

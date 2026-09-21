@@ -56,7 +56,7 @@ pub fn run() -> i32 {
     r.say(format!("  账号库: {store}"));
 
     r.step("probe_all", || {
-        let axes = commands::probe_all();
+        let axes = tauri::async_runtime::block_on(commands::probe_all())?;
         if axes.len() != 6 {
             return Err(format!("应有 6 个 (版本·目标) 组合，实得 {}", axes.len()));
         }

@@ -6,3 +6,6 @@ dist/
 .qs-switch/
 accounts-export/
 .mimosa/
+
+# 对抗打磨工作台账（过程产物，不入库）
+.adversarial/

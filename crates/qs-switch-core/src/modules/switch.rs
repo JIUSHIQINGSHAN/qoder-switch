@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::modules::config::{now_ts, switch_root, PathRoots};
 use crate::modules::{bundle, process, variant};
-use crate::modules::variant::{backup_stem, credentials, FileRole, QoderTarget, QoderVariant};
+use crate::modules::variant::{credentials, FileRole, QoderTarget, QoderVariant};
 use crate::Result;
 
 /// 谁来执行进程动作。
@@ -73,6 +73,10 @@ pub struct Preview {
     /// bundle 里实际会写回去的角色。
     pub writes: Vec<FileRole>,
     pub running_pids: Vec<u32>,
+    /// 探测失败的原因。探测失败 ≠ 目标没在跑：正式执行（非演练档）见到这个字段
+    /// 必须 fail-closed 拒绝切换。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_error: Option<String>,
     /// 发起方是否被目标客户端托管（决定了能不能杀进程）。
     pub hosted: process::Hosted,
     pub warnings: Vec<String>,
@@ -105,10 +109,18 @@ pub fn preview(
         .map(|f| format!("{:?}", f.role))
         .collect();
 
-    let running = process::running_pids(req.target.images(req.variant));
+    // 探测失败必须与"目标没在跑"区分：把失败折叠成空列表会让后续的关进程门
+    // fail-open（tasklist 被策略挡掉时照常备份写入，与活着的 Qoder 赛跑）。
+    let (running, probe_error) = match process::running_pids(req.target.images(req.variant)) {
+        Ok(pids) => (pids, None),
+        Err(e) => (Vec::new(), Some(e.clone())),
+    };
     let hosted = process::hosted_by(req.variant, req.target);
 
     let mut warnings = Vec::new();
+    if let Some(err) = &probe_error {
+        warnings.push(format!("进程探测失败（{err}）：正式执行会被拒绝，请检查 tasklist 可用性"));
+    }
     if !uncovered.is_empty() {
         warnings.push(format!(
             "包内缺位现场存在的 critical 文件: {} —— 真跑会被拒写",
@@ -139,6 +151,7 @@ pub fn preview(
         layout,
         writes: b.members.iter().map(|m| m.role).collect(),
         running_pids: running,
+        probe_error,
         hosted,
         warnings,
     })
@@ -156,6 +169,12 @@ fn write_journal(store: &Path, j: &Journal) -> Result<()> {
         .map_err(|e| format!("写 journal 失败: {e}"))
 }
 
+/// 进程级切换闸：同一进程内的全部切换入口（主窗口、托盘、原生命令、webui 同进程时）
+/// 在这里串行。两个 execute 交错会互相覆盖备份、各自写出自称 Completed 的 journal，
+/// 事后凭任一条恢复都会退回错误的现场。跨进程（桌面与 webui 同时在切）不在本闸范围
+/// —— 那需要文件锁，先靠"用户别同时开两个宿主切号"约定。
+static SWITCH_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 执行切换。`progress` 会收到人话步骤，供 UI 直接显示。
 pub fn execute(
     roots: &PathRoots,
@@ -164,8 +183,22 @@ pub fn execute(
     actor: Actor,
     progress: &mut dyn FnMut(&str),
 ) -> Result<Journal> {
+    // 毒锁照常放行：上一位持锁者 panic 不该把后续切换永久卡死。
+    let _gate = SWITCH_GATE.lock().unwrap_or_else(|p| p.into_inner());
+
     let pv = preview(roots, store, req)?;
     let b = bundle::load(store, &req.account_id, req.variant, req.target)?;
+
+    // 探测失败 ≠ 目标没在跑。tasklist 被策略挡掉时若照常备份-写入，
+    // 就是与活着的 Qoder 赛跑；除演练档外一律 fail-closed。
+    // 此时还没写 journal（与"账号不存在"同样早退），磁盘零残留。
+    if !matches!(actor, Actor::Simulated) {
+        if let Some(err) = &pv.probe_error {
+            return Err(format!(
+                "无法探测目标进程是否在运行（{err}）；为安全起见拒绝切换（fail-closed）"
+            ));
+        }
+    }
 
     let started_at = now_ts();
     let id = format!(
@@ -174,9 +207,10 @@ pub fn execute(
         started_at,
         &uuid::Uuid::new_v4().simple().to_string()[..8]
     );
-    let backup_dir = store
-        .join("backups")
-        .join(backup_stem(req.variant, req.target, &started_at));
+    // 备份目录直接用 journal id 命名：journal id 自带 uuid，天然唯一。此前只按
+    // 秒级时间戳命名，同一轴同秒的两次并发切换会共用一个目录、互相覆盖备份与
+    // `_restore.json`，之后无论回滚哪条都会按对方的现场退回。
+    let backup_dir = store.join("backups").join(&id);
     let mut j = Journal {
         id: id.clone(),
         account_id: req.account_id.clone(),
@@ -253,7 +287,12 @@ pub fn execute(
     if matches!(actor, Actor::Real) && req.restart {
         if let Some(exe) = variant::executable(roots, req.variant, req.target) {
             progress(&format!("重新启动 {exe:?}"));
-            process::launch(&exe)?;
+            // 启动失败绝不能把这次切换打成失败：文件已换好且校验通过，journal 若
+            // 停在待恢复相位，恢复入口会把用户刚要求的换号整个回滚掉（历史缺陷）。
+            if let Err(e) = process::launch(&exe) {
+                progress(&format!("自动启动失败（{e}），请手动打开目标客户端"));
+                j.note = Some(format!("自动启动失败: {e}"));
+            }
         } else {
             progress("未能定位可执行文件，已跳过自动启动（请手动打开）");
         }
@@ -289,13 +328,38 @@ pub fn unfinished(store: &Path) -> Result<Vec<Journal>> {
     Ok(out)
 }
 
-/// 按 journal 记录的备份目录把现场退回。备份目录还不存在时说明尚未写入任何东西，
-/// 直接判定为已完成回滚。
+/// 按 journal 记录的备份目录把现场退回。
+///
+/// 两条防线（journal 的 backup_dir 可能来自磁盘上被篡改的 json 或前端反序列化）：
+/// 1. 归属校验 —— 只信任 `store/backups/` 一级子目录，且不是符号链接；
+///    指向库外目录的备份清单等于任意路径写原语。
+/// 2. 清单判定 —— 备份目录存在但 `_restore.json` 不存在 = 备份刚建、还没写过任何
+///    现场字节（清单先行于写入是 restore 的设计），直接判已完成回滚。此前按
+///    "目录存在"判定，那个崩溃窗口会让恢复入口永远卡在既成功不了也消不掉。
 pub fn recover(store: &Path, j: &Journal) -> Result<Phase> {
-    if !j.backup_dir.exists() {
+    let backups_root = store.join("backups");
+    if !j.backup_dir.starts_with(&backups_root)
+        || j.backup_dir == backups_root
+        || j.backup_dir.parent().map_or(true, |p| p != backups_root)
+    {
+        return Err(format!(
+            "journal 的备份目录 {:?} 不在本库 backups 一级子目录下，拒绝按它恢复（可能被篡改）",
+            j.backup_dir
+        ));
+    }
+    if std::fs::symlink_metadata(&j.backup_dir)
+        .map(|m| m.is_symlink())
+        .unwrap_or(true)
+    {
+        return Err(format!(
+            "备份目录 {:?} 不是真实目录（缺失或为符号链接），拒绝按它恢复",
+            j.backup_dir
+        ));
+    }
+    if !j.backup_dir.join(bundle::MANIFEST_FILE).is_file() {
         let mut done = j.clone();
         done.phase = Phase::RolledBack;
-        done.note = Some("备份目录未生成，说明尚未写入任何东西".into());
+        done.note = Some("备份清单不存在，说明尚未写入任何现场文件".into());
         write_journal(store, &done)?;
         return Ok(Phase::RolledBack);
     }
@@ -377,7 +441,7 @@ mod tests {
         let s = sandbox();
         seed(&s.roots, b"authA", b"keyA", "a@x.com");
         bundle::capture(&s.roots, &s.store, "acct-a", Cn, QoderTarget::Desktop).unwrap();
-        if process::running_pids(QoderTarget::Desktop.images(Cn)).is_empty() {
+        if process::running_pids(QoderTarget::Desktop.images(Cn)).map_or(true, |p| p.is_empty()) {
             eprintln!("NOTE: 目标没在跑，拒绝逻辑无从验证");
             return;
         }
