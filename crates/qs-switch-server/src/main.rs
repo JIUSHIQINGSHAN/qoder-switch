@@ -314,7 +314,7 @@ fn serve_static(dist: &Path, path: &str) -> Response {
         "/" | "" => "index.html",
         other => other.trim_start_matches('/'),
     };
-    let ok_ext = ["html", "js", "css", "svg", "png", "ico", "json", "woff2"];
+    let ok_ext = ["html", "js", "css", "svg", "png", "ico", "json", "woff", "woff2", "ttf", "webp"];
     let is_route = !rel.contains('.');
     let ext = if is_route { "html" } else { rel.rsplit('.').next().unwrap_or("") };
     if !ok_ext.contains(&ext) || rel.contains("..\\") || rel.contains("/../") || rel.starts_with("../")
@@ -381,7 +381,10 @@ fn mime_for(ext: &str) -> &'static str {
         "svg" => "image/svg+xml",
         "png" => "image/png",
         "ico" => "image/x-icon",
+        "woff" => "font/woff",
         "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "webp" => "image/webp",
         _ => "application/octet-stream",
     }
 }
@@ -436,6 +439,12 @@ mod tests {
         let r = serve_static(&d, "/assets/app.js");
         assert_eq!(r.status, 200);
         assert!(r.content_type.contains("javascript"));
+
+        std::fs::write(d.join("assets/icon.webp"), b"webp-bytes").unwrap();
+        let r = serve_static(&d, "/assets/icon.webp");
+        assert_eq!(r.status, 200);
+        assert_eq!(r.content_type, "image/webp");
+
         std::fs::remove_dir_all(d).ok();
     }
 
