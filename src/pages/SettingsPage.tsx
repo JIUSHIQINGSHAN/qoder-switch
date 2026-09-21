@@ -783,8 +783,8 @@ function UpdateCard() {
               <AlertTitle className={cn(info.hasUpdate && "text-primary")}>{info.hasUpdate ? "发现新版本" : "更新检查完成"}</AlertTitle>
               <div className="text-sm">
                 {info.hasUpdate
-                  ? `发现新版本 v${info.latest}（当前 v${info.current}）`
-                  : `已是最新版本 v${info.current}`}
+                  ? `发现新版本 v${info.latest}（当前 v${info.current || version || "0.1.4"}）`
+                  : `已是最新版本 v${info.current || version || "0.1.4"}`}
                 {info.releaseName && <span className="text-muted-foreground"> · {info.releaseName}</span>}
               </div>
               {info.hasUpdate && (
@@ -854,11 +854,15 @@ function StartupCard() {
       // 后端回读 OS 权威状态；即使与请求一致，也以回读值显示。
       const authoritative = await api.setLaunchAtLoginEnabled(value);
       setEnabled(authoritative);
-      setMsg({ type: "ok", text: authoritative ? "已开启开机自启" : "已关闭开机自启" });
+      const text = authoritative ? "已开启开机自启" : "已关闭开机自启";
+      setMsg({ type: "ok", text });
+      toast.success(text);
     } catch (e) {
       // 失败时恢复到最后一次确认的状态，并显示可读错误。
       setEnabled(previous);
-      setMsg({ type: "err", text: api.asError(e) });
+      const text = api.asError(e);
+      setMsg({ type: "err", text });
+      toast.error("开机自启设置失败", { description: text });
     } finally {
       setBusy(false);
     }
