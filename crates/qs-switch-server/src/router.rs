@@ -46,7 +46,7 @@ impl Response {
         }
     }
     fn err(e: String) -> Self {
-        Self::json(400, json!({ "ok": false, "error": e }))
+        Self::json(400, json!({ "ok": false, "error": e, "message": e }))
     }
     fn ok<T: Serialize>(v: T) -> Self {
         match serde_json::to_value(&v) {
@@ -223,7 +223,10 @@ pub fn dispatch_in(roots: &PathRoots, store: &Path, cmd: &str, query: &str, body
                 Err(e) => Response::err(e),
             },
         },
-        other => Response::json(404, json!({ "ok": false, "error": format!("未知端点: {other}") })),
+        other => {
+            let msg = format!("未知端点: {other}");
+            Response::json(404, json!({ "ok": false, "error": msg, "message": msg }))
+        }
     }
 }
 
@@ -256,6 +259,9 @@ mod tests {
         let r = dispatch_in(&PathRoots::real(), &dir.0, "nope", "", "{}");
         assert_eq!(r.status, 404);
         assert!(r.body.contains("未知端点"));
+        let v: Value = serde_json::from_str(&r.body).unwrap();
+        assert!(v.get("message").is_some());
+        assert!(v.get("error").is_some());
     }
 
     #[test]
