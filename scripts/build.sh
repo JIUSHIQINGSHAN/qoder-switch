@@ -38,10 +38,14 @@ case "${1:-all}" in
     npm run build
     ;;
   debug)
+    # Windows 构建前先杀旧进程，防 LNK1104 占用拒绝访问（见 HANDOFF §7 第 10 条）
+    taskkill //IM qoder-switch.exe //F >/dev/null 2>&1 || true
     cargo build -p qoder-switch
     echo "产物: $CARGO_TARGET_DIR/debug/qoder-switch.exe"
     ;;
   release)
+    # Windows 构建前先杀旧进程，防 LNK1104 占用拒绝访问（见 HANDOFF §7 第 10 条）
+    taskkill //IM qoder-switch.exe //F >/dev/null 2>&1 || true
     # 会自己跑 beforeBuildCommand（npm run build），不必先 ./build.sh web
     npx tauri build
     find "$CARGO_TARGET_DIR/release/bundle" -name '*.exe' -print
