@@ -505,7 +505,10 @@ mod compat {
         "notifications/record",
         "notifications/clear",
         "credits",
+        "credits/stats",
         "checkin/status",
+        "checkin/logs",
+        "checkin/config",
         "checkin",
         "checkin/all",
         "oauth/start",
@@ -696,16 +699,48 @@ mod compat {
                 let id = account_id(&input)?;
                 Ok(qs_switch_core::modules::quota::fetch_credit_expiry_sync(roots, store, &id, v))
             }
-            "checkin/status" => {
-                let id = account_id(&input)?;
-                Ok(qs_switch_core::modules::quota::get_checkin_status_sync(roots, store, &id, v))
+            "credits/stats" => {
+                let refresh = input
+                    .get("refresh")
+                    .and_then(|x| x.as_bool())
+                    .or_else(|| query_param(query, "refresh").map(|s| s == "true"))
+                    .unwrap_or(false);
+                Ok(qs_switch_core::modules::ledger::credit_statistics(roots, store, refresh))
             }
+            "checkin/status" => {
+                // 带 accountId → 单账号；不带 → 批量。批量只在**显式**带 variant 时筛档，
+                // 缺省覆盖两档：webui 的按账号查询会过滤这个返回，缺省锁死 CN 会把
+                // 国际版账号漏成"未找到账号"。
+                match input.get("accountId").or_else(|| input.get("account_id")).and_then(|x| x.as_str()) {
+                    Some(id) => Ok(qs_switch_core::modules::quota::get_checkin_status_sync(roots, store, id, v)),
+                    None => {
+                        let only = input
+                            .get("variant")
+                            .and_then(|x| x.as_str())
+                            .or_else(|| query_param(query, "variant"))
+                            .map(|s| view::variant_from_key(Some(s)));
+                        Ok(qs_switch_core::modules::quota::get_checkin_status_all_sync(roots, store, only))
+                    }
+                }
+            }
+            "checkin/logs" => Ok(qs_switch_core::modules::ledger::read_checkin_logs(store)),
+            // 读时无 config 键、写时带 `{config:{…}}`，与 rotate/config 同一区分法。
+            "checkin/config" => match input.get("config") {
+                Some(patch) => qs_switch_core::modules::ledger::write_checkin_config(store, patch),
+                None => Ok(qs_switch_core::modules::ledger::read_checkin_config(store)),
+            },
             "checkin" => {
                 let id = account_id(&input)?;
                 Ok(qs_switch_core::modules::quota::checkin_sync(roots, store, &id, v))
             }
             "checkin/all" => {
-                Ok(qs_switch_core::modules::quota::checkin_all_sync(roots, store, v))
+                // 带 variant 只处理该档；不带覆盖全部档位。
+                let only = input
+                    .get("variant")
+                    .and_then(|x| x.as_str())
+                    .or_else(|| query_param(query, "variant"))
+                    .map(|s| view::variant_from_key(Some(s)));
+                Ok(qs_switch_core::modules::quota::checkin_all_sync(roots, store, only))
             }
             "oauth/start" => {
                 Ok(qs_switch_core::modules::oauth::oauth_start(v))

@@ -162,23 +162,39 @@ qoder-switch.exe --self-check && echo OK
   而网络面板里全是 200。`router.rs` 里有对应的回归测试。
 - 开机自启：基于 `tauri-plugin-autostart` 实现开机时携带 `--hidden` 参数静默启动到托盘
 - 应用内自动更新：集成 `tauri-plugin-updater`，基于 minisign 签名校验 GitHub Releases 产物，发布源与安装包完全公开可溯源
+- 官方配额与资源包：`GET /api/v2/quota/usage` + `GET /sash/api/v1/me/campaigns?clientType=10`
+  （端点来自 10router 取证并实测 200），账号卡显示总容量/剩余/临期资源包
+- 每日签到与 Credits 领取：`POST /sash/api/v1/me/campaigns/{id}/claim`；单账号签到、
+  批量签到、官方未开放签到（无 CLAIM_BENEFIT 活动）判为 `inactive` 而不是谎报"已签到"
+- 自动签到本机调度：配置持久化在 `checkin-config.json`，两个宿主共用同一条调度线程
+  （启动即核验一次、之后按惰性刷新间隔复查），签到结果落在 `checkin-logs.json`
+- 积分统计：Qoder 无官方用量端点，统计页用本机配额快照（`credit-snapshots.jsonl`，
+  按账号 10 分钟节流）聚合日消耗/账号明细/签到事件 —— 真实观察值，不编造
+- OAuth 设备码登录：浏览器授权 + S256 PKCE + `deviceToken/poll`，授权成功即自动采集入库
+- 认证目录写探针：Windows 上没有 macOS 那套 TCC 授权，但"能不能真的写进 Qoder 认证
+  目录"同样是真实会失败的检查，界面上的「检测权限」走的就是这条写探针
 
 ## 已知边界
 
 - 会话历史不按账号隔离：桌面 `main.sqlite` 的 `chat_sessions` 无 `account_id` 列，
   `~/.qoder*/projects/` 按工作目录命名。换号后两个账号会互见历史，界面上会提示。
 - DPAPI 按 Windows 用户生效：账号包只在同一 Windows 用户内可复用，跨机器或跨用户无效。
-- 未实现（相对参考实现仍缺）：device flow 扫码添加账号（**桌面端实证不适用**：登录不走
-  设备码，见 `docs/qoder-endpoints.md` §2.2；CLI 侧配对流程待探）、PAT 旁路、
-  额度/积分用量查询（**端点已取证**，`docs/qoder-endpoints.md` §2.1，待实现）、
-  会话跨账号迁移、webui 双形态里的 **npm 发布**（包结构就绪，待 npm 账号后发布）。
+- 未实现（相对参考实现仍缺）：PAT 旁路、会话跨账号迁移、webui 双形态里的
+  **npm 发布**（包结构就绪，待 npm 账号后发布）。
 - **主动刷新主 token 实证不适用**（不是"尚未取证"）：主 accessToken 没有任何刷新端点，
   桌面端到期即走网页重登（`docs/qoder-endpoints.md` §2.3）。
 - **自动更新已配置**（v0.1.4 起）：打 `v*` tag 触发 GitHub Actions 构建并发布
   带签名的安装包 + `latest.json`，桌面端应用内直接升级；npm 分发形态见 `npm/README.md`。
-- WorkBuddy 的每日签到在 Qoder 无对应接口：保留版式，动作与读类接口都写明"不适用"。
+- **限速钩子与 429 归因未实现**：上游靠往客户端 settings.json 装 hook 上报 429，
+  Qoder 无此机制、日志归因也未取证 —— 设置页的限额监听卡片在 v0.1.5 起直接隐藏，
+  而不是留一排永远报错的开关。
+- **Token 统计同样隐藏**：Qoder 本地日志里没有 token 用量键（实测 2026-09-21），
+  没有任何可聚合的数据源；侧栏入口与路由一并去掉，`get_token_statistics` 的门控保留。
+- **Qoder CLI / IDE 独立切换不适用**：Qoder CLI 不落盘凭据，没有独立账号指针；
+  改桌面端登录态后 CLI/IDE 下次启动自然生效。
 - **Buddy 旅行已整体删除**（不是标"不适用"）：Qoder 没有这个玩法，界面入口、类型、
   契约路由与演示数据一并去掉 —— 留一个永远点不动的按钮比删掉它更误导人。
+  v0.1.5 对限额监听卡片、Token 统计入口用的是同一条判断标准。
 - 这些"没有的能力"在前端保留版式并写明不适用（`src/lib/api.ts` 的 `QODER_EMPTY` /
   `QODER_UNAVAILABLE`）：读类命令返回**契约里每个键都齐**的类型正确空值（少一个键就会让
   渲染期对 undefined 调 `.filter()`，无 ErrorBoundary 时整页白屏），动作类命令抛原因。

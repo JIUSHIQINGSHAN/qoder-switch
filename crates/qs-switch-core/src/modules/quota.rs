@@ -30,9 +30,28 @@ pub fn resolve_token(
     account_id: &str,
     variant: QoderVariant,
 ) -> Result<String> {
+    Ok(resolve_identity(roots, store, account_id, variant)?.0)
+}
+
+/// 与 `resolve_token` 同一取值顺序，但把邮箱一并带出。
+///
+/// 签到日志与积分快照都要在行里写"这是哪个账号"，而账号包里的 `identity.email`
+/// 只有在**解不开登录态**时才没有（跨 Windows 用户搬来的包）。那种情况回退到
+/// 现场登录态的邮箱，仍然拿不到就留空字符串 —— 日志按 id 归因，不伪造身份。
+pub fn resolve_identity(
+    roots: &PathRoots,
+    store: &Path,
+    account_id: &str,
+    variant: QoderVariant,
+) -> Result<(String, String)> {
     // 1. 尝试从账号包中读取并解密
     let b = bundle::load(store, account_id, variant, QoderTarget::Desktop);
     if let Ok(bundle) = b {
+        let email = bundle
+            .identity
+            .email
+            .clone()
+            .filter(|e| !e.trim().is_empty());
         let dir = bundle.dir_in(store);
         let auth_path = dir.join("auth_main");
         let key_path = dir.join("local_state");
@@ -42,7 +61,10 @@ pub fn resolve_token(
                     if let Ok(dec) = auth_codec::decrypt_blob(&key, &blob) {
                         if let Ok(auth) = auth_codec::parse_auth(&dec) {
                             if !auth.token.trim().is_empty() {
-                                return Ok(auth.token);
+                                return Ok((
+                                    auth.token,
+                                    email.unwrap_or(auth.user.email),
+                                ));
                             }
                         }
                     }
@@ -54,11 +76,15 @@ pub fn resolve_token(
     // 2. 尝试从当前桌面现场读取
     if let Ok(auth) = auth_codec::read_desktop_auth(roots, variant) {
         if !auth.token.trim().is_empty() {
-            return Ok(auth.token);
+            return Ok((auth.token.clone(), email_from_live(&auth)));
         }
     }
 
     Err(format!("无法读取账号 {account_id} 的有效登录凭据"))
+}
+
+fn email_from_live(auth: &auth_codec::DesktopAuth) -> String {
+    auth.user.email.clone()
 }
 
 fn http_client() -> reqwest::Client {
@@ -86,7 +112,7 @@ pub async fn fetch_credit_expiry(
     account_id: &str,
     variant: QoderVariant,
 ) -> Value {
-    let token = match resolve_token(roots, store, account_id, variant) {
+    let (token, email) = match resolve_identity(roots, store, account_id, variant) {
         Ok(t) => t,
         Err(e) => return json!({ "ok": false, "error": e, "resources": [] }),
     };
@@ -234,7 +260,21 @@ pub async fn fetch_credit_expiry(
         .filter_map(|r| r["remaining"].as_f64())
         .sum();
 
-    json!({
+    crate::modules::ledger::append_credit_snapshot(
+        store,
+        &crate::modules::ledger::CreditSnapshot {
+            ts: chrono::Utc::now().timestamp_millis(),
+            account_id: account_id.to_string(),
+            email,
+            variant: crate::modules::view::variant_key(variant).to_string(),
+            total_capacity,
+            total_remaining,
+            expiring_soon_remaining,
+            soonest_expire_at,
+        },
+    );
+
+    let mut out = json!({
         "ok": true,
         "accountId": account_id,
         "totalCapacity": total_capacity,
@@ -243,7 +283,10 @@ pub async fn fetch_credit_expiry(
         "expired": false,
         "soonestExpireAt": soonest_expire_at,
         "resources": resources
-    })
+    });
+    // 求和可能产出 -0.0（空资源包时），前端 Intl 渲染成 "-0"；统一归一。
+    crate::modules::ledger::normalize_signed_zeros(&mut out);
+    out
 }
 
 /// 获取今日签到状态。
@@ -255,7 +298,9 @@ pub async fn get_checkin_status(
 ) -> Value {
     let token = match resolve_token(roots, store, account_id, variant) {
         Ok(t) => t,
-        Err(e) => return json!({ "ok": false, "error": e, "todayCheckedIn": false }),
+        Err(e) => {
+            return json!({ "ok": false, "error": e, "todayCheckedIn": false, "variant": crate::modules::view::variant_key(variant) })
+        }
     };
 
     let base = openapi_base(variant);
@@ -268,6 +313,7 @@ pub async fn get_checkin_status(
         req = req.header(k, v);
     }
 
+    let vk = crate::modules::view::variant_key(variant);
     match req.send().await {
         Ok(res) if res.status().is_success() => {
             let body: Value = res.json().await.unwrap_or_default();
@@ -277,25 +323,28 @@ pub async fn get_checkin_status(
                     .iter()
                     .filter(|c| c.get("actionType").and_then(|v| v.as_str()) == Some("CLAIM_BENEFIT"))
                     .collect();
+                // 没有任何可领取的活动 = 官方未开放签到，而不是"今天没签"。
+                let has_campaign = !benefit_campaigns.is_empty();
 
                 let has_claimable = benefit_campaigns.iter().any(|c| {
                     c.get("claimStatus").and_then(|v| v.as_str()) == Some("CLAIMABLE")
                 });
 
-                let is_checked_in = !benefit_campaigns.is_empty() && !has_claimable;
+                let is_checked_in = has_campaign && !has_claimable;
 
                 json!({
                     "ok": true,
                     "todayCheckedIn": is_checked_in,
+                    "variant": vk,
                     "accounts": [],
                     "resources": []
                 })
             } else {
-                json!({ "ok": true, "todayCheckedIn": false, "accounts": [], "resources": [] })
+                json!({ "ok": true, "todayCheckedIn": false, "variant": vk, "accounts": [], "resources": [] })
             }
         }
-        Ok(res) => json!({ "ok": false, "todayCheckedIn": false, "error": format!("HTTP {}", res.status()) }),
-        Err(e) => json!({ "ok": false, "todayCheckedIn": false, "error": format!("网络错误: {e}") }),
+        Ok(res) => json!({ "ok": false, "todayCheckedIn": false, "error": format!("HTTP {}", res.status()), "variant": vk }),
+        Err(e) => json!({ "ok": false, "todayCheckedIn": false, "error": format!("网络错误: {e}"), "variant": vk }),
     }
 }
 
@@ -306,9 +355,12 @@ pub async fn checkin(
     account_id: &str,
     variant: QoderVariant,
 ) -> Value {
-    let token = match resolve_token(roots, store, account_id, variant) {
+    let (token, email) = match resolve_identity(roots, store, account_id, variant) {
         Ok(t) => t,
-        Err(e) => return json!({ "result": "error", "error": e }),
+        Err(e) => {
+            crate::modules::ledger::record_checkin_log(store, account_id, "", variant, "error", Some(&e));
+            return json!({ "result": "error", "error": e });
+        }
     };
 
     let base = openapi_base(variant);
@@ -324,63 +376,128 @@ pub async fn checkin(
     let camp_body: Value = match req.send().await {
         Ok(res) if res.status().is_success() => res.json().await.unwrap_or_default(),
         Ok(res) => {
-            return json!({
-                "result": "error",
-                "error": format!("获取签到活动失败 (HTTP {})", res.status())
-            });
+            let e = format!("获取签到活动失败 (HTTP {})", res.status());
+            crate::modules::ledger::record_checkin_log(store, account_id, &email, variant, "error", Some(&e));
+            return json!({ "result": "error", "error": e });
         }
         Err(e) => {
-            return json!({
-                "result": "error",
-                "error": format!("网络错误: {e}")
-            });
+            let msg = format!("网络错误: {e}");
+            crate::modules::ledger::record_checkin_log(store, account_id, &email, variant, "error", Some(&msg));
+            return json!({ "result": "error", "error": msg });
         }
     };
 
     let campaigns = camp_body.get("campaigns").and_then(|v| v.as_array());
     let mut claimable_ids = Vec::new();
+    let mut has_benefit = false;
 
     if let Some(list) = campaigns {
         for c in list {
-            if c.get("actionType").and_then(|v| v.as_str()) == Some("CLAIM_BENEFIT")
-                && c.get("claimStatus").and_then(|v| v.as_str()) == Some("CLAIMABLE")
-            {
-                if let Some(id) = c.get("campaignId").and_then(|v| v.as_str()) {
-                    claimable_ids.push(id.to_string());
+            if c.get("actionType").and_then(|v| v.as_str()) == Some("CLAIM_BENEFIT") {
+                has_benefit = true;
+                if c.get("claimStatus").and_then(|v| v.as_str()) == Some("CLAIMABLE") {
+                    if let Some(id) = c.get("campaignId").and_then(|v| v.as_str()) {
+                        claimable_ids.push(id.to_string());
+                    }
                 }
             }
         }
     }
 
-    if claimable_ids.is_empty() {
-        return json!({ "result": "already", "message": "今日已领取或无待领活动" });
+    // 官方未开放签到活动：不写成功日志、不计入失败重试。前端据此弹「未开放」而非「已签到」。
+    if !has_benefit {
+        return json!({ "result": "inactive", "inactive": true, "message": "官方未开放签到活动" });
     }
 
-    let mut total_claimed = 0;
+    if claimable_ids.is_empty() {
+        crate::modules::ledger::record_checkin_log(store, account_id, &email, variant, "already", None);
+        return json!({ "result": "already", "message": "今日已签到" });
+    }
+
+    let mut total_claimed = 0f64;
+    let mut success_count = 0usize;
+    let mut last_err: Option<String> = None;
     for cid in claimable_ids {
         let claim_url = format!("{base}/sash/api/v1/me/campaigns/{cid}/claim");
         let mut creq = client.post(&claim_url);
         for (k, v) in &headers {
             creq = creq.header(k, v);
         }
-        if let Ok(res) = creq.send().await {
-            if res.status().is_success() {
+        match creq.send().await {
+            Ok(res) if res.status().is_success() => {
+                success_count += 1;
                 let res_json: Value = res.json().await.unwrap_or_default();
                 let amt = res_json
                     .get("benefit")
                     .and_then(|b| b.get("amount"))
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(100);
+                    .and_then(|v| v.as_f64())
+                    .or_else(|| res_json.get("amount").and_then(|v| v.as_f64()))
+                    .unwrap_or(0.0);
                 total_claimed += amt;
+            }
+            Ok(res) => {
+                last_err = Some(format!("领取失败 HTTP {}", res.status()));
+            }
+            Err(e) => {
+                last_err = Some(format!("网络错误: {e}"));
             }
         }
     }
 
+    if success_count == 0 {
+        let e = last_err.unwrap_or_else(|| "领取失败".to_string());
+        crate::modules::ledger::record_checkin_log(store, account_id, &email, variant, "error", Some(&e));
+        return json!({ "result": "error", "error": e });
+    }
+
+    crate::modules::ledger::record_checkin_log(store, account_id, &email, variant, "success", None);
     json!({
         "result": "success",
         "message": format!("成功领取 {total_claimed} Credits"),
         "claimedAmount": total_claimed
     })
+}
+
+/// webui 批量接口：一次返回全部桌面账号的今日签到状态，形状对齐前端按 accountId 过滤。
+pub async fn get_checkin_status_all(
+    roots: &PathRoots,
+    store: &Path,
+    only_variant: Option<QoderVariant>,
+) -> Value {
+    let accounts = bundle::list_all(store);
+    let mut out = Vec::new();
+    for b in accounts {
+        if b.target != QoderTarget::Desktop {
+            continue;
+        }
+        if let Some(v) = only_variant {
+            if b.variant != v {
+                continue;
+            }
+        }
+        let email = b.identity.email.clone().unwrap_or_default();
+        let res = get_checkin_status(roots, store, &b.account_id, b.variant).await;
+        let mut entry = json!({
+            "accountId": b.account_id,
+            "email": email,
+            "variant": crate::modules::view::variant_key(b.variant),
+            "ok": res.get("ok").and_then(|x| x.as_bool()).unwrap_or(false),
+            "todayCheckedIn": res.get("todayCheckedIn").and_then(|x| x.as_bool()).unwrap_or(false),
+        });
+        if let Some(err) = res.get("error").and_then(|e| e.as_str()) {
+            entry["error"] = json!(err);
+        }
+        out.push(entry);
+    }
+    json!({ "accounts": out })
+}
+
+pub fn get_checkin_status_all_sync(
+    roots: &PathRoots,
+    store: &Path,
+    only_variant: Option<QoderVariant>,
+) -> Value {
+    block_on(get_checkin_status_all(roots, store, only_variant))
 }
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
@@ -422,21 +539,48 @@ pub fn checkin_sync(
     block_on(checkin(roots, store, account_id, variant))
 }
 
+/// 批量签到：一次返回**每个**账号的结果，形状对齐前端 `checkinAll` 契约。
+///
+/// `only_variant = None` 时覆盖全部档位；账号页/设置页按当前档位传入。
+/// 之前只回 `{result,count}`，前端 `res.accounts.filter` 直接崩。
+pub async fn checkin_all(
+    roots: &PathRoots,
+    store: &Path,
+    only_variant: Option<QoderVariant>,
+) -> Value {
+    let accounts = bundle::list_all(store);
+    let mut out = Vec::new();
+    for b in accounts {
+        if b.target != QoderTarget::Desktop {
+            continue;
+        }
+        if let Some(v) = only_variant {
+            if b.variant != v {
+                continue;
+            }
+        }
+        let email = b.identity.email.clone().unwrap_or_default();
+        let res = checkin(roots, store, &b.account_id, b.variant).await;
+        let mut entry = json!({
+            "accountId": b.account_id,
+            "email": email,
+            "variant": crate::modules::view::variant_key(b.variant),
+            "result": res.get("result").and_then(|r| r.as_str()).unwrap_or("error"),
+            "inactive": res.get("inactive").and_then(|x| x.as_bool()).unwrap_or(false),
+        });
+        if let Some(err) = res.get("error").and_then(|e| e.as_str()) {
+            entry["error"] = json!(err);
+        }
+        out.push(entry);
+    }
+    json!({ "accounts": out })
+}
+
 pub fn checkin_all_sync(
     roots: &PathRoots,
     store: &Path,
-    variant: QoderVariant,
+    only_variant: Option<QoderVariant>,
 ) -> Value {
-    let accounts = bundle::list_all(store);
-    let mut success_count = 0;
-    for b in accounts {
-        if b.variant == variant && b.target == QoderTarget::Desktop {
-            let res = checkin_sync(roots, store, &b.account_id, variant);
-            if res.get("result").and_then(|r| r.as_str()) == Some("success") {
-                success_count += 1;
-            }
-        }
-    }
-    json!({ "result": "success", "count": success_count })
+    block_on(checkin_all(roots, store, only_variant))
 }
 

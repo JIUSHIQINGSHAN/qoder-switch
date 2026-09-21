@@ -41,6 +41,7 @@ pub fn run() {
                 app.handle(),
                 tray::is_silent_startup(std::env::args()),
             );
+            qs_switch_core::modules::ledger::spawn_scheduler();
             Ok(())
         })
         // 关窗只隐藏不退出：换号后还要能从托盘把界面拉回来。
@@ -95,7 +96,12 @@ pub fn run() {
             compat::checkin,
             compat::checkin_all,
             compat::oauth_start,
-            compat::oauth_status
+            compat::oauth_status,
+            compat::get_credit_statistics,
+            compat::get_auto_checkin_config,
+            compat::save_auto_checkin_config,
+            compat::get_checkin_logs,
+            compat::check_auth_permission
         ])
         .run(tauri::generate_context!())
         .expect("Qoder Switch 启动失败");

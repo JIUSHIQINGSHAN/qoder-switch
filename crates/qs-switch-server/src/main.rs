@@ -64,6 +64,9 @@ fn main() {
     println!("  账号库:   {}", qs_switch_core::modules::config::switch_root().display());
     println!("  Ctrl+C 结束（只影响本进程，不会动 Qoder）");
 
+    // 与桌面端共用同一条自动签到调度：webui 宿主开着时也会按配置补签，行为不分叉。
+    qs_switch_core::modules::ledger::spawn_scheduler();
+
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {

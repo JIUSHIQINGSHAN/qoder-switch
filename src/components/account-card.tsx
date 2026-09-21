@@ -1,4 +1,4 @@
-import { ArrowRight, CalendarCheck2, CalendarDays, Check, CircleCheck, Clock3, Coins, Ellipsis, Gauge, Loader2, PackageOpen, RefreshCw, Sparkles, Star, Trash2 } from "lucide-react";
+import { ArrowRight, CalendarCheck2, CalendarDays, Check, CircleCheck, Clock3, Coins, Ellipsis, Gauge, Loader2, PackageOpen, Sparkles, Star, Trash2 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -299,7 +299,7 @@ function CreditResourceRow({ resource, compact, placeholderLabel }: { resource?:
   );
 }
 
-export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch, todayCheckedIn, rateLimits, credit, creditLoading, creditUpdatedAt, creditPriority, workbuddyActive, codebuddyCliConfigured, codebuddyCliActive, codebuddyCliBusy, onSwitchCodebuddyCli, codebuddyCliLoading, codebuddyCnIdeAvailable, codebuddyCnIdeActive, codebuddyCnIdeBusy, codebuddyCnIdeLoading, onSwitchCodebuddyCnIde, featuresDisabled = true, compact = false }: Props) {
+export function AccountCard({ account, onDelete, onCheckin, onSwitch, todayCheckedIn, rateLimits, credit, creditLoading, creditUpdatedAt, creditPriority, workbuddyActive, codebuddyCliConfigured, codebuddyCliActive, codebuddyCliBusy, onSwitchCodebuddyCli, codebuddyCliLoading, codebuddyCnIdeAvailable, codebuddyCnIdeActive, codebuddyCnIdeBusy, codebuddyCnIdeLoading, onSwitchCodebuddyCnIde, featuresDisabled = true, compact = false }: Props) {
   const [resourcesOpen, setResourcesOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   /**
@@ -416,9 +416,6 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-40">
-                <DropdownMenuItem disabled={featuresDisabled || !onRefresh} onSelect={() => onRefresh?.(account)}>
-                  <RefreshCw />刷新 Token
-                </DropdownMenuItem>
                 {todayCheckedIn === false && (
                   <DropdownMenuItem disabled={featuresDisabled || !onCheckin} onSelect={() => onCheckin?.(account)}>
                     <CircleCheck />手动签到

@@ -17,8 +17,6 @@ import type {
   CheckinConfig,
   CheckinLog,
   GithubConfig,
-  RateLimitConfig,
-  RateLimitHookStatus,
   RotateLog,
   RotateStatus,
   UpdateInfo,
@@ -174,14 +172,17 @@ function AutoCheckinCard() {
       }
       const ok = res.accounts.filter((a) => a.result === "success").length;
       const already = res.accounts.filter((a) => a.result === "already").length;
+      const inactive = res.accounts.filter((a) => a.result === "inactive" || a.inactive === true).length;
       const err = res.accounts.filter((a) => a.result === "error").length;
       const detail = res.accounts
         .filter((a) => a.result === "error")
         .map((a) => `${a.email}（${a.error}）`)
         .join("；");
+      const parts = [`成功 ${ok}`, `已签 ${already}`, `失败 ${err}`];
+      if (inactive > 0) parts.splice(2, 0, `未开放 ${inactive}`);
       setMsg({
-        type: err > 0 ? "err" : "ok",
-        text: `签到完成：成功 ${ok}，已签 ${already}，失败 ${err}${detail ? `。${detail}` : ""}`,
+        type: err > 0 && ok + already === 0 ? "err" : "ok",
+        text: `签到完成：${parts.join("，")}${detail ? `。${detail}` : ""}`,
       });
       void load();
     } catch (e) {
@@ -587,6 +588,8 @@ function PermissionCheckCard() {
     }
   }
 
+  const isMac = api.isMacHost();
+
   return (
     <SettingsGroup
       id="settings-permission"
@@ -600,23 +603,27 @@ function PermissionCheckCard() {
           <DemoAction><Button size="sm" onClick={runCheck} disabled={checking}>
             {checking ? "检测中…" : "检测权限"}
           </Button></DemoAction>
-          <DemoAction><Button
-            size="sm"
-            variant="outline"
-            onClick={() => void api.openPermissionSettings("all_files")}
-          >
-            打开完全磁盘访问
-          </Button></DemoAction>
-          <DemoAction><Button
-            size="sm"
-            variant="outline"
-            onClick={() => void api.openPermissionSettings("app_management")}
-          >
-            打开 App 管理
-          </Button></DemoAction>
-          <DemoAction><Button size="sm" variant="outline" onClick={() => void api.revealAppInFinder()}>
-            在 Finder 中显示
-          </Button></DemoAction>
+          {isMac && (
+            <>
+              <DemoAction><Button
+                size="sm"
+                variant="outline"
+                onClick={() => void api.openPermissionSettings("all_files")}
+              >
+                打开完全磁盘访问
+              </Button></DemoAction>
+              <DemoAction><Button
+                size="sm"
+                variant="outline"
+                onClick={() => void api.openPermissionSettings("app_management")}
+              >
+                打开 App 管理
+              </Button></DemoAction>
+              <DemoAction><Button size="sm" variant="outline" onClick={() => void api.revealAppInFinder()}>
+                在 Finder 中显示
+              </Button></DemoAction>
+            </>
+          )}
         </div>
 
         {result && (
@@ -624,7 +631,7 @@ function PermissionCheckCard() {
             <AlertDescription>{result.text}</AlertDescription>
           </Alert>
         )}
-        {result && !result.ok && (
+        {isMac && result && !result.ok && (
           <div className="mx-4 mb-4 border-l-2 border-destructive/50 bg-muted/30 px-3 py-2.5 text-xs text-muted-foreground sm:mx-5">
             <p className="mb-1 font-medium text-foreground">如何授权（拖拽方式）：</p>
             <ol className="list-decimal space-y-1 pl-4">
@@ -1062,222 +1069,13 @@ function AppearanceCard() {
   );
 }
 
-/** 限额监听：总开关 + hook 接入状态（CLI / Qoder 实时上报，IDE 仍走日志扫描）。 */
-function RateLimitCard() {
-  const [config, setConfig] = useState<RateLimitConfig | null>(null);
-  const [status, setStatus] = useState<RateLimitHookStatus | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    void Promise.all([api.getRateLimitConfig(), api.getRateLimitHookStatus()])
-      .then(([cfg, hook]) => {
-        if (cancelled) return;
-        setConfig(cfg);
-        setStatus(hook);
-      })
-      .catch((e) => {
-        if (!cancelled) setMsg({ type: "err", text: api.asError(e) });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  async function onToggle(enabled: boolean) {
-    if (!config || busy) return;
-    const previous = config;
-    setConfig({ ...config, enabled });
-    setBusy(true);
-    setMsg(null);
-    try {
-      // 整个配置一起提交：只带 enabled 会把「卸载过」标记冲掉，重启后 hook 又被自动装回。
-      setConfig(await api.saveRateLimitConfig({ ...config, enabled }));
-      setMsg({ type: "ok", text: enabled ? "限额监听已开启" : "限额监听已关闭" });
-    } catch (e) {
-      setConfig(previous);
-      setMsg({ type: "err", text: api.asError(e) });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  /**
-   * 「扫描 Qoder IDE 日志」独立开关：只关两个 IDE 的日志来源（IDE 的 429 不触发任何
-   * 事件，日志是它唯一的数据源），CLI / Qoder 的 hook 通路不受影响。
-   */
-  async function onToggleIdeLogs(scanIdeLogs: boolean) {
-    if (!config || busy) return;
-    const previous = config;
-    setConfig({ ...config, scanIdeLogs });
-    setBusy(true);
-    setMsg(null);
-    try {
-      // 与总开关一样整份提交：只带 scanIdeLogs 会把 enabled / hookOptOut 冲成默认值。
-      setConfig(await api.saveRateLimitConfig({ ...config, scanIdeLogs }));
-      setMsg({
-        type: "ok",
-        text: scanIdeLogs
-          ? "已开启 IDE 日志扫描"
-          : "已关闭 IDE 日志扫描：两个 Qoder IDE 的限额不再显示",
-      });
-    } catch (e) {
-      setConfig(previous);
-      setMsg({ type: "err", text: api.asError(e) });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  /**
-   * 回读限额配置：装 / 卸 hook 无论成败都会写「接入 / 卸载」意图（部分目标失败也算），
-   * 本地标记不能只靠乐观更新，否则随后拨总开关会把过期值写回磁盘。
-   */
-  function refreshHookConfig() {
-    return api
-      .getRateLimitConfig()
-      .then(setConfig)
-      .catch(() => {
-        /* 读不到就保持本地值，下次进设置页会重新拉 */
-      });
-  }
-
-  async function onInstall() {
-    if (busy) return;
-    setBusy(true);
-    setMsg(null);
-    try {
-      setStatus(await api.installRateLimitHook());
-      setMsg({
-        type: "ok",
-        text: "已接入限额监听：Qoder CLI / Qoder 的 429 会实时上报（原配置已备份，可随时卸载还原）",
-      });
-    } catch (e) {
-      setMsg({ type: "err", text: api.asError(e) });
-    } finally {
-      setBusy(false);
-      void refreshHookConfig();
-    }
-  }
-
-  async function onUninstall() {
-    if (busy) return;
-    setBusy(true);
-    setMsg(null);
-    try {
-      setStatus(await api.uninstallRateLimitHook());
-      setMsg({
-        type: "ok",
-        text: "已卸载 hook：客户端配置恢复原状，之后不会再自动接入（限额改由日志扫描发现，可随时点「接入 hook」恢复）",
-      });
-    } catch (e) {
-      setMsg({ type: "err", text: api.asError(e) });
-    } finally {
-      setBusy(false);
-      void refreshHookConfig();
-    }
-  }
-
-  const existingTargets = status?.targets.filter((target) => target.exists) ?? [];
-  const installedCount = existingTargets.filter((target) => target.installed).length;
-  // IDE 的限额只有日志一条来源：扫描开关关闭时文案不能再说「仍按日志扫描」。
-  const ideNote =
-    config?.scanIdeLogs === false
-      ? "Qoder IDE 的日志扫描已关闭"
-      : "Qoder IDE 无事件，仍按日志扫描";
-  const hookDescription = status
-    ? existingTargets.length === 0
-      ? `未检测到 Qoder CLI / Qoder 客户端：没有可接入的配置（${ideNote}）`
-      : status.installed
-        ? `${installedCount} / ${existingTargets.length} 个已安装客户端已接入：429 当轮实时上报（秒级）；${ideNote}`
-        : config?.hookOptOut
-          ? "已卸载：不会再自动接入，限额改由日志扫描发现；点「接入 hook」可恢复实时上报"
-          : "未接入：限额仅靠定期扫描日志发现（最多滞后数分钟）"
-    : "加载中…";
-
-  return (
-    <SettingsGroup id="settings-rate-limit" title="限额监听">
-      <CardContent className="space-y-0 p-0">
-        <SettingsFieldRow
-          label="启用限额监听"
-          description="关闭后不扫描日志、账号卡片不显示限额标记；重新开启后恢复"
-          htmlFor="rl-enabled"
-          operational
-        >
-          <Switch
-            id="rl-enabled"
-            checked={config?.enabled ?? true}
-            disabled={busy || !config}
-            onCheckedChange={(v) => void onToggle(v)}
-            aria-label="启用限额监听"
-          />
-        </SettingsFieldRow>
-
-        <SettingsFieldRow
-          label="扫描 Qoder IDE 日志"
-          description="IDE 的限额只有日志一条来源，关掉后不再显示；Qoder CLI / Qoder 的实时上报不受影响"
-          htmlFor="rl-ide-scan"
-          operational
-        >
-          <Switch
-            id="rl-ide-scan"
-            checked={config?.scanIdeLogs ?? true}
-            disabled={busy || !config}
-            onCheckedChange={(v) => void onToggleIdeLogs(v)}
-            aria-label="扫描 Qoder IDE 日志"
-          />
-        </SettingsFieldRow>
-
-        <SettingsFieldRow
-          className="border-b-0"
-          label="接入客户端 hook"
-          description={hookDescription}
-          htmlFor="rl-hook"
-          operational
-        >
-          {status?.installed ? (
-            <Button
-              id="rl-hook"
-              size="sm"
-              variant="outline"
-              disabled={busy}
-              onClick={() => void onUninstall()}
-            >
-              {busy ? <Loader2 className="animate-spin" /> : null}卸载 hook
-            </Button>
-          ) : (
-            <Button
-              id="rl-hook"
-              size="sm"
-              disabled={busy || !status || existingTargets.length === 0}
-              onClick={() => void onInstall()}
-            >
-              {busy ? <Loader2 className="animate-spin" /> : null}接入 hook
-            </Button>
-          )}
-        </SettingsFieldRow>
-
-        {msg && (
-          <Alert
-            variant={msg.type === "err" ? "destructive" : "default"}
-            className="!w-auto mx-4 my-4 sm:mx-5"
-          >
-            <AlertDescription>{msg.text}</AlertDescription>
-          </Alert>
-        )}
-      </CardContent>
-    </SettingsGroup>
-  );
-}
-
 /** 设置页：自动签到配置 / 权限检测 / 更新配置。 */
 export default function SettingsPage() {
   return (
     <div className="mx-auto min-w-0 w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-8">
       <header className="mb-10 sm:mb-12">
         <h1 className="text-2xl font-semibold tracking-tight">设置</h1>
-        <p className="mt-2 text-sm leading-6 text-muted-foreground">自动签到、限额监听、权限检测与自动更新配置。</p>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">自动签到、权限检测与自动更新配置。</p>
       </header>
 
       <div className="min-w-0 space-y-12">
@@ -1285,7 +1083,6 @@ export default function SettingsPage() {
         <PermissionCheckCard />
         <AutoCheckinCard />
         <AutoRotateCard />
-        <RateLimitCard />
         {api.isDesktop() || api.isDemoMode() ? <StartupCard /> : null}
         <NotificationHistoryCard />
         {api.isWebui() && !api.isDemoMode() ? null : <UpdateCard />}

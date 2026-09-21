@@ -1,6 +1,6 @@
 [package]
 name = "qs-switch-core"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 description = "Qoder Switch 核心逻辑（档位/凭据布局/快照/备份回滚/切换），不依赖 Tauri，可被桌面端与 HTTP server 复用"
 

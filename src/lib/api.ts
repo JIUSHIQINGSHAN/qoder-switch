@@ -81,6 +81,16 @@ export function isDesktop(): boolean {
   return !isWebui() && !isMobilePlatform();
 }
 
+/**
+ * 是否 macOS 宿主。上游版式里「完全磁盘访问 / App 管理 / 在 Finder 中显示」是
+ * macOS 专属操作；Windows 上这些按钮点下去只会拿到"不适用"，所以在 Windows 隐藏它们，
+ * 只保留 Windows 也真实有效的「认证目录写探针」。
+ */
+export function isMacHost(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return navigator.userAgent.includes("Macintosh");
+}
+
 type Route = { method: "GET" | "POST"; path: string };
 
 /** Tauri command → HTTP 路由映射（webui 模式）。 */
@@ -122,8 +132,7 @@ const ROUTES: Record<string, Route> = {
   checkin_all: { method: "POST", path: "/api/checkin/all" },
   get_auto_checkin_config: { method: "GET", path: "/api/checkin/config" },
   save_auto_checkin_config: { method: "POST", path: "/api/checkin/config" },
-  get_checkin_logs: { method: "GET", path: "/api/checkin/logs" },
-  list_notifications: { method: "GET", path: "/api/notifications" },
+  get_checkin_logs: { method: "GET", path: "/api/checkin/logs" },  list_notifications: { method: "GET", path: "/api/notifications" },
   record_notification: { method: "POST", path: "/api/notifications/record" },
   clear_notifications: { method: "POST", path: "/api/notifications/clear" },
   get_auto_rotate_config: { method: "GET", path: "/api/rotate/config" },
@@ -197,8 +206,6 @@ async function httpCall<T>(cmd: string, args?: Record<string, unknown>): Promise
  * 依据见 README 的「当前能力 / 已知边界」。
  */
 const QODER_UNAVAILABLE: Record<string, string> = {
-  get_checkin_logs: "Qoder 签到日志由客户端本地记录",
-  save_auto_checkin_config: "Qoder 自动签到由客户端本地调度",
   refresh_account_token: "刷新接口未取证",
   copy_sessions: "Qoder 会话不按账号归属，跨账号复制会串数据",
   session_links_preview: "Qoder 会话不按账号归属，跨账号复制会串数据",
@@ -213,8 +220,7 @@ const QODER_UNAVAILABLE: Record<string, string> = {
   get_codebuddy_ide_status: "国际版桌面端尚无独立状态命令",
   switch_codebuddy_ide_account: "国际版桌面端尚无独立状态命令",
   detect_codebuddy_ide_account: "国际版桌面端尚无独立状态命令",
-  check_auth_permission: "Windows 无 macOS 那套磁盘权限限制",
-  open_permission_settings: "Windows 无 macOS 那套磁盘权限限制",
+  open_permission_settings: "macOS 专属操作（Windows 无完全磁盘访问授权）",
   reveal_app_in_finder: "macOS 专属操作",
 };
 
@@ -240,16 +246,6 @@ const DESKTOP_ONLY_REASONS: Record<string, string> = {
  * 所以读类命令给空集合，动作类命令才抛"不适用"。
  */
 const QODER_EMPTY: Record<string, () => unknown> = {
-  get_credit_statistics: () => ({
-    generatedAt: 0,
-    retentionDays: 0,
-    coverageStartAt: null,
-    summary: {},
-    daily: [],
-    accounts: [],
-    events: [],
-    error: "Qoder 积分统计由各账号独立配额维护",
-  }),
   get_token_statistics: () => ({
     generatedAt: 0,
     sources: [],
@@ -278,11 +274,6 @@ const QODER_EMPTY: Record<string, () => unknown> = {
     targets: [],
   }),
   get_rate_limit_config: () => ({ enabled: false, hookOptOut: false, scanIdeLogs: false }),
-  get_auto_checkin_config: () => ({
-    enabled: false,
-    keepalive_days: 0,
-    lazy_refresh_hours: 0,
-  }),
   // 开机自启的读写已由后端接管（tauri-plugin-autostart），不再在此占位。
   // webui 宿主不渲染这张卡片，也不会发起同名调用。
   // （get_checkin_status 的空值占位已并入上方 list_sessions 处：webui 分支绕过 call()

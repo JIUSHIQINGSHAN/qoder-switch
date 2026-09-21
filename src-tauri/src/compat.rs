@@ -375,18 +375,9 @@ pub async fn checkin(account_id: String, variant: Option<String>) -> Value {
 pub async fn checkin_all(variant: Option<String>) -> Value {
     let roots = PathRoots::real();
     let store = switch_root();
-    let v = variant_of(variant.as_deref());
-    let accounts = bundle::list_all(&store);
-    let mut success_count = 0;
-    for b in accounts {
-        if b.variant == v && b.target == QoderTarget::Desktop {
-            let res = qs_switch_core::modules::quota::checkin(&roots, &store, &b.account_id, v).await;
-            if res.get("result").and_then(|r| r.as_str()) == Some("success") {
-                success_count += 1;
-            }
-        }
-    }
-    json!({ "result": "success", "count": success_count })
+    // 不传档位 = 全部档位（设置页的"全部立即签到"覆盖两档），传了就只处理该档。
+    let only = variant.as_deref().map(|v| variant_of(Some(v)));
+    qs_switch_core::modules::quota::checkin_all(&roots, &store, only).await
 }
 
 #[tauri::command]
@@ -400,6 +391,38 @@ pub async fn oauth_status(login_id: String) -> Value {
     let roots = PathRoots::real();
     let store = switch_root();
     qs_switch_core::modules::oauth::oauth_status(&login_id, &roots, &store).await
+}
+
+/// 积分统计：本机配额快照聚合（无官方用量端点）。`refresh=true` 先拉一轮真实配额。
+#[tauri::command]
+pub async fn get_credit_statistics(refresh: Option<bool>) -> Value {
+    let roots = PathRoots::real();
+    let store = switch_root();
+    off_main(move || Ok(qs_switch_core::modules::ledger::credit_statistics(&roots, &store, refresh.unwrap_or(false))))
+        .await
+        .unwrap_or_else(|_| json!({ "error": "统计聚合任务异常终止" }))
+}
+
+#[tauri::command]
+pub fn get_auto_checkin_config() -> Value {
+    qs_switch_core::modules::ledger::read_checkin_config(&switch_root())
+}
+
+#[tauri::command]
+pub fn save_auto_checkin_config(config: Value) -> Result<Value, String> {
+    qs_switch_core::modules::ledger::write_checkin_config(&switch_root(), &config)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_checkin_logs() -> Value {
+    qs_switch_core::modules::ledger::read_checkin_logs(&switch_root())
+}
+
+/// 权限自检：Windows 认证目录写探针。
+#[tauri::command]
+pub fn check_auth_permission(variant: Option<String>) -> Value {
+    view::auth_permission_probe(&PathRoots::real(), variant_of(variant.as_deref()))
 }
 
 #[tauri::command]
