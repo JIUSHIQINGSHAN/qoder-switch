@@ -267,22 +267,26 @@ pub fn close(
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_s);
     while std::time::Instant::now() < deadline {
-        if running_pids(images).map_or(true, |p| p.is_empty()) {
-            return Ok(());
+        match running_pids(images) {
+            Ok(pids) if pids.is_empty() => return Ok(()),
+            Ok(_) => {}
+            Err(e) => return Err(format!("等待目标进程退出时探测失败: {e}")),
         }
         std::thread::sleep(std::time::Duration::from_millis(300));
     }
-    let survivors = running_pids(images).unwrap_or_default();
+    // 优雅关闭超时，强制终止残存进程。必须 fail-closed：探测失败绝不能折叠成空列表放行。
+    let survivors = running_pids(images)?;
     for pid in survivors {
         let mut cmd = std::process::Command::new("taskkill");
         cmd.args(["/PID", &pid.to_string(), "/F", "/T"]);
         hide_console(&mut cmd);
         let _ = cmd.output();
     }
-    if running_pids(images).map_or(false, |p| !p.is_empty()) {
+    let final_check = running_pids(images)?;
+    if !final_check.is_empty() {
         return Err(format!(
-            "{:?}·{:?} 仍有进程未退出，放弃写入（继续写会撞上正在重写 auth 的进程）",
-            variant, target
+            "{:?}·{:?} 仍有进程未退出（剩余 {} 个），放弃写入（继续写会撞上正在重写 auth 的进程）",
+            variant, target, final_check.len()
         ));
     }
     Ok(())
