@@ -40,7 +40,7 @@
 
 **修正结论（推翻先前假设）**：`deviceToken` 这套**不是账号登录的设备码流程**。
 桌面端上下文里它服务"允许 Qoder Mobile 控制此设备"的远程控制配对
-（UI 字符串 `allowRemoteControl`/`allowRemoteControl` 一节）；CLI 里同名端点更可能服务
+（UI 字符串 `allowRemoteControl` / `remoteControl` 一节）；CLI 里同名端点更可能服务
 CLI 登录配对（CLI 登录方式枚举：`job_token`/`yunxiao_token`/`ide_login`，另有
 `loginWithPAT`）。桌面端**账号登录不走设备码**——中文 UI 检索只有
 "Qoder Mobile 下载二维码"，无任何"扫码登录账号"文案。
@@ -61,6 +61,7 @@ CLI 登录配对（CLI 登录方式枚举：`job_token`/`yunxiao_token`/`ide_log
 | OAuth 设备码添加账号 | 桌面端不适用（无此流程） | 探 CLI 的 deviceToken 配对授权方；若仅服务 CLI 自身，整条标"不适用"并写明 |
 | 主动刷新主 token | **不适用**（端点不存在，§2.3） | 无 |
 | Token 用量统计 | 本地日志源待查（api.ts 与 App.tsx 口径打架） | 查 Qoder 本地日志是否含用量；无则整页维持占位并统一口径 |
+| 自动更新发布源 | **已落地（M10 / v0.1.4）** | tauri-plugin-updater + minisign 验签 + GitHub Releases 自动化发版 |
 
 ## 4. 探测纪律（M9 执行时仍有效）
 
