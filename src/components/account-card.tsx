@@ -80,9 +80,15 @@ function creditResources(credit?: CreditExpiry): CreditResource[] {
 
 function accountIdentity(account: AccountMeta): string {
   if (account.email) {
-    const [local, domain] = account.email.split("@");
-    if (!domain) return account.email;
-    return `${local.slice(0, 1)}${"*".repeat(Math.max(3, local.length - 1))}@${domain}`;
+    const atIdx = account.email.lastIndexOf("@");
+    if (atIdx <= 0 || atIdx === account.email.length - 1) return account.email;
+    const local = account.email.slice(0, atIdx);
+    const domain = account.email.slice(atIdx + 1);
+    const maskedLocal =
+      local.length <= 1
+        ? `${local}***`
+        : `${local[0]}${"*".repeat(Math.min(4, Math.max(2, local.length - 2)))}${local[local.length - 1]}`;
+    return `${maskedLocal}@${domain}`;
   }
   return account.uid ? `UID · ${account.uid}` : `ID · ${account.id}`;
 }
