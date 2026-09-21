@@ -46,6 +46,10 @@ case "${1:-all}" in
   release)
     # Windows 构建前先杀旧进程，防 LNK1104 占用拒绝访问（见 HANDOFF §7 第 10 条）
     taskkill //IM qoder-switch.exe //F >/dev/null 2>&1 || true
+    if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ] && [ -f "$HOME/.tauri/qoder-switch.key" ]; then
+      export TAURI_SIGNING_PRIVATE_KEY="$(cat "$HOME/.tauri/qoder-switch.key")"
+      export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+    fi
     # 会自己跑 beforeBuildCommand（npm run build），不必先 ./build.sh web
     npx tauri build
     find "$CARGO_TARGET_DIR/release/bundle" -name '*.exe' -print
