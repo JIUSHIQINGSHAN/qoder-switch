@@ -111,7 +111,21 @@ pub fn record_at(
     }
     // 持锁跨越整个 load→改→写；毒锁照常放行（上一位 panic 不该永久卡死存档）。
     let _gate = NOTIFY_GATE.lock().unwrap_or_else(|p| p.into_inner());
-    let mut store = load_at(root)?;
+    let mut store = match load_at(root) {
+        Ok(s) => s,
+        Err(_) => {
+            // 损坏自愈：将损坏文件重命名隔离，不阻塞后续通知写入
+            let file = store_file_at(root);
+            if file.is_file() {
+                let corrupt = root.join(format!(
+                    "{STORE_FILE_NAME}.corrupt-{}",
+                    uuid::Uuid::new_v4().simple()
+                ));
+                let _ = std::fs::rename(&file, &corrupt);
+            }
+            NotificationStore::default()
+        }
+    };
     let entry = NotificationEntry {
         level: level.to_string(),
         title: trim_text(title, TITLE_LIMIT),
@@ -261,18 +275,23 @@ mod tests {
     }
 
     #[test]
-    fn damaged_store_is_reported_and_preserved() {
+    fn damaged_store_is_quarantined_and_healed() {
         let dir = TempDir::new("damaged");
         let file = store_file_at(&dir.0);
         std::fs::write(&file, b"{not json").unwrap();
-        let error = record_at(&dir.0, "info", "提示", None).unwrap_err();
-        assert!(error.contains("损坏"), "{error}");
-        assert_eq!(
-            std::fs::read(&file).unwrap(),
-            b"{not json",
-            "不得覆盖原文件"
-        );
-        assert!(list_at(&dir.0).is_err());
+        // 损坏的旧文件自愈：原损坏文件被隔离重命名，写入成功自愈
+        let res = record_at(&dir.0, "info", "新提示", None);
+        assert!(res.is_ok(), "通知记录应能从损坏文件中自愈");
+        let list = list_at(&dir.0).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].title, "新提示");
+
+        // 检查隔离的 corrupt 文件是否存在
+        let has_corrupt = std::fs::read_dir(&dir.0)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().contains("corrupt"));
+        assert!(has_corrupt, "原损坏文件必须被隔离保留");
     }
 
     #[test]
