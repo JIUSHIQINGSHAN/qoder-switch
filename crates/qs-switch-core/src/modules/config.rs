@@ -55,12 +55,15 @@ pub fn now_ts() -> String {
     chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string()
 }
 
-/// 原子写：同目录临时文件 + rename。目标目录由调用方保证存在。
+/// 原子写：同目录临时文件 + rename。目标目录自动创建。
 ///
 /// rename 前先把数据 `sync_all` 推到盘上：journal、备份清单这些崩溃恢复依据
 /// 都走这里，断电后"原子"文件绝不能是 0 字节或截断的。
 pub fn atomic_write_bytes(path: &Path, content: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let stem = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -76,10 +79,21 @@ pub fn atomic_write_bytes(path: &Path, content: &[u8]) -> std::io::Result<()> {
         let _ = std::fs::remove_file(&tmp);
         e
     })?;
-    std::fs::rename(&tmp, path).map_err(|e| {
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        // 如果目标文件存在且带只读属性（Windows常见），尝试清除只读位后重试一次
+        if e.kind() == std::io::ErrorKind::PermissionDenied && path.is_file() {
+            if let Ok(mut perms) = std::fs::metadata(path).map(|m| m.permissions()) {
+                perms.set_readonly(false);
+                let _ = std::fs::set_permissions(path, perms);
+                if std::fs::rename(&tmp, path).is_ok() {
+                    return Ok(());
+                }
+            }
+        }
         let _ = std::fs::remove_file(&tmp);
-        e
-    })
+        return Err(e);
+    }
+    Ok(())
 }
 
 pub fn read_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
@@ -298,4 +312,29 @@ pub fn ini_get(ini: &str, key: &str) -> Option<String> {
             .then(|| v.trim().to_string())
             .filter(|v| !v.is_empty())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn atomic_write_bytes_creates_parents_and_overwrites_readonly() {
+        let tmp = std::env::temp_dir().join(format!("qs-atomic-{}", uuid::Uuid::new_v4().simple()));
+        let nested_target = tmp.join("deep").join("subdir").join("test.txt");
+
+        // 父目录不存在时自动递归创建并成功写入
+        assert!(atomic_write_bytes(&nested_target, b"hello").is_ok());
+        assert_eq!(std::fs::read(&nested_target).unwrap(), b"hello");
+
+        // 设为只读后再次原子写入
+        let mut perms = std::fs::metadata(&nested_target).unwrap().permissions();
+        perms.set_readonly(true);
+        let _ = std::fs::set_permissions(&nested_target, perms);
+
+        assert!(atomic_write_bytes(&nested_target, b"updated").is_ok());
+        assert_eq!(std::fs::read(&nested_target).unwrap(), b"updated");
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
 }
