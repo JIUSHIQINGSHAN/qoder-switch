@@ -255,7 +255,13 @@ pub fn launcher_exe(roots: &PathRoots, v: QoderVariant) -> Option<PathBuf> {
     // installDir 与解析出的 exe 都必须规范化到同一根下才可比。
     let exe_canon = exe.canonicalize().ok()?;
     let dir_canon = PathBuf::from(install_dir).canonicalize().ok()?;
-    if !exe_canon.starts_with(&dir_canon) {
+    // Windows 上路径大小写不敏感且可能带 \\?\ 前缀，规范化后按标准全小写前缀匹配
+    let exe_str = exe_canon.to_string_lossy().to_ascii_lowercase();
+    let mut dir_str = dir_canon.to_string_lossy().to_ascii_lowercase();
+    if !dir_str.ends_with('\\') && !dir_str.ends_with('/') {
+        dir_str.push('\\');
+    }
+    if !exe_str.starts_with(&dir_str) && exe_canon != dir_canon {
         return None;
     }
     exe_canon.is_file().then_some(exe_canon)
