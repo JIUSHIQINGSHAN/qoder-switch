@@ -199,8 +199,6 @@ async function httpCall<T>(cmd: string, args?: Record<string, unknown>): Promise
 const QODER_UNAVAILABLE: Record<string, string> = {
   get_checkin_logs: "Qoder 签到日志由客户端本地记录",
   save_auto_checkin_config: "Qoder 自动签到由客户端本地调度",
-  oauth_start: "设备登录流程端点未取证，请用「导入本机账号」",
-  oauth_status: "设备登录流程端点未取证",
   refresh_account_token: "刷新接口未取证",
   copy_sessions: "Qoder 会话不按账号归属，跨账号复制会串数据",
   session_links_preview: "Qoder 会话不按账号归属，跨账号复制会串数据",

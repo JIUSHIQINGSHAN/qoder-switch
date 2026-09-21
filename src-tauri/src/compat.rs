@@ -390,6 +390,19 @@ pub async fn checkin_all(variant: Option<String>) -> Value {
 }
 
 #[tauri::command]
+pub fn oauth_start(variant: Option<String>) -> Value {
+    let v = variant_of(variant.as_deref());
+    qs_switch_core::modules::oauth::oauth_start(v)
+}
+
+#[tauri::command]
+pub async fn oauth_status(login_id: String) -> Value {
+    let roots = PathRoots::real();
+    let store = switch_root();
+    qs_switch_core::modules::oauth::oauth_status(&login_id, &roots, &store).await
+}
+
+#[tauri::command]
 pub fn relaunch_app(_app: tauri::AppHandle) {
     _app.restart();
 }
@@ -401,14 +414,13 @@ mod tests {
     #[test]
     fn capabilities_are_explicit_about_what_is_missing() {
         let v = get_capabilities();
-        assert!(v["unavailable"].as_array().unwrap().len() >= 6);
+        assert!(v["unavailable"].as_array().unwrap().len() >= 4);
         let names: Vec<String> = v["unavailable"]
             .as_array()
             .unwrap()
             .iter()
             .map(|x| x["name"].as_str().unwrap_or_default().to_string())
             .collect();
-        assert!(names.iter().any(|n| n.contains("签到")));
         assert!(names.iter().any(|n| n.contains("会话")));
     }
 

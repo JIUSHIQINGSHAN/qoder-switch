@@ -417,13 +417,13 @@ pub fn capabilities() -> Value {
             "托盘快捷切换",
             "开机自启（静默驻留托盘）",
             "应用内通知存档（本机 notifications.json）",
-            "应用内更新（签名 latest.json，tag 触发 CI 发版）"
+            "应用内更新（签名 latest.json，tag 触发 CI 发版）",
+            "官方配额与资源包查询（基于 10router 取证端点）",
+            "每日签到与 Credits 领取（基于 10router 取证端点）",
+            "OAuth 设备码登录（基于 10router 取证端点）"
         ],
         "unavailable": [
-            { "name": "每日签到", "reason": "Qoder 无签到接口" },
-            { "name": "积分统计与额度查询", "reason": "官方接口已取证（docs/qoder-endpoints.md），待实现" },
             { "name": "会话跨账号复制", "reason": "Qoder 会话不按账号归属，复制会串数据" },
-            { "name": "OAuth 扫码添加账号", "reason": "桌面端登录不走设备码（实证，见 docs/qoder-endpoints.md §2.2）" },
             { "name": "主动刷新 token", "reason": "主 token 无刷新端点（实证，见 docs/qoder-endpoints.md §2.3）" },
             { "name": "自动轮换执行", "reason": "换号需重启用户正在用的 IDE，只出建议" },
             { "name": "限速钩子与 429 归因", "reason": "未实现" }
@@ -555,7 +555,7 @@ mod tests {
     #[test]
     fn capabilities_names_reasons() {
         let v = capabilities();
-        assert!(v["unavailable"].as_array().unwrap().len() >= 6);
+        assert!(v["unavailable"].as_array().unwrap().len() >= 4);
         assert!(v["supported"].as_array().unwrap().iter().any(|x| x
             .as_str()
             .unwrap_or("")

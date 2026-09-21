@@ -3,6 +3,7 @@ pub mod bundle;
 pub mod config;
 pub mod export_import;
 pub mod notifications;
+pub mod oauth;
 pub mod process;
 pub mod quota;
 pub mod rotate;

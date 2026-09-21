@@ -93,7 +93,9 @@ pub fn run() {
             compat::get_credit_expiry,
             compat::get_checkin_status,
             compat::checkin,
-            compat::checkin_all
+            compat::checkin_all,
+            compat::oauth_start,
+            compat::oauth_status
         ])
         .run(tauri::generate_context!())
         .expect("Qoder Switch 启动失败");

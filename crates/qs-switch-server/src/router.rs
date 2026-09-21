@@ -508,6 +508,8 @@ mod compat {
         "checkin/status",
         "checkin",
         "checkin/all",
+        "oauth/start",
+        "oauth/status",
     ];
 
     /// 命中则处理并返回 Some，未命中返回 None 交给自有端点。
@@ -704,6 +706,13 @@ mod compat {
             }
             "checkin/all" => {
                 Ok(qs_switch_core::modules::quota::checkin_all_sync(roots, store, v))
+            }
+            "oauth/start" => {
+                Ok(qs_switch_core::modules::oauth::oauth_start(v))
+            }
+            "oauth/status" => {
+                let id = input.get("loginId").or_else(|| input.get("login_id")).and_then(|x| x.as_str()).unwrap_or("");
+                Ok(qs_switch_core::modules::oauth::oauth_status_sync(id, roots, store))
             }
             _ => Err(format!("契约路由漏了 {cmd}")),
         };
