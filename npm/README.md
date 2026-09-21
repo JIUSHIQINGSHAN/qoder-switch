@@ -29,8 +29,8 @@ postinstall 只做文件复制，不联网下载。当前仅发布 win32-x64。
 
 ```bash
 bash scripts/pack-npm.sh          # 构建 server + dist 并暂存进 npm/ 各包目录
-cd npm/platform/qoder-switch-win32-x64 && npm publish
-cd ../../ && npm publish
+(cd npm/platform/qoder-switch-win32-x64 && npm publish --access public)
+(cd npm && npm publish --access public)
 ```
 
 版本号与仓库主版本保持一致（package.json × 2 + 主版本三处 Cargo.toml + tauri.conf）。
