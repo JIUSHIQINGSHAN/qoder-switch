@@ -137,9 +137,14 @@ jobs:
               version,
               notes: `Qoder Switch ${tag}：详见 Release 页面。`,
               pub_date: new Date().toISOString(),
-              platforms: { "windows-x86_64": { signature: sig, url } },
+              platforms: {
+                "windows-x86_64": { signature: sig, url },
+                "windows-x86_64-nsis": { signature: sig, url }
+              },
             };
-            fs.writeFileSync("latest.json", JSON.stringify(manifest, null, 2));
+            const jsonText = JSON.stringify(manifest, null, 2);
+            fs.writeFileSync("latest.json", jsonText);
+            fs.writeFileSync("latest-windows-x86_64.json", jsonText);
           '
 
       - name: 生成 SHA256SUMS.txt
@@ -153,6 +158,7 @@ jobs:
           sha256sum "target/release/qs-switch-server.exe" >> SHA256SUMS.txt
           sha256sum "qoder-switch-${VERSION}-portable-x64.zip" >> SHA256SUMS.txt
           sha256sum latest.json >> SHA256SUMS.txt
+          sha256sum latest-windows-x86_64.json >> SHA256SUMS.txt
 
       - name: 发布 GitHub Release
         env:
@@ -164,9 +170,11 @@ jobs:
           gh release create "$TAG" \
             --title "Qoder Switch $TAG" \
             --notes "安装包（setup）为 NSIS 签名更新包；便携版免安装。校验和见 SHA256SUMS.txt。应用内更新走 latest.json。" \
+            --clobber \
             "target/release/bundle/nsis/qoder-switch_${VERSION}_x64-setup.exe" \
             "target/release/bundle/nsis/qoder-switch_${VERSION}_x64-setup.exe.sig" \
             "qoder-switch-${VERSION}-portable-x64.zip" \
             "target/release/qs-switch-server.exe" \
             "latest.json" \
+            "latest-windows-x86_64.json" \
             "SHA256SUMS.txt"
