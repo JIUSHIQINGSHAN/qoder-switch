@@ -150,16 +150,30 @@ pub fn validate_account_id(account_id: &str) -> Result<()> {
     let ok = !account_id.is_empty()
         && account_id.len() <= 64
         && !account_id.starts_with('.')
+        && !account_id.ends_with('.')
         && account_id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
-    if ok {
-        Ok(())
-    } else {
-        Err(format!(
-            "账号名 {account_id:?} 不合法：只允许字母/数字/点/下划线/连字符（1–64 位，不以点开头）"
-        ))
+    if !ok {
+        return Err(format!(
+            "账号名 {account_id:?} 不合法：只允许字母/数字/点/下划线/连字符（1–64 位，不以点开头或结尾）"
+        ));
     }
+
+    // Windows 保留设备名称检测（避免在 Windows 文件系统上创建无法访问/删除的保留字目录）
+    let stem = account_id.split('.').next().unwrap_or(account_id);
+    let upper = stem.to_ascii_uppercase();
+    const RESERVED_NAMES: &[&str] = &[
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+        "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    if RESERVED_NAMES.contains(&upper.as_str()) {
+        return Err(format!(
+            "账号名 {account_id:?} 不合法：不能使用 Windows 系统保留设备名（如 CON, NUL, AUX 等）"
+        ));
+    }
+
+    Ok(())
 }
 
 pub fn bundle_dir_in(
@@ -743,6 +757,27 @@ mod tests {
         );
         assert_eq!(id.name.as_deref(), Some("解密名"), "解密结果更权威");
         assert!(id.token_days_left().unwrap() > 0);
+    }
+
+    #[test]
+    fn validate_account_id_catches_reserved_and_edge_cases() {
+        assert!(validate_account_id("my-account_1").is_ok());
+        assert!(validate_account_id("user.test").is_ok());
+
+        // 边界：点开头或结尾
+        assert!(validate_account_id(".hidden").is_err());
+        assert!(validate_account_id("trailing.").is_err());
+        assert!(validate_account_id("").is_err());
+
+        // Windows 系统保留名（不分大小写）
+        assert!(validate_account_id("con").is_err());
+        assert!(validate_account_id("CON").is_err());
+        assert!(validate_account_id("prn").is_err());
+        assert!(validate_account_id("aux").is_err());
+        assert!(validate_account_id("nul").is_err());
+        assert!(validate_account_id("com1").is_err());
+        assert!(validate_account_id("lpt3").is_err());
+        assert!(validate_account_id("con.backup").is_err());
     }
 
     /// 真机：认领 CN 桌面账号必须带出 uid 与到期时间。
