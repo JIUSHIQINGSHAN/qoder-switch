@@ -216,6 +216,10 @@ pub fn parse_auth(plaintext: &[u8]) -> Result<DesktopAuth> {
     if token.trim().is_empty() || refresh_token.trim().is_empty() {
         return Err("token / refreshToken 为空，等同于未登录".into());
     }
+    let uid = us("id");
+    if uid.trim().is_empty() {
+        return Err("登录态缺少有效 user.id，数据不完整".into());
+    }
     Ok(DesktopAuth {
         schema_version: schema,
         token,
@@ -223,7 +227,7 @@ pub fn parse_auth(plaintext: &[u8]) -> Result<DesktopAuth> {
         expires_at: s(&["expiresAt"]),
         refresh_expires_at: s(&["refreshTokenExpiresAt"]),
         user: AuthUser {
-            id: us("id"),
+            id: uid,
             name: us("name"),
             email: us("email"),
             phone: us("phone"),
@@ -326,6 +330,14 @@ mod tests {
         m.insert("schemaVersion".into(), 2.into());
         let text = serde_json::to_vec(&serde_json::Value::Object(m)).unwrap();
         assert!(parse_auth(&text).unwrap_err().contains("schemaVersion"));
+
+        // 缺少或空 user.id 必须拒绝
+        let mut m = sample();
+        let mut u = serde_json::Map::new();
+        u.insert("id".into(), "".into());
+        m.insert("user".into(), u.into());
+        let text = serde_json::to_vec(&serde_json::Value::Object(m)).unwrap();
+        assert!(parse_auth(&text).unwrap_err().contains("user.id"));
     }
 
     /// DPAPI 本身在同一 Windows 用户内可逆 —— 这是"账号包只能在同用户内复用"的根因。
