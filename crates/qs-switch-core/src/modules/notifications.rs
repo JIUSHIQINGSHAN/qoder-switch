@@ -87,6 +87,14 @@ fn trim_text(text: &str, limit: usize) -> String {
     trimmed
 }
 
+/// 存档读-改-写的进程内串行闸。
+///
+/// record/clear 都是 load→append→全量覆盖写；桌面端与 webui 服务端各自的工作线程
+/// 会并发跑（两条 toast 同时到、或 record 与 clear 交错），没有这道闸就是后写者覆盖
+/// 前者、静默丢掉审计条目——而"事后能核对应用当时提示了什么"正是本模块的存在意义。
+/// 跨进程（桌面 + 独立服务端同时在写）不在本闸范围，靠 atomic 写保证至少不留撕裂文件。
+static NOTIFY_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 记录一条通知（可注入存储根，供单测使用）。
 ///
 /// 同一条提示在 [`DEDUPE_WINDOW_MS`] 内重复出现时只保留一条。返回 Err 表示没写进去
@@ -101,6 +109,8 @@ pub fn record_at(
     if title.is_empty() {
         return Ok(());
     }
+    // 持锁跨越整个 load→改→写；毒锁照常放行（上一位 panic 不该永久卡死存档）。
+    let _gate = NOTIFY_GATE.lock().unwrap_or_else(|p| p.into_inner());
     let mut store = load_at(root)?;
     let entry = NotificationEntry {
         level: level.to_string(),
@@ -137,8 +147,9 @@ pub fn list_at(root: &Path) -> Result<Vec<NotificationEntry>, String> {
     Ok(items)
 }
 
-/// 清空存档（只保留版本字段）。
+/// 清空存档（只保留版本字段）。与 record 共用同一把闸，避免"清空被并发的写入复活"。
 pub fn clear_at(root: &Path) -> Result<(), String> {
+    let _gate = NOTIFY_GATE.lock().unwrap_or_else(|p| p.into_inner());
     let content =
         serde_json::to_string_pretty(&NotificationStore::default()).map_err(|e| e.to_string())?;
     atomic_write_bytes(&store_file_at(root), content.as_bytes())
@@ -270,5 +281,23 @@ mod tests {
         record_at(&dir.0, "success", "提示", None).unwrap();
         clear_at(&dir.0).unwrap();
         assert!(list_at(&dir.0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn concurrent_record_under_notify_gate_does_not_corrupt() {
+        use std::sync::Arc;
+        let dir = Arc::new(TempDir::new("concurrent"));
+        let mut handles = Vec::new();
+        for i in 0..10 {
+            let dir_clone = Arc::clone(&dir);
+            handles.push(std::thread::spawn(move || {
+                let _ = record_at(&dir_clone.0, "info", &format!("并发提示_{i}"), None);
+            }));
+        }
+        for h in handles {
+            let _ = h.join();
+        }
+        let items = list_at(&dir.0).expect("并发写入后存档依然合法");
+        assert!(!items.is_empty(), "至少记录了一条通知");
     }
 }

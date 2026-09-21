@@ -29,7 +29,7 @@
 | 国际版 IDE 独立切换 | 同上 | B（尚无独立状态命令） | api.ts:210-212 |
 | OAuth 设备码登录 | oauth_start/status+对话框 | **不适用修正**：桌面端登录不走设备码（端点取证 qoder-endpoints.md §2.2）；CLI 配对流程待探 | api.ts:196-197 |
 | 主动刷新主 token | refresh_account_token | **不适用（实证）**：主 token 无刷新端点（qoder-endpoints.md §2.3） | api.ts:198 |
-| 自动更新 | github config+check+install+relaunch | **D**：发布源未配置（M10） | api.ts:204,213-214,218 |
+| 自动更新 | github config+check+install+relaunch | **A（M10/v0.1.4 落地）**：tauri-plugin-updater + minisign 签名验证 + Release 自动化 | api.ts:600-642；update.rs |
 | 开机自启 | set/get_launch_at_login | **A（2026-09-21 接管）**：tauri-plugin-autostart，自启带 --hidden 静默驻留 | api.ts（门控已撤）；commands.rs |
 | 通知存档落盘 | record/list/clear | **A（2026-09-21 落地）**：~/.qs-switch/notifications.json，最近 100 条 | notifications.rs；compat.rs；router.rs |
 | macOS 权限自检/Finder | check_auth_permission 等 | B（Windows 无此限制） | api.ts:215-217 |

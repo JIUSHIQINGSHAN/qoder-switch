@@ -68,7 +68,10 @@ impl DesktopAuth {
         if id.is_empty() {
             "(未知账号)".into()
         } else {
-            format!("uid:{}", &id[..id.len().min(8)])
+            // 按字符取前缀，不按字节：uid 若含多字节字符，`&id[..8]` 可能切在
+            // UTF-8 边界内部直接 panic（selfcheck 会连整份报告一起丢）。
+            let prefix: String = id.chars().take(8).collect();
+            format!("uid:{prefix}")
         }
     }
 }
@@ -193,10 +196,13 @@ pub fn parse_auth(plaintext: &[u8]) -> Result<DesktopAuth> {
     let schema = v
         .get("schemaVersion")
         .and_then(|x| x.as_u64())
-        .ok_or_else(|| "缺 schemaVersion".to_string())? as u32;
+        .ok_or_else(|| "缺 schemaVersion".to_string())?;
+    // 直接按 u64 比较：先前 `as u32` 会把 2^32+1 截断成 1，让一个 schema 声明异常
+    // 的包被当作受支持的 v1 接受（校验器语义错误）。
     if schema != 1 {
         return Err(format!("schemaVersion={schema} 不被支持"));
     }
+    let schema = schema as u32;
     let s = |keys: &[&str]| -> String {
         keys.iter()
             .find_map(|k| v.get(*k).and_then(|x| x.as_str()))

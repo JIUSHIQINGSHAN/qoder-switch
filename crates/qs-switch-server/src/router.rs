@@ -6,6 +6,8 @@
 //! 破坏性端点必须带 `?confirm=switch` —— 少这一步，任何本机进程或浏览器里的一个跨站
 //! 表单都能把你的账号切掉。
 
+use std::path::Path;
+
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -83,7 +85,14 @@ fn parse_target(v: Option<&Value>) -> Result<QoderTarget, String> {
 
 /// `cmd` 是路径 `/api/` 之后的部分，`query` 已按 `&` 切好。
 pub fn dispatch(cmd: &str, query: &str, body: &str) -> Response {
-    if let Some(r) = compat::dispatch(cmd, query, body) {
+    let roots = PathRoots::real();
+    let store = qs_switch_core::modules::config::switch_root();
+    dispatch_in(&roots, &store, cmd, query, body)
+}
+
+/// 支持注入 `roots` 与 `store` 的可测试派发入口（保证单测 hermeticity，绝不污染用户真实环境）。
+pub fn dispatch_in(roots: &PathRoots, store: &Path, cmd: &str, query: &str, body: &str) -> Response {
+    if let Some(r) = compat::dispatch_in(roots, store, cmd, query, body) {
         return r;
     }
     let input: Value = if body.trim().is_empty() {
@@ -94,19 +103,17 @@ pub fn dispatch(cmd: &str, query: &str, body: &str) -> Response {
             Err(e) => return Response::err(format!("请求体不是合法 JSON: {e}")),
         }
     };
-    let roots = PathRoots::real();
-    let store = qs_switch_core::modules::config::switch_root();
 
     match cmd {
         "status" => Response::ok(json!({
             "store": store.display().to_string(),
-            "accounts": bundle::list_all(&store),
-            "unfinished": switch::unfinished(&store).unwrap_or_default(),
+            "accounts": bundle::list_all(store),
+            "unfinished": switch::unfinished(store).unwrap_or_default(),
         })),
         "rotation" => match parse_variant(input.get("variant")) {
             Err(e) => Response::err(e),
             Ok(variant) => {
-                match rotate::suggest(&roots, &store, variant, &rotate::RotateConfig::default()) {
+                match rotate::suggest(roots, store, variant, &rotate::RotateConfig::default()) {
                     Ok(s) => Response::ok(s),
                     Err(e) => Response::err(e),
                 }
@@ -125,7 +132,7 @@ pub fn dispatch(cmd: &str, query: &str, body: &str) -> Response {
                 return Response::err("缺 account_id".into());
             };
             match (parse_variant(input.get("variant")), parse_target(input.get("target"))) {
-                (Ok(variant), Ok(target)) => match bundle::capture(&roots, &store, id, variant, target) {
+                (Ok(variant), Ok(target)) => match bundle::capture(roots, store, id, variant, target) {
                     Ok(b) => {
                         if b.is_empty() {
                             Response::err(format!("该目标在本机不落盘凭据，没有可认领的文件"))
@@ -224,16 +231,37 @@ pub fn dispatch(cmd: &str, query: &str, body: &str) -> Response {
 mod tests {
     use super::*;
 
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "qs_switch_router_test_{}_{name}",
+                uuid::Uuid::new_v4().simple()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn unknown_endpoint_is_404_not_panic() {
-        let r = dispatch("nope", "", "{}");
+        let dir = TempDir::new("unknown");
+        let r = dispatch_in(&PathRoots::real(), &dir.0, "nope", "", "{}");
         assert_eq!(r.status, 404);
         assert!(r.body.contains("未知端点"));
     }
 
     #[test]
     fn malformed_json_is_rejected() {
-        let r = dispatch("capture", "", "{不是 JSON");
+        let dir = TempDir::new("malformed");
+        let r = dispatch_in(&PathRoots::real(), &dir.0, "capture", "", "{不是 JSON");
         assert_eq!(r.status, 400);
         assert!(r.body.contains("合法 JSON"), "{}", r.body);
     }
@@ -241,7 +269,10 @@ mod tests {
     /// 破坏性端点在没有知情标记时必须被挡下，且不产生任何副作用。
     #[test]
     fn switch_requires_explicit_confirmation() {
-        let r = dispatch(
+        let dir = TempDir::new("switch_confirm");
+        let r = dispatch_in(
+            &PathRoots::real(),
+            &dir.0,
             "switch",
             "",
             r#"{"account_id":"main-cn","variant":"cn","target":"desktop"}"#,
@@ -255,7 +286,10 @@ mod tests {
     /// 门通过后的下一站是"账号不存在"，据此区分门被拒与门已过。
     #[test]
     fn switch_accepts_confirmation_from_post_body() {
-        let r = dispatch(
+        let dir = TempDir::new("switch_body");
+        let r = dispatch_in(
+            &PathRoots::real(),
+            &dir.0,
             "switch",
             "",
             r#"{"account_id":"no-such-account-xyz","confirm":"switch","target":"desktop"}"#,
@@ -267,7 +301,9 @@ mod tests {
             r.body
         );
         // query 通道保留：脚本/curl 仍可 ?confirm=switch。
-        let r = dispatch(
+        let r = dispatch_in(
+            &PathRoots::real(),
+            &dir.0,
             "switch",
             "confirm=switch",
             r#"{"account_id":"no-such-account-xyz","target":"desktop"}"#,
@@ -279,7 +315,8 @@ mod tests {
     /// 用户只勾一个、实际全部写盘。
     #[test]
     fn import_rejects_malformed_indexes_instead_of_importing_all() {
-        let r = dispatch("import", "", r#"{"fileText":"[]","indexes":[null]}"#);
+        let dir = TempDir::new("import_idx");
+        let r = dispatch_in(&PathRoots::real(), &dir.0, "import", "", r#"{"fileText":"[]","indexes":[null]}"#);
         assert_eq!(r.status, 400);
         assert!(r.body.contains("indexes"), "{}", r.body);
     }
@@ -288,7 +325,10 @@ mod tests {
     /// 未来任何读 `.recorded` 的调用方都会在 null 上炸。
     #[test]
     fn notification_endpoints_return_contract_shapes() {
-        let r = dispatch(
+        let dir = TempDir::new("notify_shape");
+        let r = dispatch_in(
+            &PathRoots::real(),
+            &dir.0,
             "notifications/record",
             "",
             r#"{"level":"info","title":"测试"}"#,
@@ -296,7 +336,7 @@ mod tests {
         assert_eq!(r.status, 200, "{}", r.body);
         let v: Value = serde_json::from_str(&r.body).unwrap();
         assert_eq!(v["recorded"], true, "{v}");
-        let r = dispatch("notifications/clear", "", "");
+        let r = dispatch_in(&PathRoots::real(), &dir.0, "notifications/clear", "", "");
         assert_eq!(r.status, 200, "{}", r.body);
         let v: Value = serde_json::from_str(&r.body).unwrap();
         assert_eq!(v["cleared"], true, "{v}");
@@ -304,21 +344,23 @@ mod tests {
 
     #[test]
     fn bad_variant_and_missing_target_are_reported() {
-        let r = dispatch("capture", "", r#"{"account_id":"x","variant":"eu","target":"desktop"}"#);
+        let dir = TempDir::new("bad_variant");
+        let r = dispatch_in(&PathRoots::real(), &dir.0, "capture", "", r#"{"account_id":"x","variant":"eu","target":"desktop"}"#);
         assert!(r.body.contains("未知版本"), "{}", r.body);
-        let r = dispatch("capture", "", r#"{"account_id":"x","variant":"cn"}"#);
+        let r = dispatch_in(&PathRoots::real(), &dir.0, "capture", "", r#"{"account_id":"x","variant":"cn"}"#);
         assert!(r.body.contains("缺 target"), "{}", r.body);
-        let r = dispatch("capture", "", "{}");
+        let r = dispatch_in(&PathRoots::real(), &dir.0, "capture", "", "{}");
         assert!(r.body.contains("account_id"), "{}", r.body);
     }
 
     #[test]
     fn read_only_endpoints_answer() {
-        let r = dispatch("status", "", "");
+        let dir = TempDir::new("read_only");
+        let r = dispatch_in(&PathRoots::real(), &dir.0, "status", "", "");
         assert_eq!(r.status, 200, "{}", r.body);
         // compat 路由已把 /api/status 换成前端契约形状（AppStatus）。
         assert!(r.body.contains("authFile"), "应是 AppStatus: {}", r.body);
-        let r = dispatch("rotation", "", r#"{"variant":"cn"}"#);
+        let r = dispatch_in(&PathRoots::real(), &dir.0, "rotation", "", r#"{"variant":"cn"}"#);
         assert_eq!(r.status, 200, "{}", r.body);
         assert!(r.body.contains("decision"));
     }
@@ -335,6 +377,7 @@ mod tests {
     /// 上抛错、整页空白，而网络面板里全是 200 —— 所以这条是白屏回归的门禁。
     #[test]
     fn contract_routes_return_bare_objects_not_an_envelope() {
+        let dir = TempDir::new("contract_bare");
         let cases: &[(&str, &str)] = &[
             ("accounts", "accounts"),
             ("status", "authFile"),
@@ -343,7 +386,7 @@ mod tests {
             ("rotate/status", "cliConfigured"),
         ];
         for (cmd, key) in cases {
-            let r = dispatch(cmd, "", "");
+            let r = dispatch_in(&PathRoots::real(), &dir.0, cmd, "", "");
             assert_eq!(r.status, 200, "{cmd}: {}", r.body);
             let v: Value = serde_json::from_str(&r.body).expect("合法 JSON");
             assert!(v.get(*key).is_some(), "{cmd} 应在顶层给出 {key}，实得 {v}");
@@ -352,9 +395,13 @@ mod tests {
     }
 
     /// 保存轮换配置时前端发的是 `{"config":{…}}`；只认顶层键的话会把配置静默写回默认值。
+    /// 测试沙箱必须与用户盘隔离，绝不写真实 ~/.qs-switch/auto_rotate_config.json。
     #[test]
     fn rotate_config_save_reads_the_nested_config_key() {
-        let r = dispatch(
+        let dir = TempDir::new("rotate_cfg");
+        let r = dispatch_in(
+            &PathRoots::real(),
+            &dir.0,
             "rotate/config",
             "",
             r#"{"config":{"enabled":false,"check_interval_minutes":60,"cooldown_minutes":120,"min_gap_hours":48,"min_urgency_hours":72,"active_guard_minutes":0,"min_remaining_credits":0}}"#,
@@ -364,7 +411,7 @@ mod tests {
         assert_eq!(v["enabled"], false);
         assert_eq!(v["min_urgency_hours"], 72);
         // 紧接着的读取必须看到刚落盘的值。
-        let back: Value = serde_json::from_str(&dispatch("rotate/config", "", "").body).unwrap();
+        let back: Value = serde_json::from_str(&dispatch_in(&PathRoots::real(), &dir.0, "rotate/config", "", "").body).unwrap();
         assert_eq!(back["min_urgency_hours"], 72, "保存后读取不一致");
         assert_eq!(back["enabled"], false);
     }
@@ -372,7 +419,8 @@ mod tests {
     /// 切换对话框会**持续轮询**进度：这个路径拼错一次就是控制台里刷不完的 404。
     #[test]
     fn switch_progress_path_matches_the_frontend_route() {
-        let r = dispatch("switch/progress", "", "");
+        let dir = TempDir::new("switch_prog");
+        let r = dispatch_in(&PathRoots::real(), &dir.0, "switch/progress", "", "");
         assert_eq!(r.status, 200, "{}", r.body);
         let v: Value = serde_json::from_str(&r.body).unwrap();
         assert_eq!(v["running"], false);
@@ -393,6 +441,7 @@ mod tests {
 // 这样那份原样副本 UI 在浏览器里也能拿到真数据，而不只是能渲染外壳。
 // ---------------------------------------------------------------------------
 mod compat {
+    use std::path::Path;
     use serde_json::{json, Value};
 
     use qs_switch_core::modules::config::{switch_root, PathRoots};
@@ -453,6 +502,18 @@ mod compat {
 
     /// 命中则处理并返回 Some，未命中返回 None 交给自有端点。
     pub fn dispatch(cmd: &str, query: &str, body: &str) -> Option<Response> {
+        let roots = PathRoots::real();
+        let store = switch_root();
+        dispatch_in(&roots, &store, cmd, query, body)
+    }
+
+    pub fn dispatch_in(
+        roots: &PathRoots,
+        store: &Path,
+        cmd: &str,
+        query: &str,
+        body: &str,
+    ) -> Option<Response> {
         if !OWNED.contains(&cmd) {
             return None;
         }
@@ -466,7 +527,7 @@ mod compat {
                 }
             }
         };
-        Some(match handle(cmd, query, &input) {
+        Some(match handle(roots, store, cmd, query, &input) {
             Ok(v) => Response::bare(v),
             Err(e) => Response::err(e),
         })
@@ -482,12 +543,12 @@ mod compat {
     }
 
     fn handle(
+        roots: &PathRoots,
+        store: &Path,
         cmd: &str,
         query: &str,
         input: &Value,
     ) -> std::result::Result<Value, String> {
-        let roots = PathRoots::real();
-        let store = switch_root();
         // body 优先，其次 query：GET 类命令只能靠 query 带档位。
         let variant = input
             .get("variant")
@@ -496,13 +557,13 @@ mod compat {
         let v = view::variant_from_key(variant);
 
         let r: Result<Value> = match cmd {
-            "status" => Ok(view::app_status(&roots, v)),
-            "accounts" => Ok(view::accounts(&roots)),
+            "status" => Ok(view::app_status(roots, v)),
+            "accounts" => Ok(view::accounts_in(roots, store)),
             "capabilities" => Ok(view::capabilities()),
             "import-local" => {
                 let id = account_id_or_local(&input, v);
                 let t = target_of(input.get("target"));
-                let b = bundle::capture(&roots, &store, &id, v, t)?;
+                let b = bundle::capture(roots, store, &id, v, t)?;
                 if b.is_empty() {
                     return Err("该目标在本机不落盘凭据，没有可认领的文件".into());
                 }
@@ -512,7 +573,7 @@ mod compat {
                 let id = account_id(&input)?;
                 // 与桌面端同一条防线：id 是 store 路径组成部分，delete 是 remove_dir_all。
                 bundle::validate_account_id(&id)?;
-                let dir = qs_switch_core::modules::bundle::accounts_root_in(&store).join(&id);
+                let dir = qs_switch_core::modules::bundle::accounts_root_in(store).join(&id);
                 let meta = std::fs::symlink_metadata(&dir)
                     .map_err(|e| format!("账号目录不存在: {e}"))?;
                 if meta.is_symlink() || !meta.is_dir() {
@@ -533,7 +594,7 @@ mod compat {
                             .collect()
                     })
                     .unwrap_or_default();
-                view::export_records(&store, &ids)
+                view::export_records(store, &ids)
             }
             "import/preview" => {
                 let text = input
@@ -554,7 +615,7 @@ mod compat {
                         .map_err(|e| format!("indexes 不是合法的下标数组: {e}"))?),
                     None => None,
                 };
-                view::import_records(&store, text, idx.as_deref())
+                view::import_records(store, text, idx.as_deref())
             }
             "switch" => {
                 // 这道门不能因为换了宿主就消失：compat 路由接管 switch 后同样要求知情标记。
@@ -583,7 +644,7 @@ mod compat {
                 } else {
                     switch::Actor::Real
                 };
-                let j = switch::execute(&roots, &store, &req, actor, &mut |_| {})?;
+                let j = switch::execute(roots, store, &req, actor, &mut |_| {})?;
                 Ok(view::switch_result(&j, req.restart, false))
             }
             // webui 的切换是同步的，走到这里一定是空闲；契约要求这个端点存在，
@@ -593,19 +654,20 @@ mod compat {
             // 不能靠"body 空不空"猜方法：dispatch 拿不到 HTTP method。
             "rotate/config" => match input.get("config") {
                 Some(patch) => {
-                    let merged = view::merge_ui_config(&store, patch)?;
+                    let merged = view::merge_ui_config(store, patch)?;
                     Ok(serde_json::to_value(merged).map_err(|e| e.to_string())?)
                 }
-                None => Ok(serde_json::to_value(view::read_ui_config(&store))
+                None => Ok(serde_json::to_value(view::read_ui_config(store))
                     .map_err(|e| e.to_string())?),
             },
-            "rotate/status" => Ok(view::rotate_status(&roots, &store, v)),
-            "rotate/run" => Ok(view::run_rotate(&roots, &store, v)),
-            "rotate/logs" => Ok(view::rotate_logs(&store)),
-            "notifications" => Ok(view::notifications(notifications::list()?)),
+            "rotate/status" => Ok(view::rotate_status(roots, store, v)),
+            "rotate/run" => Ok(view::run_rotate(roots, store, v)),
+            "rotate/logs" => Ok(view::rotate_logs(store)),
+            "notifications" => Ok(view::notifications(notifications::list_at(store)?)),
             "notifications/record" => {
                 // POST body：{level,title,description?}；与桌面端同一条 core 路径。
-                notifications::record(
+                notifications::record_at(
+                    store,
                     input.get("level").and_then(|x| x.as_str()).unwrap_or("info"),
                     input.get("title").and_then(|x| x.as_str()).unwrap_or(""),
                     input.get("description").and_then(|x| x.as_str()),
@@ -615,7 +677,7 @@ mod compat {
                 Ok(json!({ "recorded": true }))
             }
             "notifications/clear" => {
-                notifications::clear()?;
+                notifications::clear_at(store)?;
                 Ok(json!({ "cleared": true }))
             }
             _ => Err(format!("契约路由漏了 {cmd}")),

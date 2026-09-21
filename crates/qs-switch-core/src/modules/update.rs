@@ -103,17 +103,28 @@ pub fn save_github_config(cfg: &Value) -> std::io::Result<()> {
     )
 }
 
-fn version_tuple(v: &str) -> Vec<i64> {
-    v.trim_start_matches('v')
+/// 拆出版本号的数值核心段与预发布标记。
+/// `v` 前缀与 `-rc.1`/`-beta.2` 这类预发布后缀都要处理：预发布段（如 `0-rc`）
+/// 不是纯数字，旧实现按 `.` 切再 `filter_map` 会把它整段丢弃，导致
+/// `0.10.0-rc.2` 被解析成 `[0,10,2]` 而误判为比 `0.10.1` 更新。
+fn version_parts(v: &str) -> (Vec<i64>, bool) {
+    let v = v.trim_start_matches('v');
+    let (core, pre) = match v.split_once('-') {
+        Some((c, p)) => (c, !p.is_empty()),
+        None => (v, false),
+    };
+    let nums = core
         .split('.')
-        .filter_map(|x| x.parse::<i64>().ok())
-        .collect()
+        .map(|x| x.trim().parse::<i64>().unwrap_or(0))
+        .collect();
+    (nums, pre)
 }
 
 /// 版本比较：a > b 返回 1，a < b 返回 -1，相等返回 0。
+/// 数值核心相等时，预发布 < 正式版；同为预发布按预发布串比较（简化处理）。
 pub fn compare_versions(a: &str, b: &str) -> i64 {
-    let ta = version_tuple(a);
-    let tb = version_tuple(b);
+    let (ta, pa) = version_parts(a);
+    let (tb, pb) = version_parts(b);
     for i in 0..ta.len().max(tb.len()) {
         let x = ta.get(i).copied().unwrap_or(0);
         let y = tb.get(i).copied().unwrap_or(0);
@@ -121,7 +132,20 @@ pub fn compare_versions(a: &str, b: &str) -> i64 {
             return if x > y { 1 } else { -1 };
         }
     }
-    0
+    match (pa, pb) {
+        (false, false) => 0,
+        (true, false) => -1, // 预发布低于同号正式版
+        (false, true) => 1,
+        (true, true) => {
+            let sa = a.trim_start_matches('v').split_once('-').map(|x| x.1).unwrap_or("");
+            let sb = b.trim_start_matches('v').split_once('-').map(|x| x.1).unwrap_or("");
+            match sa.cmp(sb) {
+                std::cmp::Ordering::Greater => 1,
+                std::cmp::Ordering::Less => -1,
+                std::cmp::Ordering::Equal => 0,
+            }
+        }
+    }
 }
 
 /// updater manifest 候选 URL（按优先级）。
@@ -331,5 +355,13 @@ mod tests {
         assert_eq!(compare_versions("0.1.4", "0.1.4"), 0);
         assert_eq!(compare_versions("0.1.5", "0.1.4"), 1);
         assert_eq!(compare_versions("v0.1.3", "0.1.4"), -1);
+        // 预发布版本比较：0.10.0-rc.2 不能被旧 filter_map 误认为 0.10.2 而大于 0.10.1
+        assert_eq!(compare_versions("0.10.0-rc.2", "0.10.1"), -1);
+        assert_eq!(compare_versions("0.10.1", "0.10.0-rc.2"), 1);
+        // 同核心版本下，预发布低于正式版
+        assert_eq!(compare_versions("0.10.0-rc.1", "0.10.0"), -1);
+        assert_eq!(compare_versions("0.10.0", "0.10.0-rc.1"), 1);
+        // 预发布版本之间的排序
+        assert_eq!(compare_versions("0.10.0-rc.1", "0.10.0-rc.2"), -1);
     }
 }

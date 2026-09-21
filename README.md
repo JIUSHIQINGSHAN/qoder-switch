@@ -71,7 +71,7 @@ cargo run --example qs-snapshot -- take      # 凭据文件快照（只读）
 cargo run --example qs-snapshot -- diff      # 比对最近两张快照
 cargo run --example qs-account  -- capture <名字> [cn|global] [desktop|cli|work]
 cargo run --example qs-account  -- list
-cargo test -p qs-switch-core                  # 37 项
+cargo test --workspace                       # 108 项测试全绿（core 76 / server 19 / 桌面宿主 13）
 ```
 
 ## 无头自检
@@ -110,7 +110,7 @@ qoder-switch.exe --self-check && echo OK
 
 ## 安全模型
 
-四条硬规则，都有对应测试：
+五条硬规则，都有对应测试：
 
 1. **破坏性动作 fail-closed。** 终止目标进程前先判定"本会话是否由目标客户端托管"。
    依据一为 Qoder 注入子进程的环境标记（`QODER_PRODUCT_ID`、`QODERCN_CLI`、
@@ -125,6 +125,12 @@ qoder-switch.exe --self-check && echo OK
    9 小时，四份凭据文件哈希零变化），所以写完不校验就等于把失败留到用户下次打开客户端。
 4. **拒绝半换号。** 现场存在、但账号包里缺位的 critical 文件（如只带 `auth.v1.dat`
    没带 `Local State`）直接拒写，不做部分生效的切换。
+5. **服务端请求头防护（防御 CSRF 与浏览器跨域携带）。** `qs-switch-server` 的 `/api/*`
+   端点强制校验自定义头 `x-qoder-switch: 1`（浏览器原生 `form` 无法跨站静默设置该自定义头），
+   且只允许安全方法（GET/POST/HEAD/OPTIONS），杜绝简单请求 CSRF 与非法参数注入：
+   ```bash
+   curl -H "x-qoder-switch: 1" http://127.0.0.1:57891/api/status
+   ```
 
 账号库存于 `~/.qs-switch/`：`accounts/<名>/<版本>.<目标>/{bundle.json, 凭据副本…}`、
 `backups/`、`journal/`、`snapshots/`。副本是**真实凭据的密文文件**， `.gitignore` 已把

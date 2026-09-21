@@ -95,13 +95,17 @@ pub fn account_meta(b: &bundle::Bundle) -> Value {
     })
 }
 
-pub fn accounts(roots: &PathRoots) -> Value {
-    let list = bundle::list_all(&switch_root());
+pub fn accounts_in(roots: &PathRoots, store: &Path) -> Value {
+    let list = bundle::list_all(store);
     json!({
         "accounts": list.iter().map(account_meta).collect::<Vec<_>>(),
         // 前端只读 accounts；status 单独取，避免一次请求里混两种形状。
         "status": app_status(roots, QoderVariant::Cn),
     })
+}
+
+pub fn accounts(roots: &PathRoots) -> Value {
+    accounts_in(roots, &switch_root())
 }
 
 /// 导出记录：一条里同时给身份字段（预览要展示）和 `payload`（导入只用它）。

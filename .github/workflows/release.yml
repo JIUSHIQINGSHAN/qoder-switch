@@ -8,6 +8,10 @@ on:
   push:
     tags: ["v*"]
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -28,6 +32,45 @@ jobs:
 
       - name: 安装前端依赖（tsc 来自本地 typescript，勿裸 npx）
         run: npm ci
+
+      - name: 校验 Tag 与全仓版本号强一致性
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          TAG_VER="${TAG#v}"
+          echo "检查 Tag 版本: $TAG_VER"
+          node -e "
+            const fs = require('fs');
+            const expected = process.env.TAG_VER;
+            const files = [
+              ['package.json', () => require('./package.json').version],
+              ['src-tauri/tauri.conf.json', () => require('./src-tauri/tauri.conf.json').version],
+              ['npm/package.json', () => require('./npm/package.json').version],
+              ['npm/platform/qoder-switch-win32-x64/package.json', () => require('./npm/platform/qoder-switch-win32-x64/package.json').version],
+            ];
+            for (const [f, getV] of files) {
+              const v = getV();
+              if (v !== expected) {
+                console.error(\`版本不一致: \${f} 为 \${v}，期望 \${expected}\`);
+                process.exit(1);
+              }
+            }
+            const cargoFiles = [
+              'crates/qs-switch-core/Cargo.toml',
+              'crates/qs-switch-server/Cargo.toml',
+              'src-tauri/Cargo.toml',
+            ];
+            for (const cf of cargoFiles) {
+              const content = fs.readFileSync(cf, 'utf8');
+              const m = content.match(/^version\\s*=\\s*\"([^\"]+)\"/m);
+              if (!m || m[1] !== expected) {
+                console.error(\`版本不一致: \${cf} 声明为 \${m ? m[1] : 'null'}，期望 \${expected}\`);
+                process.exit(1);
+              }
+            }
+            console.log('所有文件版本与 Tag 严格一致: ' + expected);
+          "
 
       - name: 前端类型检查 + 构建（tauri 宏编译期需要 ../dist 存在）
         run: npm run build
@@ -107,6 +150,7 @@ jobs:
           cd target/release/bundle/nsis
           sha256sum "qoder-switch_${VERSION}_x64-setup.exe" > "$GITHUB_WORKSPACE/SHA256SUMS.txt"
           cd "$GITHUB_WORKSPACE"
+          sha256sum "target/release/qs-switch-server.exe" >> SHA256SUMS.txt
           sha256sum "qoder-switch-${VERSION}-portable-x64.zip" >> SHA256SUMS.txt
           sha256sum latest.json >> SHA256SUMS.txt
 
