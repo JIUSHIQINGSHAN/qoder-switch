@@ -38,7 +38,7 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          TAG_VER="${TAG#v}"
+          export TAG_VER="${TAG#v}"
           echo "检查 Tag 版本: $TAG_VER"
           node -e "
             const fs = require('fs');
