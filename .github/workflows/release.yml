@@ -169,8 +169,7 @@ jobs:
         run: |
           gh release create "$TAG" \
             --title "Qoder Switch $TAG" \
-            --notes "安装包（setup）为 NSIS 签名更新包；便携版免安装。校验和见 SHA256SUMS.txt。应用内更新走 latest.json。" \
-            --clobber \
+            -F CHANGELOG.md \
             "target/release/bundle/nsis/qoder-switch_${VERSION}_x64-setup.exe" \
             "target/release/bundle/nsis/qoder-switch_${VERSION}_x64-setup.exe.sig" \
             "qoder-switch-${VERSION}-portable-x64.zip" \
