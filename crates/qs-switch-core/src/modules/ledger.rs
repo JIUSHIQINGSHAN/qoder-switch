@@ -5,14 +5,15 @@
 //! 不打印任何凭据：这里只落账号 id / 邮箱 / 数值与结果枚举。
 
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use serde_json::{json, Value};
 
 use crate::modules::auth_codec;
 use crate::modules::bundle;
-use crate::modules::config::PathRoots;
+use crate::modules::config::{atomic_write_bytes, PathRoots};
 use crate::modules::quota;
 use crate::modules::variant::{QoderTarget, QoderVariant};
 
@@ -22,6 +23,8 @@ const SNAPSHOTS_CAP: usize = 5000;
 /// 同一账号两条配额快照的最小间隔：账号页会轮询/刷新积分，不节流会把
 /// 快照文件写成请求日志。10 分钟足够统计页画日粒度趋势。
 const SNAPSHOT_MIN_GAP_SECS: i64 = 600;
+
+static LEDGER_GATE: Mutex<()> = Mutex::new(());
 
 fn checkin_config_path(store: &Path) -> PathBuf {
     store.join("checkin-config.json")
@@ -52,6 +55,7 @@ pub fn read_checkin_config(store: &Path) -> Value {
 
 /// 合并部分字段并落盘。数值按前端输入的 min/max 收口，负数/超界不会写进文件。
 pub fn write_checkin_config(store: &Path, patch: &Value) -> crate::Result<Value> {
+    let _gate = LEDGER_GATE.lock().unwrap_or_else(|p| p.into_inner());
     let mut cur = read_checkin_config(store);
     if let Some(b) = patch.get("enabled").and_then(|x| x.as_bool()) {
         cur["enabled"] = json!(b);
@@ -62,9 +66,8 @@ pub fn write_checkin_config(store: &Path, patch: &Value) -> crate::Result<Value>
     if let Some(n) = patch.get("lazy_refresh_hours").and_then(|x| x.as_u64()) {
         cur["lazy_refresh_hours"] = json!(n.clamp(1, 72));
     }
-    std::fs::create_dir_all(store).map_err(|e| e.to_string())?;
     let text = serde_json::to_vec_pretty(&cur).map_err(|e| e.to_string())?;
-    std::fs::write(checkin_config_path(store), text)
+    atomic_write_bytes(&checkin_config_path(store), &text)
         .map_err(|e| format!("写签到配置失败: {e}"))?;
     Ok(cur)
 }
@@ -93,10 +96,9 @@ fn read_logs_raw(store: &Path) -> Vec<CheckinLogEntry> {
 }
 
 fn write_logs_raw(store: &Path, logs: &[CheckinLogEntry]) -> std::io::Result<()> {
-    std::fs::create_dir_all(store)?;
     let text = serde_json::to_vec_pretty(logs)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-    std::fs::write(checkin_logs_path(store), text)
+    atomic_write_bytes(&checkin_logs_path(store), &text)
 }
 
 /// 记录一条签到结果（新的在前；30 天外与超量裁剪）。
@@ -108,6 +110,7 @@ pub fn record_checkin_log(
     result: &str,
     error: Option<&str>,
 ) {
+    let _gate = LEDGER_GATE.lock().unwrap_or_else(|p| p.into_inner());
     let mut logs = read_logs_raw(store);
     logs.insert(
         0,
@@ -153,6 +156,7 @@ pub struct CreditSnapshot {
 
 /// 配额获取成功后落一条快照。同一账号 10 分钟内只落一条（按文件内最近一条判）。
 pub fn append_credit_snapshot(store: &Path, snap: &CreditSnapshot) {
+    let _gate = LEDGER_GATE.lock().unwrap_or_else(|p| p.into_inner());
     let path = snapshots_path(store);
     let last_for_account = read_snapshots_raw(&path)
         .into_iter()
@@ -170,13 +174,14 @@ pub fn append_credit_snapshot(store: &Path, snap: &CreditSnapshot) {
     if all.len() > SNAPSHOTS_CAP {
         all = all.split_off(all.len() - SNAPSHOTS_CAP);
     }
-    if let Ok(mut f) = std::fs::File::create(&path) {
-        for s in &all {
-            if let Ok(line) = serde_json::to_string(s) {
-                let _ = writeln!(f, "{line}");
-            }
+    let mut buf = Vec::new();
+    for s in &all {
+        if let Ok(line) = serde_json::to_string(s) {
+            buf.extend_from_slice(line.as_bytes());
+            buf.push(b'\n');
         }
     }
+    let _ = atomic_write_bytes(&path, &buf);
 }
 
 fn read_snapshots_raw(path: &Path) -> Vec<CreditSnapshot> {

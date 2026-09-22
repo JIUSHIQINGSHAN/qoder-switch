@@ -281,6 +281,38 @@ pub fn load(
     serde_json::from_slice(&bytes).map_err(|e| format!("{path:?} 解析失败: {e}"))
 }
 
+/// 严格校验代理地址合法性：仅支持 http://, https://, socks5://, socks5h://，
+/// 且禁止包含控制字符、换行符、空格以及路径穿越/恶意 scheme。
+pub fn validate_proxy_url(proxy: &str) -> Result<String> {
+    let p = proxy.trim();
+    if p.is_empty() {
+        return Err("代理地址不能为空".to_string());
+    }
+    if p.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err("代理地址包含非法控制字符或空格".to_string());
+    }
+    let valid_scheme = p.starts_with("http://")
+        || p.starts_with("https://")
+        || p.starts_with("socks5://")
+        || p.starts_with("socks5h://");
+    if !valid_scheme {
+        return Err("代理协议不受支持，仅支持 http://、https:// 或 socks5:// 协议".to_string());
+    }
+    let rest = if let Some(r) = p.strip_prefix("http://") {
+        r
+    } else if let Some(r) = p.strip_prefix("https://") {
+        r
+    } else if let Some(r) = p.strip_prefix("socks5://") {
+        r
+    } else {
+        p.strip_prefix("socks5h://").unwrap_or("")
+    };
+    if rest.trim().is_empty() || rest.starts_with('/') || rest.starts_with(':') {
+        return Err("代理地址缺少有效的主机地址与端口".to_string());
+    }
+    Ok(p.to_string())
+}
+
 /// 更新指定账号的代理配置并持久化到 bundle.json。
 pub fn set_proxy(
     store: &Path,
@@ -290,7 +322,10 @@ pub fn set_proxy(
     proxy: Option<String>,
 ) -> Result<Bundle> {
     let mut b = load(store, account_id, variant, target)?;
-    let clean = proxy.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+    let clean = match proxy {
+        Some(p) if !p.trim().is_empty() => Some(validate_proxy_url(&p)?),
+        _ => None,
+    };
     b.identity.proxy = clean;
     write_meta(store, &b)?;
     Ok(b)
@@ -796,6 +831,25 @@ mod tests {
         assert!(validate_account_id("com1").is_err());
         assert!(validate_account_id("lpt3").is_err());
         assert!(validate_account_id("con.backup").is_err());
+    }
+
+    #[test]
+    fn validate_proxy_url_catches_invalid_and_allows_valid() {
+        assert!(validate_proxy_url("http://127.0.0.1:7890").is_ok());
+        assert!(validate_proxy_url("https://proxy.example.com:8080").is_ok());
+        assert!(validate_proxy_url("socks5://127.0.0.1:1080").is_ok());
+        assert!(validate_proxy_url("socks5h://user:pass@127.0.0.1:1080").is_ok());
+
+        // 异常协议与恶意输入拦截
+        assert!(validate_proxy_url("").is_err());
+        assert!(validate_proxy_url("   ").is_err());
+        assert!(validate_proxy_url("file:///etc/passwd").is_err());
+        assert!(validate_proxy_url("ftp://127.0.0.1:21").is_err());
+        assert!(validate_proxy_url("javascript:alert(1)").is_err());
+        assert!(validate_proxy_url("http://127.0.0.1:7890\r\nHost: evil.com").is_err());
+        assert!(validate_proxy_url("http://127.0.0.1:7890\0evil").is_err());
+        assert!(validate_proxy_url("http://").is_err());
+        assert!(validate_proxy_url("http://:8080").is_err());
     }
 
     /// 真机：认领 CN 桌面账号必须带出 uid 与到期时间。

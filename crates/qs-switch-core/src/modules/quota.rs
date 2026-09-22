@@ -118,6 +118,7 @@ fn email_from_live(auth: &auth_codec::DesktopAuth) -> String {
 
 pub fn http_client_with_proxy(proxy_url: Option<&str>) -> reqwest::Client {
     let mut builder = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(6))
         .timeout(std::time::Duration::from_secs(15));
     if let Some(p) = proxy_url.filter(|s| !s.trim().is_empty()) {
         if let Ok(proxy) = reqwest::Proxy::all(p.trim()) {
@@ -125,6 +126,16 @@ pub fn http_client_with_proxy(proxy_url: Option<&str>) -> reqwest::Client {
         }
     }
     builder.build().unwrap_or_default()
+}
+
+fn format_http_error(prefix: &str, status: reqwest::StatusCode) -> String {
+    match status.as_u16() {
+        401 => format!("{prefix}: 登录凭据已失效或过期 (HTTP 401)，需重新登录"),
+        403 => format!("{prefix}: 访问受限无权限 (HTTP 403)"),
+        429 => format!("{prefix}: 请求过于频繁已被限流 (HTTP 429)，请稍后重试"),
+        code if code >= 500 => format!("{prefix}: 服务端异常 (HTTP {code})"),
+        code => format!("{prefix}失败 (HTTP {code})"),
+    }
 }
 
 fn build_headers(token: &str) -> HashMap<String, String> {
@@ -165,7 +176,7 @@ pub async fn fetch_credit_expiry(
         Ok(res) => {
             return json!({
                 "ok": false,
-                "error": format!("配额查询失败 (HTTP {})", res.status()),
+                "error": format_http_error("配额查询", res.status()),
                 "resources": []
             });
         }
@@ -376,7 +387,7 @@ pub async fn get_checkin_status(
                 json!({ "ok": true, "todayCheckedIn": false, "variant": vk, "accounts": [], "resources": [] })
             }
         }
-        Ok(res) => json!({ "ok": false, "todayCheckedIn": false, "error": format!("HTTP {}", res.status()), "variant": vk }),
+        Ok(res) => json!({ "ok": false, "todayCheckedIn": false, "error": format_http_error("查询签到状态", res.status()), "variant": vk }),
         Err(e) => json!({ "ok": false, "todayCheckedIn": false, "error": format!("网络错误: {e}"), "variant": vk }),
     }
 }
@@ -409,7 +420,7 @@ pub async fn checkin(
     let camp_body: Value = match req.send().await {
         Ok(res) if res.status().is_success() => res.json().await.unwrap_or_default(),
         Ok(res) => {
-            let e = format!("获取签到活动失败 (HTTP {})", res.status());
+            let e = format_http_error("获取签到活动", res.status());
             crate::modules::ledger::record_checkin_log(store, account_id, &email, variant, "error", Some(&e));
             return json!({ "result": "error", "error": e });
         }
@@ -469,7 +480,7 @@ pub async fn checkin(
                 total_claimed += amt;
             }
             Ok(res) => {
-                last_err = Some(format!("领取失败 HTTP {}", res.status()));
+                last_err = Some(format_http_error("领取积分", res.status()));
             }
             Err(e) => {
                 last_err = Some(format!("网络错误: {e}"));

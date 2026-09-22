@@ -79,21 +79,30 @@ pub fn atomic_write_bytes(path: &Path, content: &[u8]) -> std::io::Result<()> {
         let _ = std::fs::remove_file(&tmp);
         e
     })?;
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        // 如果目标文件存在且带只读属性（Windows常见），尝试清除只读位后重试一次
-        if e.kind() == std::io::ErrorKind::PermissionDenied && path.is_file() {
-            if let Ok(mut perms) = std::fs::metadata(path).map(|m| m.permissions()) {
-                perms.set_readonly(false);
-                let _ = std::fs::set_permissions(path, perms);
-                if std::fs::rename(&tmp, path).is_ok() {
-                    return Ok(());
+    let mut last_err = None;
+    for attempt in 0..5 {
+        match std::fs::rename(&tmp, path) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                // 如果目标文件存在且带只读属性（Windows常见），尝试清除只读位后重试
+                if e.kind() == std::io::ErrorKind::PermissionDenied && path.is_file() {
+                    if let Ok(mut perms) = std::fs::metadata(path).map(|m| m.permissions()) {
+                        perms.set_readonly(false);
+                        let _ = std::fs::set_permissions(path, perms);
+                        if std::fs::rename(&tmp, path).is_ok() {
+                            return Ok(());
+                        }
+                    }
+                }
+                last_err = Some(e);
+                if attempt < 4 {
+                    std::thread::sleep(std::time::Duration::from_millis(15 * (attempt + 1) as u64));
                 }
             }
         }
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e);
     }
-    Ok(())
+    let _ = std::fs::remove_file(&tmp);
+    Err(last_err.unwrap())
 }
 
 pub fn read_bytes(path: &Path) -> std::io::Result<Vec<u8>> {

@@ -348,7 +348,10 @@ pub fn unfinished(store: &Path) -> Result<Vec<Journal>> {
         if path.extension().map(|x| x != "json").unwrap_or(true) {
             continue;
         }
-        let bytes = std::fs::read(&path).map_err(|e| format!("读 {:?} 失败: {e}", path))?;
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
         let j: Journal = match serde_json::from_slice(&bytes) {
             Ok(j) => j,
             Err(_) => continue,
@@ -370,6 +373,7 @@ pub fn unfinished(store: &Path) -> Result<Vec<Journal>> {
 ///    现场字节（清单先行于写入是 restore 的设计），直接判已完成回滚。此前按
 ///    "目录存在"判定，那个崩溃窗口会让恢复入口永远卡在既成功不了也消不掉。
 pub fn recover(store: &Path, j: &Journal) -> Result<Phase> {
+    let _gate = SWITCH_GATE.lock().unwrap_or_else(|p| p.into_inner());
     let backups_root = store.join("backups");
     if !j.backup_dir.starts_with(&backups_root)
         || j.backup_dir == backups_root
@@ -390,6 +394,7 @@ pub fn recover(store: &Path, j: &Journal) -> Result<Phase> {
         ));
     }
     if !j.backup_dir.join(bundle::MANIFEST_FILE).is_file() {
+        let _ = std::fs::remove_dir_all(&j.backup_dir);
         let mut done = j.clone();
         done.phase = Phase::RolledBack;
         done.note = Some("备份清单不存在，说明尚未写入任何现场文件".into());

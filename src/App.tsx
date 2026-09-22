@@ -9,6 +9,7 @@ import AccountsPage from "@/pages/AccountsPage";
 import CreditStatsPage from "@/pages/CreditStatsPage";
 import SettingsPage from "@/pages/SettingsPage";
 import { StatusDot, AppIconMark } from "@/components/product-marks";
+import { ErrorBoundary } from "@/components/error-boundary";
 import { UpdateInstallDialog } from "@/components/update-install-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -178,7 +179,9 @@ function Layout() {
           hasUnifiedTitleBar && "pt-16 [&>div]:pt-4",
         )}
       >
-        <Outlet />
+        <ErrorBoundary>
+          <Outlet />
+        </ErrorBoundary>
       </main>
     </div>
   );

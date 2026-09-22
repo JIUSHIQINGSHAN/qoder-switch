@@ -178,6 +178,8 @@ pub fn show_main(app: &AppHandle) {
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
+        let _ = w.set_always_on_top(true);
+        let _ = w.set_always_on_top(false);
     }
 }
 

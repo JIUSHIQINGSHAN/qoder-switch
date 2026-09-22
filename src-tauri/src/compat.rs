@@ -268,7 +268,17 @@ pub async fn export_accounts_to_path(
     off_main(move || {
         let v = view::export_records(&switch_root(), &account_ids)?;
         let text = serde_json::to_string_pretty(&v["accounts"]).map_err(|e| e.to_string())?;
-        std::fs::write(&path, text).map_err(|e| format!("写 {path} 失败: {e}"))?;
+        let p = std::path::Path::new(&path);
+        if path.trim().is_empty() {
+            return Err("导出文件路径不能为空".into());
+        }
+        if let Some(parent) = p.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|e| format!("创建目标目录失败: {e}"))?;
+            }
+        }
+        qs_switch_core::modules::config::atomic_write_bytes(p, text.as_bytes())
+            .map_err(|e| format!("写 {path} 失败: {e}"))?;
         // 部分账号解包失败会进 warnings（records 非空则整体不算错）；必须原样回传，
         // 否则"勾 3 备 2"被报成成功导出 3 个 —— 对凭据备份等于静默少备。
         let exported = v["accounts"].as_array().map(|a| a.len()).unwrap_or(0);
