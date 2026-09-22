@@ -107,6 +107,7 @@ const ROUTES: Record<string, Route> = {
   switch_codebuddy_ide_account: { method: "POST", path: "/api/codebuddy-ide/switch" },
   detect_codebuddy_ide_account: { method: "POST", path: "/api/codebuddy-ide/detect" },
   delete_account: { method: "POST", path: "/api/delete" },
+  set_account_proxy: { method: "POST", path: "/api/set-proxy" },
   oauth_start: { method: "POST", path: "/api/oauth/start" },
   oauth_status: { method: "POST", path: "/api/oauth/status" },
   import_local: { method: "POST", path: "/api/import-local" },

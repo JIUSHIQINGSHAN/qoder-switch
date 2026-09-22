@@ -440,6 +440,37 @@ mod tests {
         assert_eq!(compat::query_param("x=1&variant=ai", "variant"), Some("ai"));
         assert_eq!(compat::query_param("variant=", "variant"), None, "空值不算带了档位");
     }
+
+    #[test]
+    fn set_proxy_route_matches_frontend_contract() {
+        let dir = TempDir::new("set_proxy");
+        // 创建一个模拟账号包
+        let acc_dir = qs_switch_core::modules::bundle::bundle_dir_in(
+            &dir.0,
+            "acc-proxy-test",
+            QoderVariant::Cn,
+            QoderTarget::Desktop,
+        );
+        std::fs::create_dir_all(&acc_dir).unwrap();
+        std::fs::write(
+            acc_dir.join("bundle.json"),
+            r#"{"account_id":"acc-proxy-test","variant":"cn","target":"desktop","created_at":"2026-09-23T00:00:00Z","members":[],"identity":{"proxy":"http://127.0.0.1:7890"}}"#,
+        ).unwrap();
+
+        // 对应前端 call("set_account_proxy", { accountId: "acc-proxy-test", proxy: "socks5://127.0.0.1:1080" }) -> POST /api/set-proxy
+        let r = dispatch_in(
+            &PathRoots::real(),
+            &dir.0,
+            "set-proxy",
+            "",
+            r#"{"accountId":"acc-proxy-test","proxy":"socks5://127.0.0.1:1080"}"#,
+        );
+        assert_eq!(r.status, 200, "{}", r.body);
+        let v: Value = serde_json::from_str(&r.body).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["account"]["id"], "acc-proxy-test");
+        assert_eq!(v["account"]["proxy"], "socks5://127.0.0.1:1080");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -517,6 +548,7 @@ mod compat {
     ];
 
     /// 命中则处理并返回 Some，未命中返回 None 交给自有端点。
+    #[allow(dead_code)]
     pub fn dispatch(cmd: &str, query: &str, body: &str) -> Option<Response> {
         let roots = PathRoots::real();
         let store = switch_root();

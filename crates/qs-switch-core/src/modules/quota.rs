@@ -33,62 +33,44 @@ pub fn resolve_token(
     Ok(resolve_identity(roots, store, account_id, variant)?.0)
 }
 
+fn decrypt_from_bundle_dir(dir: &Path) -> Result<(String, String)> {
+    // 兼容三种历史命名：auth_main（带下划线）、authmain（无下划线）、auth.v1.dat（DPAPI 包格式）
+    let auth_path = ["auth_main", "authmain", "auth.v1.dat"]
+        .iter()
+        .map(|n| dir.join(n))
+        .find(|p| p.is_file())
+        .ok_or_else(|| "凭据文件不存在".to_string())?;
+
+    // 兼容两种 key 文件命名：local_state（带下划线）、localstate（无下划线）
+    let key_path = ["local_state", "localstate"]
+        .iter()
+        .map(|n| dir.join(n))
+        .find(|p| p.is_file())
+        .ok_or_else(|| "Local State 密钥文件不存在".to_string())?;
+
+    let key = auth_codec::aes_key_from_local_state(&key_path)
+        .map_err(|e| format!("读取 Local State 密钥失败: {e}"))?;
+    let blob = std::fs::read(&auth_path)
+        .map_err(|e| format!("读取凭据文件失败: {e}"))?;
+    let dec = auth_codec::decrypt_blob(&key, &blob)
+        .map_err(|e| format!("解密凭据失败: {e}"))?;
+    let auth = auth_codec::parse_auth(&dec)
+        .map_err(|e| format!("解析凭据失败: {e}"))?;
+    if auth.token.trim().is_empty() {
+        return Err("解析得到的登录 Token 为空".to_string());
+    }
+    Ok((auth.token, auth.user.email))
+}
+
 /// 与 `resolve_token` 同一取值顺序，但把邮箱一并带出。
-///
-/// 签到日志与积分快照都要在行里写"这是哪个账号"，而账号包里的 `identity.email`
-/// 只有在**解不开登录态**时才没有（跨 Windows 用户搬来的包）。那种情况回退到
-/// 现场登录态的邮箱，仍然拿不到就留空字符串 —— 日志按 id 归因，不伪造身份。
 pub fn resolve_identity(
     roots: &PathRoots,
     store: &Path,
     account_id: &str,
     variant: QoderVariant,
 ) -> Result<(String, String)> {
-    // 1. 尝试从账号包中读取并解密
-    let b = bundle::load(store, account_id, variant, QoderTarget::Desktop);
-    if let Ok(bundle) = b {
-        let email = bundle
-            .identity
-            .email
-            .clone()
-            .filter(|e| !e.trim().is_empty());
-        let dir = bundle.dir_in(store);
-        // 兼容三种历史命名：auth_main（带下划线）、authmain（无下划线）、auth.v1.dat（DPAPI 包格式）
-        let auth_path = ["auth_main", "authmain", "auth.v1.dat"]
-            .iter()
-            .map(|n| dir.join(n))
-            .find(|p| p.is_file());
-        // 兼容两种 key 文件命名：local_state（带下划线）、localstate（无下划线）
-        let key_path = ["local_state", "localstate"]
-            .iter()
-            .map(|n| dir.join(n))
-            .find(|p| p.is_file());
-        if let (Some(auth_path), Some(key_path)) = (auth_path, key_path) {
-            if let Ok(key) = auth_codec::aes_key_from_local_state(&key_path) {
-                if let Ok(blob) = std::fs::read(&auth_path) {
-                    if let Ok(dec) = auth_codec::decrypt_blob(&key, &blob) {
-                        if let Ok(auth) = auth_codec::parse_auth(&dec) {
-                            if !auth.token.trim().is_empty() {
-                                return Ok((
-                                    auth.token,
-                                    email.unwrap_or(auth.user.email),
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // 2. 尝试从当前桌面现场读取
-    if let Ok(auth) = auth_codec::read_desktop_auth(roots, variant) {
-        if !auth.token.trim().is_empty() {
-            return Ok((auth.token.clone(), email_from_live(&auth)));
-        }
-    }
-
-    Err(format!("无法读取账号 {account_id} 的有效登录凭据"))
+    let (token, email, _) = resolve_identity_full(roots, store, account_id, variant)?;
+    Ok((token, email))
 }
 
 /// 与 `resolve_identity` 一致，但同时返回账号绑定的独立代理（如有）。
@@ -98,50 +80,32 @@ pub fn resolve_identity_full(
     account_id: &str,
     variant: QoderVariant,
 ) -> Result<(String, String, Option<String>)> {
-    let mut proxy = None;
-    // 1. 尝试从账号包中读取并解密
-    let b = bundle::load(store, account_id, variant, QoderTarget::Desktop);
-    if let Ok(bundle) = b {
-        proxy = bundle.identity.proxy.clone();
+    // 1. 若账号包存在于存储中：凭据必须且只能来源于此包，解密失败报错，绝不静默回退现场以防串号
+    if let Ok(bundle) = bundle::load(store, account_id, variant, QoderTarget::Desktop) {
+        let proxy = bundle.identity.proxy.clone();
         let email = bundle
             .identity
             .email
             .clone()
             .filter(|e| !e.trim().is_empty());
         let dir = bundle.dir_in(store);
-        // 兼容三种历史命名：auth_main（带下划线）、authmain（无下划线）、auth.v1.dat（DPAPI 包格式）
-        let auth_path = ["auth_main", "authmain", "auth.v1.dat"]
-            .iter()
-            .map(|n| dir.join(n))
-            .find(|p| p.is_file());
-        // 兼容两种 key 文件命名：local_state（带下划线）、localstate（无下划线）
-        let key_path = ["local_state", "localstate"]
-            .iter()
-            .map(|n| dir.join(n))
-            .find(|p| p.is_file());
-        if let (Some(auth_path), Some(key_path)) = (auth_path, key_path) {
-            if let Ok(key) = auth_codec::aes_key_from_local_state(&key_path) {
-                if let Ok(blob) = std::fs::read(&auth_path) {
-                    if let Ok(dec) = auth_codec::decrypt_blob(&key, &blob) {
-                        if let Ok(auth) = auth_codec::parse_auth(&dec) {
-                            if !auth.token.trim().is_empty() {
-                                return Ok((
-                                    auth.token,
-                                    email.unwrap_or(auth.user.email),
-                                    proxy,
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        let (token, auth_email) = decrypt_from_bundle_dir(&dir).map_err(|e| {
+            format!("账号 {account_id} 凭据解密失败（跨 Windows 用户或 Local State 不匹配，需在本机重新登录一次）: {e}")
+        })?;
+        return Ok((token, email.unwrap_or(auth_email), proxy));
     }
 
-    // 2. 尝试从当前桌面现场读取
-    if let Ok(auth) = auth_codec::read_desktop_auth(roots, variant) {
-        if !auth.token.trim().is_empty() {
-            return Ok((auth.token.clone(), email_from_live(&auth), proxy));
+    // 2. 账号包不存在：仅当目标账号明确为当前桌面现场账号时，才允许从现场读取
+    let is_local_id = account_id == crate::modules::view::local_account_id(variant)
+        || account_id == "local-cn"
+        || account_id == "local-ai"
+        || account_id == "local-global";
+
+    if is_local_id {
+        if let Ok(auth) = auth_codec::read_desktop_auth(roots, variant) {
+            if !auth.token.trim().is_empty() {
+                return Ok((auth.token.clone(), email_from_live(&auth), None));
+            }
         }
     }
 
@@ -660,4 +624,70 @@ pub fn checkin_all_sync(
 ) -> Value {
     block_on(checkin_all(roots, store, only_variant))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::config::PathRoots;
+
+    #[test]
+    fn resolve_identity_does_not_silently_fallback_to_live_for_saved_or_unknown_accounts() {
+        let tmp = std::env::temp_dir().join(format!("qs-quota-test-{}", uuid::Uuid::new_v4().simple()));
+        let roots = PathRoots::sandbox(&tmp);
+        let store = tmp.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+
+        // 构造一个模拟的现场桌面凭据（live）
+        let d = crate::modules::variant::desktop_dir(&roots, QoderVariant::Cn);
+        std::fs::create_dir_all(&d).unwrap();
+        // 构造一段合法的明文 auth.v1.dat 或 DPAPI auth
+        let live_auth = json!({
+            "token": "live-secret-token-12345",
+            "user": {
+                "id": "live-user-1",
+                "name": "Live User",
+                "email": "live@example.com"
+            }
+        });
+        std::fs::write(d.join("auth.v1.dat"), serde_json::to_vec(&live_auth).unwrap()).unwrap();
+
+        // 1. 对于不存在的普通账号 ID，绝对不能读取 live 凭据
+        let err = resolve_identity(&roots, &store, "random-non-existent-account", QoderVariant::Cn);
+        assert!(err.is_err(), "不存在的账号不能成功返回凭据: {err:?}");
+        let err_msg = err.unwrap_err();
+        assert!(
+            err_msg.contains("无法读取账号"),
+            "错误信息应当指明无法读取指定账号，而不是静默返回 live 账号: {err_msg}"
+        );
+
+        // 2. 构造一个损坏/无法解密的账号包
+        let acc_dir = bundle::bundle_dir_in(&store, "corrupted-acc", QoderVariant::Cn, QoderTarget::Desktop);
+        std::fs::create_dir_all(&acc_dir).unwrap();
+        std::fs::write(
+            acc_dir.join("bundle.json"),
+            r#"{"account_id":"corrupted-acc","variant":"cn","target":"desktop","created_at":"2026-09-23T00:00:00Z","members":[],"identity":{}}"#,
+        ).unwrap();
+        // 缺少 auth_main / key 文件
+        let err2 = resolve_identity(&roots, &store, "corrupted-acc", QoderVariant::Cn);
+        assert!(err2.is_err(), "损坏或缺少密钥的包必须报错，绝不能回退现场: {err2:?}");
+        let err_msg2 = err2.unwrap_err();
+        assert!(
+            err_msg2.contains("解密失败") || err_msg2.contains("重新登录"),
+            "应当明确提示解密失败重新登录: {err_msg2}"
+        );
+
+        // 3. 现场账号 local-cn 在真实桌面凭据存在时，应当允许读取 live
+        let real_roots = PathRoots::real();
+        let real_dir = crate::modules::variant::desktop_dir(&real_roots, QoderVariant::Cn);
+        if real_dir.join("auth.v1.dat").is_file() {
+            let local_res = resolve_identity(&real_roots, &store, "local-cn", QoderVariant::Cn);
+            assert!(local_res.is_ok(), "现场账号 local-cn 应当允许读取 live: {local_res:?}");
+            let (tok, _em) = local_res.unwrap();
+            assert!(!tok.trim().is_empty());
+        }
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+
 
