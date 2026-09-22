@@ -254,11 +254,21 @@ fn account_usage(
         .filter(|s| s.account_id == account_id)
         .collect();
     mine.sort_by_key(|s| s.ts);
-    for pair in mine.windows(2) {
-        let drop = pair[0].total_remaining - pair[1].total_remaining;
-        if drop > 0.0 {
-            let d = date_key_ms(pair[1].ts);
-            *by_date.entry(d).or_insert(0.0) += drop;
+    // 遇到 remaining 上升（签到领取/账号切换/bug修复后跳变）时重置参考基准：
+    // 以最后一次上升后的 remaining 为新起点，上升前的历史不再与之做差，
+    // 避免「旧高值 → 上升点后新低值」被错误计入消耗。
+    let mut ref_remaining = mine.first().map(|s| s.total_remaining).unwrap_or(0.0);
+    for snap in mine.iter().skip(1) {
+        if snap.total_remaining > ref_remaining {
+            // remaining 上升（领取/充值/重置）：更新基准，不计消耗
+            ref_remaining = snap.total_remaining;
+        } else {
+            let drop = ref_remaining - snap.total_remaining;
+            if drop > 0.0 {
+                let d = date_key_ms(snap.ts);
+                *by_date.entry(d).or_insert(0.0) += drop;
+            }
+            ref_remaining = snap.total_remaining;
         }
     }
     let totals = UsageTotals {
@@ -277,33 +287,45 @@ fn account_usage(
     (totals, by_date)
 }
 
-/// 前端 `CreditStatistics` 契约。`refresh=true` 时先对全部账号各拉一次真实配额
+/// 前端 `CreditStatistics` 契约。`refresh=true` 时先对全部国内版账号各拉一次真实配额
 /// （顺带落快照），再聚合 —— 语义是"统计页的刷新按钮"，不是后台定时任务。
+///
+/// 已去掉国际版：本函数只统计国内版（`Cn`）。库里若还留着历史国际版账号包（如升级前
+/// 导入的 `local-ai`），它不进快照聚合、不进账号明细 —— 界面上"没有国际版"这条要在
+/// 数据侧也成立，不能只靠前端筛。
 pub fn credit_statistics(roots: &PathRoots, store: &Path, refresh: bool) -> Value {
     if refresh {
         for b in bundle::list_all(store) {
-            if b.target == QoderTarget::Desktop {
+            if b.target == QoderTarget::Desktop && b.variant == QoderVariant::Cn {
                 let _ = quota::fetch_credit_expiry_sync(roots, store, &b.account_id, b.variant);
             }
         }
     }
 
-    let snaps = read_snapshots(store);
-    let logs = read_logs_raw(store);
-    let bundles = bundle::list_all(store);
+    let snaps: Vec<CreditSnapshot> = read_snapshots(store)
+        .into_iter()
+        .filter(|s| s.variant == "cn")
+        .collect();
+    let logs: Vec<CheckinLogEntry> = read_logs_raw(store)
+        .into_iter()
+        .filter(|l| l.variant == "cn")
+        .collect();
+    let bundles: Vec<_> = bundle::list_all(store)
+        .into_iter()
+        .filter(|b| b.variant == QoderVariant::Cn)
+        .collect();
 
     let today = today_key();
     let week_start = minus_days(&today, 6);
     let month_prefix = today.chars().take(7).collect::<String>();
 
-    // 当前登录 uid（两档位各查一次），用于 isCurrent。
-    let current_uids: Vec<String> = [QoderVariant::Cn, QoderVariant::Global]
-        .iter()
-        .filter_map(|v| auth_codec::read_desktop_auth(roots, *v).ok())
-        .map(|a| a.user.id.clone())
-        .collect();
+    // 当前登录 uid（只看国内版），用于 isCurrent。
+    let current_uids: Vec<String> = auth_codec::read_desktop_auth(roots, QoderVariant::Cn)
+        .ok()
+        .map(|a| vec![a.user.id.clone()])
+        .unwrap_or_default();
 
-    // 账号全集 = 账号包 ∪ 快照里出现过的账号（后者的账号包可能已删除，历史不丢）。
+    // 账号全集 = 国内版账号包 ∪ 国内版快照里出现过的账号（已过滤掉非国内版）。
     let mut ids: Vec<String> = bundles.iter().map(|b| b.account_id.clone()).collect();
     for s in &snaps {
         if !ids.contains(&s.account_id) {
@@ -457,7 +479,8 @@ pub fn run_auto_checkin_once(roots: &PathRoots, store: &Path) -> Value {
     let mut checked = 0u32;
     let (mut success, mut already, mut inactive, mut error) = (0u32, 0u32, 0u32, 0u32);
     for b in bundle::list_all(store) {
-        if b.target != QoderTarget::Desktop {
+        // 已去掉国际版：自动签到只碰国内版账号包。
+        if b.target != QoderTarget::Desktop || b.variant != QoderVariant::Cn {
             continue;
         }
         let st = quota::get_checkin_status_sync(roots, store, &b.account_id, b.variant);

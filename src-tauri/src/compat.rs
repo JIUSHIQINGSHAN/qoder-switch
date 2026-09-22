@@ -206,6 +206,16 @@ pub async fn delete_account(app: tauri::AppHandle, account_id: String) -> Result
 }
 
 #[tauri::command]
+pub async fn set_account_proxy(account_id: String, proxy: Option<String>) -> Result<Value, String> {
+    off_main(move || {
+        let store = switch_root();
+        let b = bundle::set_proxy(&store, &account_id, QoderVariant::Cn, QoderTarget::Desktop, proxy)?;
+        Ok(json!({ "ok": true, "account": view::account_meta(&b) }))
+    })
+    .await
+}
+
+#[tauri::command]
 pub fn get_auto_rotate_config() -> UiRotateConfig {
     view::read_ui_config(&switch_root())
 }

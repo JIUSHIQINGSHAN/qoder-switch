@@ -176,6 +176,12 @@ qoder-switch.exe --self-check && echo OK
 
 ## 已知边界
 
+- **只支持国内版**（v0.1.6 起去掉国际版）：界面不再有「国内版/国际版」档位切换，
+  账号列表、快捷切换托盘、批量签到、积分统计一律只覆盖国内版。核心 `QoderVariant`
+  枚举与国际版端点/路径仍保留（不触碰切换/凭据这条主链，改动半径最小、可逆），
+  只是没有任何入口会把 `variant=ai` 发出去；库里升级前导入的历史国际版账号包留在磁盘，
+  不再出现在任何界面。需要恢复国际版：放开 `stores/accounts.ts` 的 `onlyDomestic` 过滤、
+  `tray.rs` 的 CN 过滤、`ledger`/`quota` 批量与统计里的 CN 守卫，并重新在账号页加回档位 Tab。
 - 会话历史不按账号隔离：桌面 `main.sqlite` 的 `chat_sessions` 无 `account_id` 列，
   `~/.qoder*/projects/` 按工作目录命名。换号后两个账号会互见历史，界面上会提示。
 - DPAPI 按 Windows 用户生效：账号包只在同一 Windows 用户内可复用，跨机器或跨用户无效。

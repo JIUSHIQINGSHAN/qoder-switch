@@ -28,7 +28,6 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Dialog,
@@ -46,7 +45,6 @@ import * as api from "@/lib/api";
 import { useVisibleInterval } from "@/lib/use-visible-interval";
 import {
   accountVariant,
-  normalizeVariant,
   variantAppName,
   variantCodebuddyIdeName,
   variantDownloadDomain,
@@ -128,7 +126,6 @@ export default function AccountsPage() {
   const {
     accounts,
     variant,
-    setVariant,
     status,
     loading,
     error,
@@ -658,16 +655,6 @@ export default function AccountsPage() {
             <p className="mt-2 text-sm leading-6 text-muted-foreground">
               统一管理 Qoder 桌面客户端与 Qoder CLI 的账号包、token 到期与切换。
             </p>
-            <Tabs
-              className="mt-4 gap-0"
-              value={variant}
-              onValueChange={(value) => setVariant(normalizeVariant(value))}
-            >
-              <TabsList aria-label="Qoder 档位">
-                <TabsTrigger value="cn">国内版</TabsTrigger>
-                <TabsTrigger value="ai">国际版</TabsTrigger>
-              </TabsList>
-            </Tabs>
           </div>
           <div className="flex shrink-0 items-center gap-4 pt-1">
             <div className="flex items-center gap-2.5">

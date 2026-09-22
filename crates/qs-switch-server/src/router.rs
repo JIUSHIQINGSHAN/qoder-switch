@@ -492,6 +492,7 @@ mod compat {
         "capabilities",
         "import-local",
         "delete",
+        "set-proxy",
         "export-accounts",
         "import/preview",
         "import",
@@ -597,6 +598,13 @@ mod compat {
                 std::fs::remove_dir_all(&dir)
                     .map_err(|e| format!("删除失败: {e}"))?;
                 Ok(json!({ "ok": true }))
+            }
+            "set-proxy" => {
+                let id = account_id(&input)?;
+                bundle::validate_account_id(&id)?;
+                let proxy = input.get("proxy").and_then(|x| x.as_str()).map(String::from);
+                let b = bundle::set_proxy(store, &id, v, QoderTarget::Desktop, proxy)?;
+                Ok(json!({ "ok": true, "account": view::account_meta(&b) }))
             }
             "export-accounts" => {
                 let ids: Vec<String> = input

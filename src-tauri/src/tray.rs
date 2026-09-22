@@ -51,10 +51,11 @@ pub fn build_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R
     menu.append(&PredefinedMenuItem::separator(app)?)?;
 
     // 只对桌面目标提供快捷切换：CLI 不落盘凭据、QoderWork 是另一套文件。
+    // 已去掉国际版：托盘也只列国内版账号包（历史国际版包留在磁盘，不出现在快捷切换里）。
     let store = qs_switch_core::modules::config::switch_root();
     let desktop: Vec<_> = bundle::list_all(&store)
         .into_iter()
-        .filter(|b| b.target == QoderTarget::Desktop)
+        .filter(|b| b.target == QoderTarget::Desktop && b.variant == QoderVariant::Cn)
         .collect();
     if desktop.is_empty() {
         menu.append(&MenuItem::with_id(

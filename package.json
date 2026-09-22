@@ -2,6 +2,12 @@
   "name": "qoder-switch",
   "private": true,
   "version": "0.1.5",
+  "description": "Qoder 多账号秒级切换、积分监控与自动化管理桌面应用",
+  "author": "JIUSHIQINGSHAN",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JIUSHIQINGSHAN/qoder-switch.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",

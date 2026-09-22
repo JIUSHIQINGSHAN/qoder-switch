@@ -20,6 +20,8 @@ export interface AccountMeta {
   needsReloginReason: string | null;
   /** 账号所属档位；缺省（旧后端/历史账号）按国内版处理。 */
   variant?: WbVariant;
+  /** 账号独立代理配置（例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080） */
+  proxy?: string | null;
 }
 
 export interface AppStatus {

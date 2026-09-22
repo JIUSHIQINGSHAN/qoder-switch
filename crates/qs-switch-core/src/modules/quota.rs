@@ -53,9 +53,17 @@ pub fn resolve_identity(
             .clone()
             .filter(|e| !e.trim().is_empty());
         let dir = bundle.dir_in(store);
-        let auth_path = dir.join("auth_main");
-        let key_path = dir.join("local_state");
-        if auth_path.is_file() && key_path.is_file() {
+        // 兼容三种历史命名：auth_main（带下划线）、authmain（无下划线）、auth.v1.dat（DPAPI 包格式）
+        let auth_path = ["auth_main", "authmain", "auth.v1.dat"]
+            .iter()
+            .map(|n| dir.join(n))
+            .find(|p| p.is_file());
+        // 兼容两种 key 文件命名：local_state（带下划线）、localstate（无下划线）
+        let key_path = ["local_state", "localstate"]
+            .iter()
+            .map(|n| dir.join(n))
+            .find(|p| p.is_file());
+        if let (Some(auth_path), Some(key_path)) = (auth_path, key_path) {
             if let Ok(key) = auth_codec::aes_key_from_local_state(&key_path) {
                 if let Ok(blob) = std::fs::read(&auth_path) {
                     if let Ok(dec) = auth_codec::decrypt_blob(&key, &blob) {
@@ -83,15 +91,76 @@ pub fn resolve_identity(
     Err(format!("无法读取账号 {account_id} 的有效登录凭据"))
 }
 
+/// 与 `resolve_identity` 一致，但同时返回账号绑定的独立代理（如有）。
+pub fn resolve_identity_full(
+    roots: &PathRoots,
+    store: &Path,
+    account_id: &str,
+    variant: QoderVariant,
+) -> Result<(String, String, Option<String>)> {
+    let mut proxy = None;
+    // 1. 尝试从账号包中读取并解密
+    let b = bundle::load(store, account_id, variant, QoderTarget::Desktop);
+    if let Ok(bundle) = b {
+        proxy = bundle.identity.proxy.clone();
+        let email = bundle
+            .identity
+            .email
+            .clone()
+            .filter(|e| !e.trim().is_empty());
+        let dir = bundle.dir_in(store);
+        // 兼容三种历史命名：auth_main（带下划线）、authmain（无下划线）、auth.v1.dat（DPAPI 包格式）
+        let auth_path = ["auth_main", "authmain", "auth.v1.dat"]
+            .iter()
+            .map(|n| dir.join(n))
+            .find(|p| p.is_file());
+        // 兼容两种 key 文件命名：local_state（带下划线）、localstate（无下划线）
+        let key_path = ["local_state", "localstate"]
+            .iter()
+            .map(|n| dir.join(n))
+            .find(|p| p.is_file());
+        if let (Some(auth_path), Some(key_path)) = (auth_path, key_path) {
+            if let Ok(key) = auth_codec::aes_key_from_local_state(&key_path) {
+                if let Ok(blob) = std::fs::read(&auth_path) {
+                    if let Ok(dec) = auth_codec::decrypt_blob(&key, &blob) {
+                        if let Ok(auth) = auth_codec::parse_auth(&dec) {
+                            if !auth.token.trim().is_empty() {
+                                return Ok((
+                                    auth.token,
+                                    email.unwrap_or(auth.user.email),
+                                    proxy,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. 尝试从当前桌面现场读取
+    if let Ok(auth) = auth_codec::read_desktop_auth(roots, variant) {
+        if !auth.token.trim().is_empty() {
+            return Ok((auth.token.clone(), email_from_live(&auth), proxy));
+        }
+    }
+
+    Err(format!("无法读取账号 {account_id} 的有效登录凭据"))
+}
+
 fn email_from_live(auth: &auth_codec::DesktopAuth) -> String {
     auth.user.email.clone()
 }
 
-fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .unwrap_or_default()
+pub fn http_client_with_proxy(proxy_url: Option<&str>) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15));
+    if let Some(p) = proxy_url.filter(|s| !s.trim().is_empty()) {
+        if let Ok(proxy) = reqwest::Proxy::all(p.trim()) {
+            builder = builder.proxy(proxy);
+        }
+    }
+    builder.build().unwrap_or_default()
 }
 
 fn build_headers(token: &str) -> HashMap<String, String> {
@@ -112,13 +181,13 @@ pub async fn fetch_credit_expiry(
     account_id: &str,
     variant: QoderVariant,
 ) -> Value {
-    let (token, email) = match resolve_identity(roots, store, account_id, variant) {
+    let (token, email, proxy) = match resolve_identity_full(roots, store, account_id, variant) {
         Ok(t) => t,
         Err(e) => return json!({ "ok": false, "error": e, "resources": [] }),
     };
 
     let base = openapi_base(variant);
-    let client = http_client();
+    let client = http_client_with_proxy(proxy.as_deref());
     let headers = build_headers(&token);
 
     // 1. 获取配额总览
@@ -296,7 +365,7 @@ pub async fn get_checkin_status(
     account_id: &str,
     variant: QoderVariant,
 ) -> Value {
-    let token = match resolve_token(roots, store, account_id, variant) {
+    let (token, _email, proxy) = match resolve_identity_full(roots, store, account_id, variant) {
         Ok(t) => t,
         Err(e) => {
             return json!({ "ok": false, "error": e, "todayCheckedIn": false, "variant": crate::modules::view::variant_key(variant) })
@@ -304,7 +373,7 @@ pub async fn get_checkin_status(
     };
 
     let base = openapi_base(variant);
-    let client = http_client();
+    let client = http_client_with_proxy(proxy.as_deref());
     let headers = build_headers(&token);
     let camp_url = format!("{base}/sash/api/v1/me/campaigns?clientType=10");
 
@@ -355,7 +424,7 @@ pub async fn checkin(
     account_id: &str,
     variant: QoderVariant,
 ) -> Value {
-    let (token, email) = match resolve_identity(roots, store, account_id, variant) {
+    let (token, email, proxy) = match resolve_identity_full(roots, store, account_id, variant) {
         Ok(t) => t,
         Err(e) => {
             crate::modules::ledger::record_checkin_log(store, account_id, "", variant, "error", Some(&e));
@@ -364,7 +433,7 @@ pub async fn checkin(
     };
 
     let base = openapi_base(variant);
-    let client = http_client();
+    let client = http_client_with_proxy(proxy.as_deref());
     let headers = build_headers(&token);
     let camp_url = format!("{base}/sash/api/v1/me/campaigns?clientType=10");
 
@@ -470,6 +539,10 @@ pub async fn get_checkin_status_all(
         if b.target != QoderTarget::Desktop {
             continue;
         }
+        // 已去掉国际版：批量接口只覆盖国内版；显式传 ai 也返回空（不是漏，是刻意）。
+        if b.variant != QoderVariant::Cn {
+            continue;
+        }
         if let Some(v) = only_variant {
             if b.variant != v {
                 continue;
@@ -552,6 +625,10 @@ pub async fn checkin_all(
     let mut out = Vec::new();
     for b in accounts {
         if b.target != QoderTarget::Desktop {
+            continue;
+        }
+        // 已去掉国际版：批量接口只覆盖国内版；显式传 ai 也返回空（不是漏，是刻意）。
+        if b.variant != QoderVariant::Cn {
             continue;
         }
         if let Some(v) = only_variant {

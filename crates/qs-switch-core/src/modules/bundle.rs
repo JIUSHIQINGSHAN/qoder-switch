@@ -53,6 +53,9 @@ pub struct Identity {
     pub expires_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh_expires_at: Option<String>,
+    /// 独立代理配置（例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<String>,
 }
 
 /// RFC3339（`2026-10-19T06:19:41Z`）→ 毫秒。前端契约里的时间戳是毫秒数。
@@ -276,6 +279,21 @@ pub fn load(
     let path = bundle_dir_in(store, account_id, variant, target).join("bundle.json");
     let bytes = read_bytes(&path).map_err(|e| format!("读 {:?} 失败: {e}", path))?;
     serde_json::from_slice(&bytes).map_err(|e| format!("{path:?} 解析失败: {e}"))
+}
+
+/// 更新指定账号的代理配置并持久化到 bundle.json。
+pub fn set_proxy(
+    store: &Path,
+    account_id: &str,
+    variant: QoderVariant,
+    target: QoderTarget,
+    proxy: Option<String>,
+) -> Result<Bundle> {
+    let mut b = load(store, account_id, variant, target)?;
+    let clean = proxy.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+    b.identity.proxy = clean;
+    write_meta(store, &b)?;
+    Ok(b)
 }
 
 /// 把 bundle 写回真实路径。调用方负责在此之前终止目标进程 —— 本模块不杀进程，

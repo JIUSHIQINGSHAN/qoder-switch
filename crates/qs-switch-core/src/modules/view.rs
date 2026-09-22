@@ -92,6 +92,7 @@ pub fn account_meta(b: &bundle::Bundle) -> Value {
                 .to_string()
         }),
         "variant": variant_key(b.variant),
+        "proxy": b.identity.proxy.clone(),
     })
 }
 

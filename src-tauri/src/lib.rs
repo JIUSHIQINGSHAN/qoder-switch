@@ -71,6 +71,7 @@ pub fn run() {
             compat::switch_account,
             compat::import_local,
             compat::delete_account,
+            compat::set_account_proxy,
             compat::switch_progress,
             compat::get_auto_rotate_config,
             compat::save_auto_rotate_config,

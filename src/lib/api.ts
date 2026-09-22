@@ -412,6 +412,13 @@ export function deleteAccount(accountId: string): Promise<{ ok: boolean }> {
   return call("delete_account", { accountId });
 }
 
+export function setAccountProxy(
+  accountId: string,
+  proxy: string | null,
+): Promise<{ ok: boolean; account: AccountMeta }> {
+  return call("set_account_proxy", { accountId, proxy });
+}
+
 /** 发起登录：国内版为扫码授权，国际版为浏览器 Web 登录授权；`variant` 缺省为国内版（档位由后端记忆，轮询无需再传）。 */
 export function oauthStart(variant?: WbVariant): Promise<OAuthStartResult> {
   return call("oauth_start", variantArgs(variant));

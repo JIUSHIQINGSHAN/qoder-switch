@@ -1,4 +1,4 @@
-import { ArrowRight, CalendarCheck2, CalendarDays, Check, CircleCheck, Clock3, Coins, Ellipsis, Gauge, Loader2, PackageOpen, Sparkles, Star, Trash2 } from "lucide-react";
+import { ArrowRight, CalendarCheck2, CalendarDays, Check, CircleCheck, Clock3, Coins, Ellipsis, Gauge, Globe, Loader2, PackageOpen, Sparkles, Star, Trash2 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -8,12 +8,16 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { CodeBuddyCnIdeMark, CodeBuddyMark, WorkBuddyMark } from "@/components/product-marks";
+import { useAccountsStore } from "@/stores/accounts";
 import { cn } from "@/lib/utils";
 import { creditResourceName } from "@/lib/credit-package-names";
 import { demoModeEnabled } from "@/lib/demo-mode";
@@ -301,6 +305,9 @@ function CreditResourceRow({ resource, compact, placeholderLabel }: { resource?:
 
 export function AccountCard({ account, onDelete, onCheckin, onSwitch, todayCheckedIn, rateLimits, credit, creditLoading, creditUpdatedAt, creditPriority, workbuddyActive, codebuddyCliConfigured, codebuddyCliActive, codebuddyCliBusy, onSwitchCodebuddyCli, codebuddyCliLoading, codebuddyCnIdeAvailable, codebuddyCnIdeActive, codebuddyCnIdeBusy, codebuddyCnIdeLoading, onSwitchCodebuddyCnIde, featuresDisabled = true, compact = false }: Props) {
   const [resourcesOpen, setResourcesOpen] = useState(false);
+  const [proxyOpen, setProxyOpen] = useState(false);
+  const [proxyInput, setProxyInput] = useState(account.proxy || "");
+  const [proxySaving, setProxySaving] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   /**
    * 限额图标要随官方恢复时刻自动消失（AC3），所以本地每秒走一次时钟。
@@ -344,6 +351,17 @@ export function AccountCard({ account, onDelete, onCheckin, onSwitch, todayCheck
           variant: todayCheckedIn ? "success" : "secondary",
         })}
       {rateLimitChip(rateLimits, now)}
+      {account.proxy && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Badge variant="outline" className={cn(chipClass, "gap-1 text-primary border-primary/30 bg-primary/5 cursor-pointer")} onClick={() => setProxyOpen(true)}>
+              <Globe className="size-3" />
+              <span>代理</span>
+            </Badge>
+          </TooltipTrigger>
+          <TooltipContent side="top">独立代理: {account.proxy}</TooltipContent>
+        </Tooltip>
+      )}
       {(account.needsRelogin || expired) && <Badge variant="warning" className={chipClass}>{account.needsRelogin ? "需重新登录" : "Token 已过期"}</Badge>}
       {creditPriority && (
         <Tooltip>
@@ -421,6 +439,12 @@ export function AccountCard({ account, onDelete, onCheckin, onSwitch, todayCheck
                     <CircleCheck />手动签到
                   </DropdownMenuItem>
                 )}
+                <DropdownMenuItem onSelect={() => {
+                  setProxyInput(account.proxy || "");
+                  setProxyOpen(true);
+                }}>
+                  <Globe />配置代理
+                </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem className="text-destructive focus:bg-destructive/5 focus:text-destructive" onSelect={() => onDelete(account)}>
                   <Trash2 />删除账号
@@ -673,6 +697,57 @@ export function AccountCard({ account, onDelete, onCheckin, onSwitch, todayCheck
               })}
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={proxyOpen} onOpenChange={setProxyOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>配置独立代理</DialogTitle>
+            <DialogDescription>{name} · 签到、配额查询与自动刷新将通过此代理出口</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label htmlFor={`proxy-input-${account.id}`}>代理地址 (HTTP / SOCKS5)</Label>
+              <Input
+                id={`proxy-input-${account.id}`}
+                placeholder="例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
+                value={proxyInput}
+                onChange={(e) => setProxyInput(e.target.value)}
+                spellCheck={false}
+                autoComplete="off"
+              />
+              <p className="text-xs text-muted-foreground">留空并保存表示清除代理，恢复为系统直连出口。</p>
+            </div>
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setProxyInput("");
+              }}
+              disabled={proxySaving || !proxyInput}
+            >
+              清空
+            </Button>
+            <Button
+              size="sm"
+              disabled={proxySaving}
+              onClick={async () => {
+                setProxySaving(true);
+                try {
+                  await useAccountsStore.getState().setAccountProxy(account.id, proxyInput.trim() || null);
+                  setProxyOpen(false);
+                } finally {
+                  setProxySaving(false);
+                }
+              }}
+            >
+              {proxySaving ? <Loader2 className="animate-spin" /> : null}
+              保存
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </TooltipProvider>

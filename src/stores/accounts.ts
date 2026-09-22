@@ -1,7 +1,16 @@
 import { create } from "zustand";
 import * as api from "@/lib/api";
-import { DEFAULT_VARIANT, normalizeVariant } from "@/lib/variant";
+import { DEFAULT_VARIANT, accountVariant, normalizeVariant } from "@/lib/variant";
 import type { AccountMeta, AppStatus, CreditExpiry, WbVariant } from "@/lib/types";
+
+/**
+ * 已去掉国际版：账号列表面向 UI 的唯一闸口。库里若还留着历史国际版包
+ * （升级前导入的 `local-ai` 等），在这里被滤掉，不渲染、不参与切换/签到；
+ * 文件仍在磁盘（不物理删凭据），需要恢复国际版时放开此过滤即可。
+ */
+function onlyDomestic(accounts: AccountMeta[]): AccountMeta[] {
+  return accounts.filter((a) => accountVariant(a) === "cn");
+}
 
 /** In-flight credit fetches, shared so a remount does not start a second round. */
 const creditInflight = new Set<string>();
@@ -46,6 +55,7 @@ interface AccountsState {
   fetchAll: () => Promise<void>;
   refreshStatus: (signal?: AbortSignal) => Promise<void>;
   deleteAccount: (id: string) => Promise<void>;
+  setAccountProxy: (id: string, proxy: string | null) => Promise<void>;
   /** Fetch credits only for ids not already cached. */
   ensureCredits: (accountIds: string[]) => Promise<void>;
   /** Force-refresh credits. `silent` skips toolbar/card loading flicker (timer). */
@@ -81,7 +91,7 @@ export const useAccountsStore = create<AccountsState>((set, get) => ({
       const [status, { accounts }] = await Promise.all([fetchStatus(variant), api.getAccounts()]);
       // 迟到结果不得覆盖已切换档位的状态。
       if (get().variant !== variant) return;
-      set({ status, accounts, loading: false });
+      set({ status, accounts: onlyDomestic(accounts), loading: false });
     } catch (e) {
       if (get().variant !== variant) return;
       set({ error: api.asError(e), loading: false });
@@ -116,6 +126,13 @@ export const useAccountsStore = create<AccountsState>((set, get) => ({
     });
   },
 
+  async setAccountProxy(id: string, proxy: string | null) {
+    const res = await api.setAccountProxy(id, proxy);
+    set({
+      accounts: get().accounts.map((a) => (a.id === id ? res.account : a)),
+    });
+  },
+
   async ensureCredits(accountIds) {
     await loadCredits(accountIds, false, false);
   },
@@ -133,7 +150,7 @@ export const useAccountsStore = create<AccountsState>((set, get) => ({
 
   async reconcileAccounts() {
     const { accounts } = await api.getAccounts();
-    set({ accounts });
+    set({ accounts: onlyDomestic(accounts) });
   },
 }));
 

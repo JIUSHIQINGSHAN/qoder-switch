@@ -293,6 +293,7 @@ pub async fn oauth_status(login_id: &str, roots: &PathRoots, store: &Path) -> Va
             uid: Some(user_id.clone()),
             expires_at: Some(expires_at.clone()),
             refresh_expires_at: Some(expires_at.clone()),
+            proxy: None,
         },
     };
 

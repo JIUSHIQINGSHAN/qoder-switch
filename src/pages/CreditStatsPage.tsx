@@ -57,12 +57,6 @@ function statsVariantViewLabel(view: StatsVariantView): string {
   return view === "all" ? "全部" : variantLabel(view);
 }
 
-const VARIANT_VIEW_OPTIONS: { key: StatsVariantView; label: string }[] = [
-  { key: "all", label: statsVariantViewLabel("all") },
-  { key: "cn", label: statsVariantViewLabel("cn") },
-  { key: "ai", label: statsVariantViewLabel("ai") },
-];
-
 const RANGE_OPTIONS: { key: RangeKey; label: string }[] = [
   { key: "30d", label: "近 30 天" },
   { key: "today", label: "今天" },
@@ -1380,7 +1374,8 @@ export default function CreditStatsPage() {
   const [stats, setStats] = useState<CreditStatistics | null>(cachedStatistics);
   const [loading, setLoading] = useState(!cachedStatistics);
   const [error, setError] = useState<string | null>(null);
-  const [viewVariant, setViewVariant] = useState<StatsVariantView>("all");
+  // 已去掉国际版：统计恒为单一档位，档位筛选无意义 → 固定 all（直接用后端 CN 聚合值）。
+  const viewVariant: StatsVariantView = "all";
 
   const load = useCallback(
     async (refresh = false) => {
@@ -1473,28 +1468,6 @@ export default function CreditStatsPage() {
           </p>
         </div>
         <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
-          <div
-            className="flex max-w-full flex-wrap gap-1 rounded-lg bg-muted p-1"
-            role="tablist"
-            aria-label="档位筛选"
-          >
-            {VARIANT_VIEW_OPTIONS.map((option) => (
-              <button
-                key={option.key}
-                type="button"
-                role="tab"
-                aria-selected={viewVariant === option.key}
-                className={`cursor-pointer rounded-md px-2.5 py-1.5 text-xs transition-colors ${
-                  viewVariant === option.key
-                    ? "bg-background font-medium text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-                onClick={() => setViewVariant(option.key)}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
           <DemoAction>
             <Button
               className="shrink-0"
