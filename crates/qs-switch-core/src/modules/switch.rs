@@ -384,18 +384,32 @@ pub fn execute(
     };
     progress(&format!("写回并校验通过：{:?}", out.written));
 
-    if matches!(actor, Actor::Real) && req.restart {
+    // 重启门：除演练档外都要收尾。
+    //
+    // 曾写死 `Actor::Real`，把强制档排除在外 —— 但强制档恰恰是"程序被托管、
+    // 正常档杀不掉"时**唯一走得通**的路径，于是那条路上永远是"切完还得自己开客户端"。
+    // 而且 `switch_result` 会按入参 `restart` 回填 `restarted:true`，界面显示"已重启"
+    // 而实际没有 —— 用户看到的是自相矛盾的提示。现在强制档与正常档同样收尾。
+    let mut restarted = false;
+    if req.restart && !matches!(actor, Actor::Simulated) {
         if let Some(exe) = variant::executable(roots, req.variant, req.target) {
             progress(&format!("重新启动 {exe:?}"));
             // 启动失败绝不能把这次切换打成失败：文件已换好且校验通过，journal 若
             // 停在待恢复相位，恢复入口会把用户刚要求的换号整个回滚掉（历史缺陷）。
-            if let Err(e) = process::launch(&exe) {
-                progress(&format!("自动启动失败（{e}），请手动打开目标客户端"));
-                j.note = Some(format!("自动启动失败: {e}"));
+            match process::launch(&exe) {
+                Ok(()) => restarted = true,
+                Err(e) => {
+                    progress(&format!("自动启动失败（{e}），请手动打开目标客户端"));
+                    j.note = Some(format!("自动启动失败: {e}"));
+                }
             }
         } else {
             progress("未能定位可执行文件，已跳过自动启动（请手动打开）");
         }
+    }
+    // 把"是否真的重启了"记进 journal 备注，供调用方回传真实值（见 switch_result）。
+    if req.restart && !restarted && j.note.is_none() {
+        j.note = Some("未自动启动目标客户端，请手动打开".into());
     }
 
     j.phase = Phase::Completed;
