@@ -4,6 +4,51 @@
 
 ---
 
+## [未发布] macOS 适配（基于 v0.1.6 rebase）
+
+### 新增功能
+- **macOS 全链路支持**（在 macOS 15.6.1 / arm64 上实测，Windows 行为保持不变）：
+  - **凭据解码**：新增 Keychain + PBKDF2-HMAC-SHA1(saltysalt/1003/16) + AES-128-CBC 分支。
+    实测本机钥匙串条目 `Qoder CN App Safe Storage` / `Qoder CN App Key`，
+    真实 403 字节 `auth.v1.dat` 解出 384 字节明文，schema 与 Windows 同形。
+  - **进程层**：`tasklist`/`taskkill`/PowerShell 父链 → `ps` 快照 / `/bin/kill` /
+    沿 ppid 上溯。fail-closed 语义一条不减：断链与探测失败一律判 `Unknown` 并拒杀。
+    一并纳入 Electron 的 `… Helper` 子进程族（两平台同名规则一致，且不破坏
+    `Qoder` / `Qoder CN` 的版本隔离）。
+  - **可执行文件解析**：Windows 的 Launcher `state.ini` 在 mac 上不存在，改按
+    `<home>/Applications` → `/Applications` 顺序找 `<Name>.app/Contents/MacOS/<Name>`；
+    重启走 `open <X.app>` 交给 LaunchServices，避免客户端成为本工具子进程。
+  - **系统交互**：新增打开系统授权面板与在访达/资源管理器中定位本 App 两个命令
+    （此前在前端标记为"不适用"，在 mac 上按钮可见但必然抛错）。
+  - **权限自检**：macOS 上除目录写探针外，增加钥匙串可读性实测。
+  - **打包**：`tauri.macos.conf.json`（`app`+`dmg`、`LSMinimumSystemVersion 12.0`）、
+    `bundle.icon` 补 `icon.icns`、Dock 点击唤醒（`RunEvent::Reopen`）。
+  - **发布**：CI 改为 Windows + macOS(aarch64/x86_64) 矩阵，各平台写 updater 片段后
+    由单个 `publish` job 合并成一份 `latest.json`（此前两个 job 各写各的会互相覆盖）；
+    npm 新增 `qoder-switch-darwin-arm64` / `-darwin-x64` 平台包；新增 `ci.yml`
+    双平台验证闸门（push/PR 即跑，不必打 tag）。
+  - **webui 宿主补齐权限路由**：`check-auth-permission` / `open-permission-settings` /
+    `reveal-app-in-finder` 此前只有桌面宿主有接线，浏览器形态下点这些按钮必然拿
+    "未知端点"。现两宿主共用同一个 core 函数，并各加一条回归测试钉住注册表
+    （`is_owned` 查询接缝 —— 另两条命令一分发就会真的打开系统设置，不能试跑）。
+
+### 缺陷修复
+- **`launcher_exe` 在 POSIX 路径下恒为 `None`**：目录前缀比较无条件 `push('\\')`，
+  mac 上规范化路径永不匹配，导致自动重启被静默降级成"请手动打开"。改为按宿主分隔符。
+- **updater 清单平台键与 Tauri 不一致**：`core::update` 曾请求 `latest-macos-<arch>.json`，
+  而 Tauri 的键是 `darwin-<arch>`，表现为「检查更新」在 mac 上永远 404。
+- **`Cosy-MachineOS` 写死 `windows`**：在 mac 上会继续工作但对上游说谎。改为按宿主报真值，
+  并实测 `macos` 被配额接口接受（返回真实额度数据）。
+- **错误文案指向本机不存在的命令**：mac 上曾提示"请检查 tasklist 可用性"。
+  `needsRelogin` 与解密失败的原因说明改为按平台生成。
+
+### 与 v0.1.6 的关系
+- OAuth 落包的"半换号"问题沿用本版已引入的 `bundle::collect_live_critical_members`
+  统一路径，未另写一份；macOS 侧只依赖它按 `credentials()` 的 `critical` 标记取值，
+  而 mac 上 `Local State` 已改标非 critical，因此不会把不承载密钥的文件收进包。
+
+---
+
 ## [0.1.6] - 2026-09-23
 
 本版为一次五维度代码审计（core / server / 桌面宿主 / 前端 / CI）后的集中修复，

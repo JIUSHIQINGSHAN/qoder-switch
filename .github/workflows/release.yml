@@ -1,6 +1,7 @@
 name: release
 
-# 打 v* tag 触发：测试 → 签名构建 → GitHub Release（安装包/便携包/latest.json/校验和）。
+# 打 v* tag 触发：双平台测试 → 签名构建（Windows NSIS + macOS app/dmg）→
+# 合并 updater 清单 → 一次 GitHub Release。
 # 签名私钥在仓库 Secrets：TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD。
 # 公钥已写死在 src-tauri/tauri.conf.json（公开信息，不入 Secrets）。
 
@@ -16,14 +17,26 @@ permissions:
   contents: write
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # 测试：两个宿主都必须过。macOS 侧不是"顺手跑一下"—— 进程层、凭据解码、
+  # .app 解析都是平台分叉代码，只在 Windows 上测等于那半边从来没有测试。
+  # ---------------------------------------------------------------------------
   test:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+          - os: macos-14
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
 
       - uses: actions/setup-node@v4
         with:
@@ -48,8 +61,11 @@ jobs:
               ['src-tauri/tauri.conf.json', () => require('./src-tauri/tauri.conf.json').version],
               ['npm/package.json', () => require('./npm/package.json').version],
               ['npm/platform/qoder-switch-win32-x64/package.json', () => require('./npm/platform/qoder-switch-win32-x64/package.json').version],
+              ['npm/platform/qoder-switch-darwin-arm64/package.json', () => require('./npm/platform/qoder-switch-darwin-arm64/package.json').version],
+              ['npm/platform/qoder-switch-darwin-x64/package.json', () => require('./npm/platform/qoder-switch-darwin-x64/package.json').version],
             ];
             for (const [f, getV] of files) {
+              if (!fs.existsSync(f)) { console.error('缺版本文件: ' + f); process.exit(1); }
               const v = getV();
               if (v !== expected) {
                 console.error(\`版本不一致: \${f} 为 \${v}，期望 \${expected}\`);
@@ -86,7 +102,10 @@ jobs:
       - name: Rust 全量测试
         run: cargo test --workspace
 
-  build-release:
+  # ---------------------------------------------------------------------------
+  # Windows 产物：桌面 exe + NSIS 安装包 + .sig + 便携 zip + webui 服务端
+  # ---------------------------------------------------------------------------
+  build-windows:
     needs: test
     runs-on: windows-latest
     env:
@@ -94,11 +113,10 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: Swatinem/rust-cache@v2
-
+        with:
+          key: windows-latest
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -113,7 +131,7 @@ jobs:
         run: echo "version=$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: 签名构建（桌面 exe + NSIS 安装包 + .sig）
-        run: npx tauri build
+        run: npx tauri build --bundles nsis
 
       - name: 构建 webui 服务端（npm 平台包与便携形态共用）
         run: cargo build --release -p qs-switch-server
@@ -128,7 +146,7 @@ jobs:
           Copy-Item README.md "dist-portable/README.txt"
           Compress-Archive -Path dist-portable/* -DestinationPath "qoder-switch-$v-portable-x64.zip" -Force
 
-      - name: 生成 latest.json（updater 清单）
+      - name: 生成 windows 侧 updater 片段
         shell: bash
         env:
           VERSION: ${{ steps.ver.outputs.version }}
@@ -136,52 +154,205 @@ jobs:
         run: |
           node -e '
             const fs = require("fs");
-            const version = process.env.VERSION;
-            const tag = process.env.TAG;
+            const version = process.env.VERSION, tag = process.env.TAG;
             const sig = fs.readFileSync(
               `target/release/bundle/nsis/qoder-switch_${version}_x64-setup.exe.sig`, "utf8").trim();
             const url = `https://github.com/${process.env.GITHUB_REPOSITORY}/releases/download/${tag}/qoder-switch_${version}_x64-setup.exe`;
+            fs.writeFileSync("updater-windows.json", JSON.stringify({
+              "windows-x86_64": { signature: sig, url },
+              "windows-x86_64-nsis": { signature: sig, url }
+            }));
+          '
+
+      - name: 暂存待发布产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage-windows
+          path: |
+            target/release/bundle/nsis/
+            target/release/qs-switch-server.exe
+            qoder-switch-${{ steps.ver.outputs.version }}-portable-x64.zip
+            updater-windows.json
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # macOS 产物：.app + .dmg + updater 用的 .app.tar.gz(.sig)，两个 arch 都出。
+  #
+  # updater 清单的平台键必须是 Tauri 的 darwin-aarch64 / darwin-x86_64 —— 前端与
+  # core::update 都按这个名字取，写成 macos-* 会表现为"检查更新"永远 404。
+  # ---------------------------------------------------------------------------
+  build-macos:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            rust_target: aarch64-apple-darwin
+            npm_arch: arm64
+          - os: macos-14
+            rust_target: x86_64-apple-darwin
+            npm_arch: x64
+    runs-on: ${{ matrix.os }}
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-${{ matrix.rust_target }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 读取版本号（来自 src-tauri/tauri.conf.json）
+        id: ver
+        shell: bash
+        run: echo "version=$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
+
+      # 本机没有 Apple 开发者证书时也要能出包：不设 APPLE_SIGNING_IDENTITY 时
+      # Tauri 会产出未签名/_ad hoc_ 签名的包，用户侧需右键打开或 xattr -d com.apple.quarantine。
+      - name: 签名构建（.app + .dmg + updater 的 .app.tar.gz）
+        run: npx tauri build --target ${{ matrix.rust_target }} --bundles app,dmg
+
+      - name: 构建 webui 服务端（npm 平台包用）
+        run: cargo build --release -p qs-switch-server --target ${{ matrix.rust_target }}
+
+      - name: 生成 macos 侧 updater 片段
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          TAG: ${{ github.ref_name }}
+          RUST_TARGET: ${{ matrix.rust_target }}
+        run: |
+          set -euo pipefail
+          dir="target/${RUST_TARGET}/release/bundle/macos"
+          # Tauri 产出的 updater 包名是不带版本与架构的 qoder-switch.app.tar.gz。
+          # 双 arch 矩阵里若原样上传，两个 job 会撞在同一个资产名上互相覆盖 ——
+          # 后果是 Apple 硅的用户被推 Intel 的二进制。这里统一改成带 arch 的名字，
+          # 清单里的 URL 也跟着用它。
+          src="$(find "$dir" -maxdepth 1 -name '*.app.tar.gz' | head -1)"
+          [ -n "$src" ] || { echo "找不到 updater 包：$dir 下没有 *.app.tar.gz"; ls -la "$dir"; exit 1; }
+          triple="$(echo "$RUST_TARGET" | cut -d- -f1)"   # aarch64 / x86_64
+          want="qoder-switch_${VERSION}_${triple}.app.tar.gz"
+          if [ "$(basename "$src")" != "$want" ]; then
+            mv "$src" "$dir/$want"
+            [ -f "$src.sig" ] && mv "$src.sig" "$dir/$want.sig"
+          fi
+          sig="$dir/$want.sig"
+          [ -f "$sig" ] || { echo "缺签名文件 $sig（TAURI_SIGNING_PRIVATE_KEY 是否配置？）"; exit 1; }
+          key="darwin-${triple}"
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${want}"
+          node -e '
+            const fs = require("fs");
+            const [key, url, sigPath] = process.argv.slice(1);
+            const sig = fs.readFileSync(sigPath, "utf8").trim();
+            fs.writeFileSync("updater-macos.json", JSON.stringify({ [key]: { signature: sig, url } }));
+            console.log("updater 片段:", key, "->", url);
+          ' "$key" "$url" "$sig"
+
+      - name: 暂存待发布产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage-macos-${{ matrix.rust_target }}
+          path: |
+            target/${{ matrix.rust_target }}/release/bundle/macos/
+            target/${{ matrix.rust_target }}/release/bundle/dmg/
+            target/${{ matrix.rust_target }}/release/qs-switch-server
+            updater-macos.json
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 发布：把所有平台的片段合并成**一份** latest.json，再开唯一一个 Release。
+  #
+  # 为什么必须有这一步：两个构建 job 各写各的 latest.json 会在同一个 Release 上
+  # 互相覆盖，后发布的那个把另一个的平台键整段抹掉 —— 表现为其中一个平台的
+  # 应用内更新突然永久失效。
+  # ---------------------------------------------------------------------------
+  publish:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 取回全部平台产物
+        uses: actions/download-artifact@v4
+        with:
+          pattern: stage-*
+          path: staging
+          merge-multiple: false
+
+      - name: 读取版本号与 tag
+        id: ver
+        shell: bash
+        run: |
+          echo "version=$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
+          echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: 合并 updater 清单
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const glob = (p) => fs.readdirSync("staging", {recursive:true})
+              .map(String).filter(f => f.endsWith(p));
+            let platforms = {};
+            for (const f of glob("updater-*.json")) {
+              Object.assign(platforms, JSON.parse(fs.readFileSync(`staging/${f}`, "utf8")));
+            }
+            const want = ["windows-x86_64", "darwin-aarch64", "darwin-x86_64"];
+            const missing = want.filter(k => !platforms[k]);
+            if (missing.length) { console.error("updater 清单缺平台键: " + missing.join(", ")); process.exit(1); }
             const manifest = {
-              version,
-              notes: `Qoder Switch ${tag}：详见 Release 页面。`,
+              version: process.env.VERSION,
+              notes: `Qoder Switch ${process.env.TAG}：详见 Release 页面。`,
               pub_date: new Date().toISOString(),
-              platforms: {
-                "windows-x86_64": { signature: sig, url },
-                "windows-x86_64-nsis": { signature: sig, url }
-              },
+              platforms,
             };
             const jsonText = JSON.stringify(manifest, null, 2);
             fs.writeFileSync("latest.json", jsonText);
-            fs.writeFileSync("latest-windows-x86_64.json", jsonText);
+            for (const k of Object.keys(platforms)) {
+              fs.writeFileSync(`latest-${k}.json`, JSON.stringify({ ...manifest, platforms: { [k]: platforms[k] } }, null, 2));
+            }
           '
 
-      - name: 生成 SHA256SUMS.txt
+      - name: 生成 SHA256SUMS.txt（覆盖两平台全部对外文件）
         shell: bash
-        env:
-          VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          cd target/release/bundle/nsis
-          sha256sum "qoder-switch_${VERSION}_x64-setup.exe" > "$GITHUB_WORKSPACE/SHA256SUMS.txt"
+          cd staging
+          find . -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.zip' -o -name '*.app.tar.gz' \
+            -o -name 'qs-switch-server' \) ! -name '*.sig' -print0 \
+            | xargs -0 -r sha256sum | sed 's#^\(\S*\)  \./#\1  #' > "$GITHUB_WORKSPACE/SHA256SUMS.txt"
           cd "$GITHUB_WORKSPACE"
-          sha256sum "target/release/qs-switch-server.exe" >> SHA256SUMS.txt
-          sha256sum "qoder-switch-${VERSION}-portable-x64.zip" >> SHA256SUMS.txt
           sha256sum latest.json >> SHA256SUMS.txt
-          sha256sum latest-windows-x86_64.json >> SHA256SUMS.txt
 
-      - name: 发布 GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.ver.outputs.version }}
-          TAG: ${{ github.ref_name }}
+      - name: 发布 GitHub Release（一次成型，含双平台全部资产）
         shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          TAG: ${{ steps.ver.outputs.tag }}
         run: |
-          gh release create "$TAG" \
-            --title "Qoder Switch $TAG" \
-            -F CHANGELOG.md \
-            "target/release/bundle/nsis/qoder-switch_${VERSION}_x64-setup.exe" \
-            "target/release/bundle/nsis/qoder-switch_${VERSION}_x64-setup.exe.sig" \
-            "qoder-switch-${VERSION}-portable-x64.zip" \
-            "target/release/qs-switch-server.exe" \
-            "latest.json" \
-            "latest-windows-x86_64.json" \
-            "SHA256SUMS.txt"
+          gh release create "$TAG" --title "Qoder Switch $TAG" -F CHANGELOG.md --draft
+          # 只上传可分发文件：.sig 与 updater 片段也要，杂七杂八的中间产物不要。
+          find staging -type f \( -name '*.exe' -o -name '*.exe.sig' -o -name '*.dmg' \
+            -o -name '*.app.tar.gz' -o -name '*.app.tar.gz.sig' \
+            -o -name '*.zip' -o -name 'qs-switch-server' \) \
+            | while read -r f; do gh release upload "$TAG" "$f" --clobber; done
+          gh release upload "$TAG" latest.json latest-*.json SHA256SUMS.txt --clobber
+          gh release edit "$TAG" --draft=false

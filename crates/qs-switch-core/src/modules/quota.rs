@@ -33,29 +33,14 @@ pub fn resolve_token(
     Ok(resolve_identity(roots, store, account_id, variant)?.0)
 }
 
-fn decrypt_from_bundle_dir(dir: &Path) -> Result<(String, String)> {
-    // 兼容三种历史命名：auth_main（带下划线）、authmain（无下划线）、auth.v1.dat（DPAPI 包格式）
-    let auth_path = ["auth_main", "authmain", "auth.v1.dat"]
-        .iter()
-        .map(|n| dir.join(n))
-        .find(|p| p.is_file())
-        .ok_or_else(|| "凭据文件不存在".to_string())?;
-
-    // 兼容两种 key 文件命名：local_state（带下划线）、localstate（无下划线）
-    let key_path = ["local_state", "localstate"]
-        .iter()
-        .map(|n| dir.join(n))
-        .find(|p| p.is_file())
-        .ok_or_else(|| "Local State 密钥文件不存在".to_string())?;
-
-    let key = auth_codec::aes_key_from_local_state(&key_path)
-        .map_err(|e| format!("读取 Local State 密钥失败: {e}"))?;
-    let blob = std::fs::read(&auth_path)
-        .map_err(|e| format!("读取凭据文件失败: {e}"))?;
-    let dec = auth_codec::decrypt_blob(&key, &blob)
-        .map_err(|e| format!("解密凭据失败: {e}"))?;
-    let auth = auth_codec::parse_auth(&dec)
-        .map_err(|e| format!("解析凭据失败: {e}"))?;
+fn decrypt_from_bundle_dir(
+    dir: &Path,
+    roots: &PathRoots,
+    variant: QoderVariant,
+) -> Result<(String, String)> {
+    // 凭据命名兼容、密钥载体与解码方案全部收在 auth_codec::decrypt_bundle_auth 里：
+    // Windows 用包内 Local State（DPAPI），macOS 用本机钥匙串（PBKDF2+CBC）。
+    let auth = auth_codec::decrypt_bundle_auth(dir, roots, variant)?;
     if auth.token.trim().is_empty() {
         return Err("解析得到的登录 Token 为空".to_string());
     }
@@ -89,8 +74,11 @@ pub fn resolve_identity_full(
             .clone()
             .filter(|e| !e.trim().is_empty());
         let dir = bundle.dir_in(store);
-        let (token, auth_email) = decrypt_from_bundle_dir(&dir).map_err(|e| {
-            format!("账号 {account_id} 凭据解密失败（跨 Windows 用户或 Local State 不匹配，需在本机重新登录一次）: {e}")
+        let (token, auth_email) = decrypt_from_bundle_dir(&dir, roots, variant).map_err(|e| {
+            format!(
+                "账号 {account_id} 凭据解密失败（{}，需在本机重新登录一次）: {e}",
+                auth_codec::portability_hint()
+            )
         })?;
         return Ok((token, email.unwrap_or(auth_email), proxy));
     }
@@ -162,10 +150,24 @@ fn build_headers(token: &str) -> HashMap<String, String> {
     h.insert("Authorization".into(), format!("Bearer {token}"));
     h.insert("Cosy-ClientType".into(), "10".into());
     h.insert("Cosy-Version".into(), "0.3.3".into());
-    h.insert("Cosy-MachineOS".into(), "windows".into());
+    // 端点取证自 Windows，但把这个值写死成 "windows" 会在 mac 上**继续工作同时说谎**
+    // —— 服务端若按 OS 指纹做风控或统计，我们只会看到 200，看不到后果。按宿主报真值。
+    h.insert("Cosy-MachineOS".into(), machine_os_tag().into());
     h.insert("User-Agent".into(), "Qoder".into());
     h.insert("Accept".into(), "application/json".into());
     h
+}
+
+/// `Cosy-MachineOS` 的取值。与 Qoder 客户端自身上报的字符串对齐（见 `docs/qoder-endpoints.md`
+/// 的实测记录）；拿不准时宁可报真实平台，也不要报另一个平台的值。
+fn machine_os_tag() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "windows"
+    }
 }
 
 /// 查询账号的积分/配额详细情况（对齐前端 CreditExpiry 契约）。

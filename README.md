@@ -13,7 +13,7 @@ Qoder 家族（桌面客户端 / QoderWork / CLI）的多账号切换桌面 App�
 
 | 位置 | 形态 | 加密 |
 | --- | --- | --- |
-| `%APPDATA%\com.qodercn.app.stable\auth.v1.dat` | 桌面登录态 | magic `v10`：Electron safeStorage → `Local State` 的 `os_crypt.encrypted_key` → DPAPI(CURRENT_USER) + AES-256-GCM |
+| `%APPDATA%\com.qodercn.app.stable\auth.v1.dat`（Win）<br>`~/Library/Application Support/com.qodercn.app.stable/auth.v1.dat`（mac） | 桌面登录态 | magic `v10`：Electron safeStorage。**Windows** = `Local State` 的 `os_crypt.encrypted_key` → DPAPI(CURRENT_USER) → AES-256-GCM；**macOS** = 登录钥匙串口令 → PBKDF2 → AES-128-CBC（两侧明文 JSON 同形） |
 | `%APPDATA%\QoderWork CN\auth.dat` / `auth-v2.dat` | QoderWork 登录态 | 同上 |
 | `~/.qoder{,-cn}/.auth/user` | CLI 凭据 | WASM `credential_storage_encrypt`，密钥取同目录 `machine_id` 前 16 字符 |
 
@@ -27,41 +27,63 @@ Qoder 家族（桌面客户端 / QoderWork / CLI）的多账号切换桌面 App�
 
 ## 下载与安装
 
-Windows 10+ x64，需 WebView2 运行时（Win11 自带）。两个渠道：
+两个平台：**Windows 10+ x64**（需 WebView2 运行时，Win11 自带）与 **macOS 12+**
+（Apple 硅与 Intel 分别出包）。两个渠道：
 
 - **[GitHub Releases](https://github.com/JIUSHIQINGSHAN/qoder-switch/releases/latest)**（推荐）：
-  - `qoder-switch_<版本>_x64-setup.exe`：NSIS 安装包（带 minisign 签名，应用内更新走它）；
-  - `qoder-switch_<版本>-portable-x64.zip`：免安装便携包（含桌面 exe 与 webui 服务端）；
+  - Windows：`qoder-switch_<版本>_x64-setup.exe`（NSIS 安装包，带 minisign 签名，应用内更新走它）、
+    `qoder-switch_<版本>-portable-x64.zip`（免安装便携包）；
+  - macOS：`qoder-switch_<版本>_<arch>.dmg`（`aarch64` = Apple 硅，`x86_64` = Intel）。
+    **未做 Apple 开发者签名与公证**，首次打开需右键 →「打开」，或
+    `xattr -dr com.apple.quarantine /Applications/qoder-switch.app`；
   - 校验和见包内 `SHA256SUMS.txt`；应用会校验更新包签名，公钥在 `src-tauri/tauri.conf.json`。
 - **npm（webui 形态）**：`npm install -g qoder-switch` 后按 `qoder-switch` 命令提示启动
   本地服务端，在浏览器里操作；凭据存储与桌面 App 同为 `~/.qs-switch/`，不要同时操作。
+  平台包已覆盖 `win32-x64` / `darwin-arm64` / `darwin-x64`。
 
 应用内更新：设置页「检查更新」→ 签名包下载安装 → 重启生效。更新源固定指向本仓库的
-`releases/latest/download/latest.json`（打 `v*` tag 由 CI 自动发版）。
+`releases/latest/download/latest.json`（打 `v*` tag 由 CI 自动发版）。macOS 上
+updater 拉的是 `.app.tar.gz`，替换的是 `.app` 包本体而不是单个 exe。
+
+**macOS 首次使用会弹一次「钥匙串」授权框**（"security wants to use your confidential
+information stored in 'Qoder CN App Safe Storage'"）。请选**「始终允许」**—— 桌面凭据的
+主密钥就在登录钥匙串里，不放行则解不开登录态，配额/签到/到期时间都会退化成明文回显。
+选「允许」只对当次有效，之后每次刷新状态都会再弹。
 
 ## 构建
 
-本机构建把工具链与产物钉在 E:（C: 盘余量不足，一次 release target 实测吃掉约 7GB）。
-产物目录由 `scripts/build.sh` 显式导出的 `CARGO_TARGET_DIR=E:/qs-target` 兜底
-（GitHub Actions 的 runner 没有 E: 盘，所以不在 `.cargo/config.toml` 里钉死）：
+Windows 侧把工具链与产物钉在 E:（C: 盘余量不足，一次 release target 实测吃掉约 7GB），
+macOS/Linux 侧用默认工具链位置、产物落 `./target`。这些分叉都在 `scripts/build.sh` 里
+按 `uname -s` 判定，不需要记环境变量：
 
 ```bash
-bash scripts/build.sh deps      # npm install（registry 走 npmmirror）
-bash scripts/build.sh icons     # 由 public/app-icon.png 生成 src-tauri/icons/
+bash scripts/build.sh deps      # npm install
+bash scripts/build.sh icons     # 由 public/app-icon.png 生成 src-tauri/icons/（含 .ico 与 .icns）
 bash scripts/build.sh test      # cargo test --workspace
-bash scripts/build.sh release   # npx tauri build → release exe + NSIS 安装包
+bash scripts/build.sh release   # npx tauri build，bundle 目标按宿主自动选
 bash scripts/build.sh all       # deps → icons → test → release
 ```
 
-`RUSTUP_HOME` / `CARGO_HOME` 若不在默认位置，脚本会读环境变量或按 `E:/rustup`、
-`E:/cargo` 取值。`E:/cargo/config.toml` 需配 rsproxy.cn 的 sparse index 源替换，
-否则拉索引会超时。
+`release` 的 bundle 目标集中在 `build.sh` 的 `BUNDLES` 一处：Windows `nsis`，
+macOS `app,dmg`。Tauri 会按宿主自动合并 `src-tauri/tauri.macos.conf.json`
+（`app,dmg` + `LSMinimumSystemVersion 12.0`）—— base `tauri.conf.json` 里的
+`targets: ["nsis"]` 因此不需要为了 mac 改掉，Windows 行为一字未动。
 
-产物落在 `E:/qs-target/`（由 `.cargo/config.toml` 钉在 C 盘之外，构建时自动创建，随时可删）：
+### 工具链位置与产物
 
-- `debug/qoder-switch.exe` —— 开发调试
-- `release/qoder-switch.exe` —— 免安装单文件
-- `release/bundle/nsis/qoder-switch_<版本>_x64-setup.exe` —— Windows 安装包
+Windows 上 `RUSTUP_HOME` / `CARGO_HOME` 若不在默认位置，脚本会读环境变量或按
+`E:/rustup`、`E:/cargo` 取值；`E:/cargo/config.toml` 需配 rsproxy.cn 的 sparse index
+源替换，否则拉索引会超时。GitHub Actions 的 runner 没有 E: 盘，所以这些钉法只写在
+`build.sh` 里、且只在 Windows 分支生效，不进 `.cargo/config.toml`。
+
+产物目录（`$CARGO_TARGET_DIR`，Windows 上是 `E:/qs-target`，macOS/Linux 上是 `./target`）：
+
+| | Windows | macOS |
+| --- | --- | --- |
+| 开发调试 | `debug/qoder-switch.exe` | `debug/qoder-switch` |
+| 免安装单文件 | `release/qoder-switch.exe` | `release/qoder-switch` |
+| 安装包 | `release/bundle/nsis/qoder-switch_<版本>_x64-setup.exe` | `release/bundle/macos/qoder-switch.app`、`release/bundle/dmg/qoder-switch_<版本>_<arch>.dmg` |
+| updater 资产 | `..._x64-setup.exe` + `.sig` | `bundle/macos/qoder-switch_<版本>_<arch>.app.tar.gz` + `.sig` |
 
 ## 命令行工具（examples）
 
@@ -71,7 +93,8 @@ cargo run --example qs-snapshot -- take      # 凭据文件快照（只读）
 cargo run --example qs-snapshot -- diff      # 比对最近两张快照
 cargo run --example qs-account  -- capture <名字> [cn|global] [desktop|cli|work]
 cargo run --example qs-account  -- list
-cargo test --workspace                       # 117 项测试全绿（core 83 / server 20 / 桌面宿主 14）
+cargo test --workspace                       # 128 项测试全绿 + 2 项真机证据测试默认忽略
+                                             #（core 91 / server 23 / 桌面宿主 14；macOS 15.6.1 arm64 实测）
 ```
 
 ## 无头自检
@@ -81,16 +104,24 @@ cargo test --workspace                       # 117 项测试全绿（core 83 / s
 `~/.qs-switch/selfcheck.log`。
 
 ```bash
+# Windows
 qoder-switch.exe --self-check && echo OK
+# macOS（.app 内的二进制，路径按安装位置调整）
+./qoder-switch.app/Contents/MacOS/qoder-switch --self-check && echo OK
 ```
 
 它覆盖的是 core 单元测试覆盖不到的那半边：command 接线、serde 形状、真实路径解析、
 账号库读写。输出逐行 `OK`/`FAIL`，末尾 `SELF-CHECK OK` 且退出码 0 才算通过。
 
+macOS 侧 2026-09-23 实跑结果（装了 `Qoder CN.app` 0.3.4 并已登录的机器）：
+`probe_all` 探到 CN 桌面 11 个进程、凭据 5/6、判定为「托管」；`auth_codec` 解出真实
+账号名与到期时间；`rotation_suggestion` / `unfinished` / `snapshot_now` 全 OK。
+国际版那档输出 `不可解(读 auth.v1.dat 失败: No such file)` —— 因为本机没装国际版，
+这是正确结论而不是失败。
+
 ## 凭据编解码（`auth_codec`）
 
-本机实测确认的方案，代码在 `crates/qs-switch-core/src/modules/auth_codec.rs`，
-探针脚本在 `scripts/probe-auth-codec.py`（只读，输出全脱敏）：
+**Windows**（本机实测确认，代码在 `crates/qs-switch-core/src/modules/auth_codec.rs`）：
 
 ```
 %APPDATA%\<app>\Local State
@@ -99,14 +130,35 @@ qoder-switch.exe --self-check && echo OK
 
 %APPDATA%\<app>\auth.v1.dat
   = b"v10" + 12 字节 IV + AES-256-GCM 密文（末尾 16 字节 tag）
-  明文 JSON: { schemaVersion:1, token, refreshToken, expiresAt,
-               refreshTokenExpiresAt, user:{id,name,email,phone,avatarUrl} }
 ```
 
-`token` 只有 27 字符，是不透明串而不是 JWT —— 所以到期时间只能靠 `expiresAt` 字段，
-不能从 token 里解。DPAPI 通过 PowerShell 子进程调用（要先
-`Add-Type -AssemblyName System.Security`，否则 `ProtectedData` 类型找不到），
-这样不必为一次系统调用拖进整个 `windows` crate；主密钥只在内存里以 base64 中转，不落盘。
+**macOS**（2026-09-23 在 macOS 15.6.1 / arm64 实测命中，同一份 `auth.v1.dat` 解出 384 字节明文）：
+
+```
+登录钥匙串  svce="Qoder CN App Safe Storage"  acct="Qoder CN App Key"
+  → 口令（实测 24 字符）
+  → PBKDF2-HMAC-SHA1(口令, salt="saltysalt", iter=1003, len=16) = 16 字节 AES-128 密钥
+
+~/Library/Application Support/com.qodercn.app.stable/auth.v1.dat
+  = b"v10" + AES-128-CBC 密文，IV 固定为 16 字节 0x20 且**不写进文件**，PKCS7 填充
+```
+
+这正是 Chromium/Electron 在 macOS 上 safeStorage 的标准方案。两点后果要讲清：
+
+- **macOS 上 `Local State` 不承载主密钥**（实测那 57 字节里只有 `uninstall_metrics`）。
+  主密钥是**机器级、按版本一份**，所有账号包共用 —— 所以 mac 上切号只需要换
+  `auth.v1.dat`，也意味着跨机器导入的包必然解不开（那边钥匙串里没有同一把）。
+- **CBC 没有完整性保护**，不像 Windows 的 GCM 那样"改一个字节就报错"。mac 侧只能靠
+  解出来是否为合法 JSON 兜底。
+
+两侧明文 JSON 完全同形（`schemaVersion` / `token` / `refreshToken` / `expiresAt` /
+`refreshTokenExpiresAt` / `user{id,name,email,phone,avatarUrl}`），所以 `parse_auth` 不分平台。
+`token` 只有 27 字符，是不透明串而不是 JWT —— 到期时间只能靠 `expiresAt` 字段。
+
+系统调用一律走子进程（Windows 用 PowerShell 做 DPAPI，macOS 用 `/usr/bin/security` 读钥匙串），
+这样不必为一次系统调用拖进整个 `windows` 或 `security-framework` 依赖树；密钥只在内存里
+中转，不落盘、不打印。macOS 上派生结果按版本在进程内缓存 10 分钟 —— 不缓存的话，
+用户只点「允许」不点「始终允许」时，每次刷新状态都会再弹一次钥匙串框。
 
 ## 安全模型
 
@@ -116,8 +168,12 @@ qoder-switch.exe --self-check && echo OK
    依据一为 Qoder 注入子进程的环境标记（`QODER_PRODUCT_ID`、`QODERCN_CLI`、
    `QODERCN_SESSION_TYPE=app`），依据二为父进程链。链判不出来时按「不许」处理 ——
    实测 MSYS2 的 fork 模拟会让父链在 `timeout.exe` 处断链，"没看到目标"不等于"没被托管"。
-   父链探测走 PowerShell `-EncodedCommand`：`-Command` 传多行脚本时内嵌引号会被
-   CreateProcess 的参数拼接破坏，静默返回空值，安全门会形同不存在。
+   Windows 上父链探测走 PowerShell `-EncodedCommand`：`-Command` 传多行脚本时内嵌引号会被
+   CreateProcess 的参数拼接破坏，静默返回空值，安全门会形同不存在。macOS 上改用一次
+   `ps -Ao pid=,ppid=,comm=` 快照在内存里沿 ppid 上溯（只起一个子进程），**只有真的走到根**
+   （ppid=0）才算 `complete`，任一 hop 查不到即 `complete=false` → 判 `Unknown` → 照样拒杀。
+   终止手段随平台：Windows `taskkill /T` 再 `/F /T`，macOS `/bin/kill -TERM` 再 `-9`，
+   两边都在强杀后复查到进程清零才允许写入。
 2. **写前先落盘可恢复依据。** 切换 journal 与备份清单 `_restore.json` 都先于任何写入落盘；
    进程中途被杀，下次启动 `unfinished()` + `recover()` 能凭盘上依据退回。
 3. **写后读回比 sha256，任一不符整组回滚。** 这一步是唯一能发现"写完没生效"的手段。
@@ -184,7 +240,16 @@ qoder-switch.exe --self-check && echo OK
   `tray.rs` 的 CN 过滤、`ledger`/`quota` 批量与统计里的 CN 守卫，并重新在账号页加回档位 Tab。
 - 会话历史不按账号隔离：桌面 `main.sqlite` 的 `chat_sessions` 无 `account_id` 列，
   `~/.qoder*/projects/` 按工作目录命名。换号后两个账号会互见历史，界面上会提示。
-- DPAPI 按 Windows 用户生效：账号包只在同一 Windows 用户内可复用，跨机器或跨用户无效。
+- **账号包不能跨机器/跨用户复用**，但两个平台的原因不同：Windows 上是 DPAPI 按
+  Windows 用户生效，只能在同一 Windows 用户内复用；macOS 上主密钥在登录钥匙串里，
+  只能在**同一台 mac 的同一个钥匙串**内复用。两种情况导入后都是**静默变成未登录**
+  （界面靠 `needsRelogin` 讲明），不是解一半生效。
+- **macOS 未做开发者签名与公证**：产物是未签名 / ad-hoc 签名的 `.app`/`.dmg`，首次
+  打开要被 Gatekeeper 拦一次（右键「打开」或 `xattr -dr com.apple.quarantine`）。
+  应用内更新本身仍走 minisign 签名校验，那一层不因缺 Apple 证书而放松。
+- **macOS 首次读取凭据会弹钥匙串授权**，必须选「始终允许」，否则每次刷新都会再弹。
+  设置页的「检测权限」在 mac 上除了目录写探针，还会实测钥匙串可读性 ——
+  只报"目录可写"在那边是句谎话。
 - 未实现（相对参考实现仍缺）：PAT 旁路、会话跨账号迁移、webui 双形态里的
   **npm 发布**（包结构就绪，待 npm 账号后发布）。
 - **主动刷新主 token 实证不适用**（不是"尚未取证"）：主 accessToken 没有任何刷新端点，

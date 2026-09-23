@@ -110,7 +110,7 @@ pub fn preview(
         .collect();
 
     // 探测失败必须与"目标没在跑"区分：把失败折叠成空列表会让后续的关进程门
-    // fail-open（tasklist 被策略挡掉时照常备份写入，与活着的 Qoder 赛跑）。
+    // fail-open（探测工具被策略挡掉时照常备份写入，与活着的 Qoder 赛跑）。
     let (running, probe_error) = match process::running_pids(req.target.images(req.variant)) {
         Ok(pids) => (pids, None),
         Err(e) => (Vec::new(), Some(e.clone())),
@@ -119,7 +119,10 @@ pub fn preview(
 
     let mut warnings = Vec::new();
     if let Some(err) = &probe_error {
-        warnings.push(format!("进程探测失败（{err}）：正式执行会被拒绝，请检查 tasklist 可用性"));
+        warnings.push(format!(
+            "进程探测失败（{err}）：正式执行会被拒绝，请检查 {} 是否可用",
+            process::PROBE_TOOL
+        ));
     }
     if !uncovered.is_empty() {
         warnings.push(format!(

@@ -11,7 +11,9 @@
     "webui_dist"
   ],
   "optionalDependencies": {
-    "qoder-switch-win32-x64": "0.1.6"
+    "qoder-switch-win32-x64": "0.1.6",
+    "qoder-switch-darwin-arm64": "0.1.6",
+    "qoder-switch-darwin-x64": "0.1.6"
   },
   "scripts": {
     "postinstall": "node scripts/install.js"

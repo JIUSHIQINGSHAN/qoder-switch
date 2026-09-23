@@ -32,7 +32,7 @@
 | 自动更新 | github config+check+install+relaunch | **A（M10/v0.1.4 落地）**：tauri-plugin-updater + minisign 签名验证 + Release 自动化 | api.ts:600-642；update.rs |
 | 开机自启 | set/get_launch_at_login | **A（2026-09-21 接管）**：tauri-plugin-autostart，自启带 --hidden 静默驻留 | api.ts（门控已撤）；commands.rs |
 | 通知存档落盘 | record/list/clear | **A（2026-09-21 落地）**：~/.qs-switch/notifications.json，最近 100 条 | notifications.rs；compat.rs；router.rs |
-| macOS 权限自检/Finder | check_auth_permission 等 | B（Windows 无此限制） | api.ts:215-217 |
+| macOS 权限自检/Finder | check_auth_permission / open_permission_settings / reveal_app_in_finder | **A（2026-09-23 macOS 侧落地）**：三个命令两个宿主都已实现。`check_auth_permission` 在 mac 上除目录写探针外**额外实测钥匙串可读性**（主密钥在登录钥匙串，只报"目录可写"在 mac 上是谎话）；`open_permission_settings` 走 `x-apple.systempreferences`，非 mac 平台明确报"不适用"而不是静默无反应；`reveal_app_in_finder` 同时支持 mac（`open -R`）与 Windows（`explorer /select,`）。此前它们挂在 `QODER_UNAVAILABLE` 里，导致 mac 上按钮可见但必然抛错。 | view.rs `auth_permission_probe`；process.rs `open_system_settings_pane`/`reveal_in_file_manager`；compat.rs；switch-account-dialog.tsx 按 `isMacHost()` 分叉文案 |
 | Buddy 旅行（整条玩法） | 成长中心+旅行 chip+轮询 | C 整条删除 | README:153；本项目零残留 |
 | VS Code 扩展切换（含会话复制） | 403 行对话框+类型+mark | C 整条删除（Qoder 无 VS Code 扩展） | 上游独有文件，本项目不存在 |
 

@@ -435,6 +435,10 @@ pub fn notifications(items: Vec<crate::modules::notifications::NotificationEntry
 /// 上游那套是 macOS 的「完全磁盘访问」授权，Windows 没有这个机制 —— 但「能不能
 /// 真的写进 Qoder 的认证目录」在 Windows 上同样是真实会失败的检查（目录只读、被
 /// 占用、属于别的用户）。所以这里给 Windows 一个能跑的写探针，而不是直接报"不适用"。
+///
+/// macOS 上写探针**不够**：那边真正会卡住的是读登录钥匙串（桌面凭据的主密钥由
+/// Qoder 创建，本工具去读需要用户放行）。所以 mac 上多跑一道钥匙串探针，
+/// 否则"权限正常"会是句谎话 —— 目录可写但一个账号包都解不开。
 pub fn auth_permission_probe(roots: &PathRoots, v: QoderVariant) -> Value {
     let auth = credentials(roots, v, QoderTarget::Desktop)
         .into_iter()
@@ -448,9 +452,27 @@ pub fn auth_permission_probe(roots: &PathRoots, v: QoderVariant) -> Value {
         Ok(()) => {
             // 探针写完即删；删除失败不影响"可写"这个结论，但要记下来。
             let rm = std::fs::remove_file(&probe);
+            let mut message = if rm.is_ok() {
+                "认证目录可写，权限正常".to_string()
+            } else {
+                "认证目录可写（探针清理失败，不影响切换）".to_string()
+            };
+            #[cfg(target_os = "macos")]
+            {
+                match crate::modules::auth_codec::mac_master_key_from_keychain(v) {
+                    Ok(_) => message.push_str("；登录钥匙串可读，账号包可解密"),
+                    Err(e) => return json!({
+                        "ok": false,
+                        "error": format!("认证目录可写，但读不到登录钥匙串里的 safeStorage 口令: {e}"),
+                        "dir": dir.display().to_string(),
+                        "hint": "macOS 上解不开登录态就没法查配额与签到。请在弹出的钥匙串授权里点「始终允许」；\
+                                若已拒绝过，到「钥匙串访问」里删掉本 App 对该条目的访问记录后重试。",
+                    }),
+                }
+            }
             json!({
                 "ok": true,
-                "message": if rm.is_ok() { "认证目录可写，权限正常" } else { "认证目录可写（探针清理失败，不影响切换）" },
+                "message": message,
                 "dir": dir.display().to_string(),
                 "hint": "",
             })
@@ -459,7 +481,12 @@ pub fn auth_permission_probe(roots: &PathRoots, v: QoderVariant) -> Value {
             "ok": false,
             "error": format!("无法写入认证目录: {e}"),
             "dir": dir.display().to_string(),
-            "hint": "确认本 App 对该目录有写权限；若被安全软件拦截请放行",
+            "hint": if cfg!(target_os = "macos") {
+                "确认本 App 对该目录有写权限；macOS 若在「隐私与安全性 → 文件和文件夹」里拒过，\
+                 需要在系统设置里重新放行"
+            } else {
+                "确认本 App 对该目录有写权限；若被安全软件拦截请放行"
+            },
         }),
     }
 }
@@ -482,7 +509,11 @@ pub fn capabilities() -> Value {
             "自动签到本机调度与签到日志（checkin-config / checkin-logs）",
             "积分统计本机快照聚合（credit-snapshots，无官方用量端点）",
             "OAuth 设备码登录（基于 10router 取证端点）",
-            "认证目录写权限自检（Windows 写探针）"
+            if cfg!(target_os = "macos") {
+                "权限自检（认证目录写探针 + 登录钥匙串可读性）"
+            } else {
+                "认证目录写权限自检（Windows 写探针）"
+            }
         ],
         "unavailable": [
             { "name": "会话跨账号复制", "reason": "Qoder 会话不按账号归属，复制会串数据" },

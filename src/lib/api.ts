@@ -134,7 +134,10 @@ const ROUTES: Record<string, Route> = {
   checkin_all: { method: "POST", path: "/api/checkin/all" },
   get_auto_checkin_config: { method: "GET", path: "/api/checkin/config" },
   save_auto_checkin_config: { method: "POST", path: "/api/checkin/config" },
-  get_checkin_logs: { method: "GET", path: "/api/checkin/logs" },  list_notifications: { method: "GET", path: "/api/notifications" },
+  get_checkin_logs: { method: "GET", path: "/api/checkin/logs" },
+  check_auth_permission: { method: "POST", path: "/api/check-auth-permission" },
+  open_permission_settings: { method: "POST", path: "/api/open-permission-settings" },
+  reveal_app_in_finder: { method: "POST", path: "/api/reveal-app-in-finder" },  list_notifications: { method: "GET", path: "/api/notifications" },
   record_notification: { method: "POST", path: "/api/notifications/record" },
   clear_notifications: { method: "POST", path: "/api/notifications/clear" },
   get_auto_rotate_config: { method: "GET", path: "/api/rotate/config" },
@@ -222,8 +225,9 @@ const QODER_UNAVAILABLE: Record<string, string> = {
   get_codebuddy_ide_status: "国际版桌面端尚无独立状态命令",
   switch_codebuddy_ide_account: "国际版桌面端尚无独立状态命令",
   detect_codebuddy_ide_account: "国际版桌面端尚无独立状态命令",
-  open_permission_settings: "macOS 专属操作（Windows 无完全磁盘访问授权）",
-  reveal_app_in_finder: "macOS 专属操作",
+  // open_permission_settings / reveal_app_in_finder 以前挂在这里（当时只有 Windows）。
+  // 现在两个宿主命令都已实现并按平台分流，挂在这里会让 macOS 上那几个已经放出来
+  // 的按钮必然抛错，所以移除；平台差异由 isMacHost() 那侧的显隐负责。
 };
 
 /**

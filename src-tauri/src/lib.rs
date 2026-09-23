@@ -33,7 +33,7 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     }
 
-    builder
+    let app = builder
         .setup(|app| {
             tray::install(&app.handle().clone())?;
             // 主窗口由配置创建为不可见；这里按是否静默启动决定要不要立刻显示。
@@ -103,8 +103,40 @@ pub fn run() {
             compat::get_auto_checkin_config,
             compat::save_auto_checkin_config,
             compat::get_checkin_logs,
-            compat::check_auth_permission
+            compat::check_auth_permission,
+            compat::open_permission_settings,
+            compat::reveal_app_in_finder
         ])
-        .run(tauri::generate_context!())
-        .expect("Qoder Switch 启动失败");
+        // macOS 需要 RunEvent::Reopen：关窗只是隐藏，此时 Dock 图标还在，
+        // 用户点它是"把窗口叫回来"的最自然路径。单实例插件拦不住这个 ——
+        // 它只在**第二个进程**启动时回调，点 Dock 不会起第二个进程。
+        .build(tauri::generate_context!())
+        .expect("Qoder Switch 构建失败");
+
+    app.run(|app_handle, event| {
+        #[cfg(target_os = "macos")]
+        match event {
+            // macOS：关窗只是隐藏，此时 Dock 图标还在，点它是"把窗口叫回来"的最自然
+            // 路径。单实例插件拦不住这个 —— 它只在**第二个进程**启动时回调，
+            // 点 Dock 不会起第二个进程。
+            tauri::RunEvent::Reopen { has_visible_windows, .. } => {
+                if !has_visible_windows {
+                    tray::show_main(app_handle);
+                }
+            }
+            // macOS 首次启动的窗口补显。setup() 里那次 show() 实测**不生效**：
+            // 那时 LaunchServices 还没把本 App 激活，order-front 被系统丢掉，
+            // 结果进程活着、托盘图标在，但窗口看不见（只有点一下 Dock 才出来）。
+            // Ready 是"应用就绪"之后第一次进事件循环，此时 show 才留得住。
+            // 这里刻意不改动 setup() 里那次调用：Windows 侧它一直是有效的。
+            tauri::RunEvent::Ready => {
+                if !tray::is_silent_startup(std::env::args()) {
+                    tray::show_main(app_handle);
+                }
+            }
+            _ => {}
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = (app_handle, event);
+    });
 }

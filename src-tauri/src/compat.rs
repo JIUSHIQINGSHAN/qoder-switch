@@ -453,10 +453,26 @@ pub async fn get_checkin_logs() -> Result<Value, String> {
     off_main(|| Ok(qs_switch_core::modules::ledger::read_checkin_logs(&switch_root()))).await
 }
 
-/// 权限自检：Windows 认证目录写探针。
+/// 权限自检：认证目录写探针（Windows）+ 钥匙串可读性（macOS）。
 #[tauri::command]
 pub fn check_auth_permission(variant: Option<String>) -> Value {
     view::auth_permission_probe(&PathRoots::real(), variant_of(variant.as_deref()))
+}
+
+/// 打开系统授权面板。macOS 上是「完全磁盘访问」；其他平台没有这一步，
+/// 明确报"不适用"而不是静默无反应。
+#[tauri::command]
+pub fn open_permission_settings(pane: Option<String>) -> Result<Value, String> {
+    qs_switch_core::modules::process::open_system_settings_pane(pane.as_deref().unwrap_or(""))?;
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+/// 在系统文件管理器里定位本 App（macOS 访达 / Windows 资源管理器）。
+#[tauri::command]
+pub fn reveal_app_in_finder() -> Result<Value, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("取不到自身路径: {e}"))?;
+    qs_switch_core::modules::process::reveal_in_file_manager(&exe)?;
+    Ok(serde_json::json!({ "ok": true }))
 }
 
 #[tauri::command]

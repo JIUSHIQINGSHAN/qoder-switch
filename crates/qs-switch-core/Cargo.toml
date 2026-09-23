@@ -21,4 +21,13 @@ aes-gcm = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "socks"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
+# macOS 的 safeStorage 是 AES-128-CBC + PBKDF2，Windows 侧是 AES-256-GCM，
+# 后者已由上面的 aes-gcm 覆盖。这几个纯 Rust 依赖按目标平台门控，
+# 不给 Windows 构建增加任何体积（与"不为一次 DPAPI 拖进 windows crate"同一取舍）。
+[target.'cfg(target_os = "macos")'.dependencies]
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc", "block-padding", "std"] }
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac", "sha1"] }
+sha1 = "0.10"
+
 [dev-dependencies]
