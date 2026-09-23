@@ -339,8 +339,10 @@ pub fn execute(
                 j.note = Some(format!("拒绝终止目标：{why}"));
                 write_journal(store, &j)?;
                 return Err(format!(
-                    "拒绝执行：{why}。终止目标进程会连同本会话一起结束；\
-                     请改从独立启动的 qoder-switch 发起，或确认后果后使用强制档。"
+                    "拒绝执行：{why}。终止目标进程可能会连同本会话一起结束。可选：\
+                     ① 先手动关闭目标客户端，再回到这里切换（目标不在运行时无需终止进程，不会触发本拦截）；\
+                     ② 从开始菜单/桌面图标独立启动 qoder-switch 后再切；\
+                     ③ 已知情后果的话，使用强制档。"
                 ));
             }
             pv.hosted.clone()
@@ -650,6 +652,14 @@ mod tests {
         assert!(live(&s.roots) == b"authA", "拒绝后不该动过现场");
         let left = unfinished(&s.store).unwrap();
         assert!(left.is_empty(), "Failed 状态不该被当成待恢复: {left:?}");
+        // 拒绝文案必须给出可操作的出路，并保留前端依赖的两个关键词：
+        // "强制档" 是切换对话框显示「强制切换」按钮的触发词，改丢它按钮就没了；
+        // "关闭目标客户端" 是不走强制档的最简出路（目标不在跑时托管判定不触发）。
+        assert!(e.contains("强制档"), "文案必须保留'强制档'（前端按钮触发词）: {e}");
+        assert!(
+            e.contains("关闭目标客户端"),
+            "文案应提示'先关闭目标客户端再切'这条最简出路: {e}"
+        );
         std::fs::remove_dir_all(s.tmp).ok();
     }
 
