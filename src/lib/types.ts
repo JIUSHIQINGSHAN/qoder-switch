@@ -278,6 +278,29 @@ export interface SwitchResult {
   /** 本次的会话同步报告（未勾选同步时不返回）；含跳过与失败原因，不只是成功数。 */
   sessionSync?: SessionSyncReport;
   sessionRecovery?: SessionRecoveryReport;
+  /** 切换结果的可读说明与是否重启（契约之外的附加信息，UI 可无视）。 */
+  message?: string;
+  restarted?: boolean;
+}
+
+/** 切换阶段；与 Rust `switch::Phase` 对应。 */
+export type SwitchPhase =
+  | "Prepared"
+  | "TargetClosed"
+  | "Completed"
+  | "Failed"
+  | "RolledBack";
+
+/** 一条"没收尾的切换"记录（进程被杀/断电留下）。可据此把现场退回。 */
+export interface SwitchJournal {
+  id: string;
+  account_id: string;
+  variant: string;
+  target: string;
+  started_at: string;
+  phase: SwitchPhase;
+  backup_dir: string;
+  note?: string | null;
 }
 
 export interface CheckinConfig {

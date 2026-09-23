@@ -105,11 +105,18 @@ pub fn dispatch_in(roots: &PathRoots, store: &Path, cmd: &str, query: &str, body
     };
 
     match cmd {
-        "status" => Response::ok(json!({
-            "store": store.display().to_string(),
-            "accounts": bundle::list_all(store),
-            "unfinished": switch::unfinished(store).unwrap_or_default(),
-        })),
+        "status" => {
+            // 读取失败的 journal 不能折叠成"没有未完成切换"：那会把半换号现场
+            // 静默藏起来。把告警一并回传，让调用方看得见。
+            let (unfinished, warnings) = switch::unfinished_with_warnings(store)
+                .unwrap_or_else(|e| (Vec::new(), vec![format!("读未完成记录失败: {e}")]));
+            Response::ok(json!({
+                "store": store.display().to_string(),
+                "accounts": bundle::list_all(store),
+                "unfinished": unfinished,
+                "unfinishedWarnings": warnings,
+            }))
+        }
         "rotation" => match parse_variant(input.get("variant")) {
             Err(e) => Response::err(e),
             Ok(variant) => {
@@ -322,9 +329,41 @@ mod tests {
     #[test]
     fn import_rejects_malformed_indexes_instead_of_importing_all() {
         let dir = TempDir::new("import_idx");
-        let r = dispatch_in(&PathRoots::real(), &dir.0, "import", "", r#"{"fileText":"[]","indexes":[null]}"#);
+        let r = dispatch_in(
+            &PathRoots::real(),
+            &dir.0,
+            "import",
+            "",
+            r#"{"fileText":"[]","indexes":[null],"confirm":"import"}"#,
+        );
         assert_eq!(r.status, 400);
         assert!(r.body.contains("indexes"), "{}", r.body);
+    }
+
+    /// 破坏性端点的统一知情门：不带 confirm 必须拒，带了才放行。
+    /// `delete` 历史上漏了这道门（只有 id 校验），这里钉住集中式校验生效。
+    #[test]
+    fn destructive_routes_require_confirmation() {
+        let dir = TempDir::new("confirm_gate");
+
+        // 未带 confirm → 拒（403/400 都可，关键是"非 200 且明确说明"）。
+        let r = dispatch_in(&PathRoots::real(), &dir.0, "delete", "", r#"{"accountId":"x"}"#);
+        assert_ne!(r.status, 200, "不带 confirm 的 delete 不该放行: {}", r.body);
+        assert!(r.body.contains("confirm"), "应明确提示知情标记: {}", r.body);
+
+        // 带 query 标记 → 放行到业务层（这里账号不存在，报的是业务错，不是门拦）。
+        let r = dispatch_in(&PathRoots::real(), &dir.0, "delete", "confirm=delete", r#"{"accountId":"x"}"#);
+        assert!(!r.body.contains("破坏性操作"), "带了标记不该再被门拦: {}", r.body);
+
+        // body 标记同样有效（前端 POST 通道）。
+        let r = dispatch_in(
+            &PathRoots::real(),
+            &dir.0,
+            "notifications/clear",
+            "",
+            r#"{"confirm":"notifications/clear"}"#,
+        );
+        assert_eq!(r.status, 200, "body 标记应放行: {}", r.body);
     }
 
     /// 通知端点的返回必须对齐前端契约（{recorded}/{cleared}），不能是裸 null：
@@ -342,7 +381,13 @@ mod tests {
         assert_eq!(r.status, 200, "{}", r.body);
         let v: Value = serde_json::from_str(&r.body).unwrap();
         assert_eq!(v["recorded"], true, "{v}");
-        let r = dispatch_in(&PathRoots::real(), &dir.0, "notifications/clear", "", "");
+        let r = dispatch_in(
+            &PathRoots::real(),
+            &dir.0,
+            "notifications/clear",
+            "",
+            r#"{"confirm":"notifications/clear"}"#,
+        );
         assert_eq!(r.status, 200, "{}", r.body);
         let v: Value = serde_json::from_str(&r.body).unwrap();
         assert_eq!(v["cleared"], true, "{v}");
@@ -423,14 +468,26 @@ mod tests {
     }
 
     /// 切换对话框会**持续轮询**进度：这个路径拼错一次就是控制台里刷不完的 404。
+    /// 同时钉住它读的是共享状态、不是硬编码的 `running:false`。
     #[test]
     fn switch_progress_path_matches_the_frontend_route() {
         let dir = TempDir::new("switch_prog");
         let r = dispatch_in(&PathRoots::real(), &dir.0, "switch/progress", "", "");
         assert_eq!(r.status, 200, "{}", r.body);
         let v: Value = serde_json::from_str(&r.body).unwrap();
+        // 空闲时 running=false 是对的；关键是它来自共享状态（见下一条断言）。
         assert_eq!(v["running"], false);
         assert!(v.get("progress").is_some());
+
+        // 直接摆一个"正在切换"的共享状态，端点必须如实反映 —— 早先这里写死 false，
+        // webui 切号全程进度条不动，用户以为卡死。
+        compat::set_switch_progress(true, Some("关闭 Qoder（2 个进程）".into()));
+        let r = dispatch_in(&PathRoots::real(), &dir.0, "switch/progress", "", "");
+        let v: Value = serde_json::from_str(&r.body).unwrap();
+        assert_eq!(v["running"], true, "进度端点必须反映真实运行态: {v}");
+        assert_eq!(v["progress"], "关闭 Qoder（2 个进程）");
+        // 收尾，避免影响同进程内其它测试。
+        compat::set_switch_progress(false, None);
     }
 
     #[test]
@@ -471,6 +528,38 @@ mod tests {
         assert_eq!(v["account"]["id"], "acc-proxy-test");
         assert_eq!(v["account"]["proxy"], "socks5://127.0.0.1:1080");
     }
+
+    /// 国际版账号的代理必须落到**国际版**那份包上。历史上桌面宿主写死 Cn，
+    /// 会把 global 账号的代理写进 cn 包（或报"账号不存在"），这里钉住档位透传。
+    #[test]
+    fn set_proxy_respects_global_variant() {
+        let dir = TempDir::new("set_proxy_global");
+        // 只造国际版包；若后端写死 Cn，就会 load 不到而报错。
+        let acc_dir = qs_switch_core::modules::bundle::bundle_dir_in(
+            &dir.0,
+            "acc-global",
+            QoderVariant::Global,
+            QoderTarget::Desktop,
+        );
+        std::fs::create_dir_all(&acc_dir).unwrap();
+        std::fs::write(
+            acc_dir.join("bundle.json"),
+            r#"{"account_id":"acc-global","variant":"global","target":"desktop","created_at":"2026-09-23T00:00:00Z","members":[],"identity":{}}"#,
+        )
+        .unwrap();
+
+        let r = dispatch_in(
+            &PathRoots::real(),
+            &dir.0,
+            "set-proxy",
+            "",
+            r#"{"accountId":"acc-global","proxy":"http://127.0.0.1:7890","variant":"ai"}"#,
+        );
+        assert_eq!(r.status, 200, "国际版账号代理应写到国际版包: {}", r.body);
+        let v: Value = serde_json::from_str(&r.body).unwrap();
+        assert_eq!(v["account"]["variant"], "ai");
+        assert_eq!(v["account"]["proxy"], "http://127.0.0.1:7890");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -488,6 +577,29 @@ mod compat {
     use qs_switch_core::Result;
 
     use super::Response;
+
+    /// 进程内共享的切换进度。服务器每连接一线程，桌面端那份 `ProgressCell` 是
+    /// Tauri 托管的，这里得有一份自己的等价物。
+    #[derive(Default, Clone)]
+    pub(super) struct ProgressState {
+        running: bool,
+        progress: Option<String>,
+    }
+
+    /// 摆一个"正在切换"的状态（供测试驱动）。
+    #[cfg(test)]
+    pub(super) fn set_switch_progress(running: bool, progress: Option<String>) {
+        if let Ok(mut g) = switch_progress_state().lock() {
+            g.running = running;
+            g.progress = progress;
+        }
+    }
+
+    pub(super) fn switch_progress_state() -> &'static std::sync::Mutex<ProgressState> {
+        static CELL: std::sync::OnceLock<std::sync::Mutex<ProgressState>> =
+            std::sync::OnceLock::new();
+        CELL.get_or_init(|| std::sync::Mutex::new(ProgressState::default()))
+    }
 
     fn target_of(v: Option<&Value>) -> QoderTarget {
         match v.and_then(|x| x.as_str()).unwrap_or("desktop") {
@@ -555,6 +667,30 @@ mod compat {
         dispatch_in(&roots, &store, cmd, query, body)
     }
 
+    /// **破坏性端点**：会删凭据、覆盖登录态或改动现场的操作。统一在 `dispatch_in` 入口
+    /// 校验知情标记，不再逐端点手写（`switch` 曾单独写过，`delete` 就漏了）。
+    ///
+    /// 标记通道有两条：query 的 `?confirm=<cmd>`（脚本/curl 用）与 body 的
+    /// `{"confirm":"<cmd>"}`（前端 `httpCall` 对 POST 不拼 query，body 是唯一通道）。
+    /// 跨站表单发不出 application/json body，防护理由与头门一致。
+    const DESTRUCTIVE: &[&str] = &[
+        "delete",
+        "switch",
+        "import",
+        "import-local",
+        "rotate/run",
+        "notifications/clear",
+        "checkin",
+        "checkin/all",
+    ];
+
+    fn is_confirmed(cmd: &str, query: &str, input: &Value) -> bool {
+        let by_body = input.get("confirm").and_then(|x| x.as_str()) == Some(cmd);
+        let needle = format!("confirm={cmd}");
+        let by_query = query.split('&').any(|p| p == needle);
+        by_body || by_query
+    }
+
     pub fn dispatch_in(
         roots: &PathRoots,
         store: &Path,
@@ -575,6 +711,13 @@ mod compat {
                 }
             }
         };
+        // 破坏性端点的统一知情门。放在这里而非各分支里：漏掉一个分支就是一次
+        // 无提示的破坏性操作，集中一处才守得住。
+        if DESTRUCTIVE.contains(&cmd) && !is_confirmed(cmd, query, &input) {
+            return Some(Response::err(format!(
+                "{cmd} 是破坏性操作，必须带 ?confirm={cmd}（query）或 {{\"confirm\":\"{cmd}\"}}（body）表示知情"
+            )));
+        }
         Some(match handle(roots, store, cmd, query, &input) {
             Ok(v) => Response::bare(v),
             Err(e) => Response::err(e),
@@ -699,12 +842,34 @@ mod compat {
                 } else {
                     switch::Actor::Real
                 };
-                let j = switch::execute(roots, store, &req, actor, &mut |_| {})?;
+                let j = switch::execute(roots, store, &req, actor, &mut |m| {
+                    // 把进度写进共享状态，供另一条连接上的轮询读到。
+                    if let Ok(mut g) = switch_progress_state().lock() {
+                        g.running = true;
+                        g.progress = Some(m.to_string());
+                    }
+                })
+                .inspect_err(|_| {
+                    // 失败也要收尾，否则前端会永远停在"切换中"。
+                    if let Ok(mut g) = switch_progress_state().lock() {
+                        g.running = false;
+                        g.progress = None;
+                    }
+                })?;
+                if let Ok(mut g) = switch_progress_state().lock() {
+                    g.running = false;
+                    g.progress = None;
+                }
                 Ok(view::switch_result(&j, req.restart, false))
             }
-            // webui 的切换是同步的，走到这里一定是空闲；契约要求这个端点存在，
-            // 前端的切换对话框在轮询它（路径是 /api/switch/progress，不是连字符）。
-            "switch/progress" => Ok(json!({ "running": false, "progress": null })),
+    // webui 的切换是同步执行的（在连接线程里跑完才回响应），但前端对话框在另一个
+    // 连接上每 600ms 轮询进度。所以进度必须落在一份**跨连接共享**的状态里，
+    // 由 execute 的 progress 回调写入 —— 早先这里硬编码 `running:false`，
+    // 用户面对的是一个看起来卡死的对话框（关进程最长 20s）。
+    "switch/progress" => {
+        let st = switch_progress_state().lock().unwrap_or_else(|p| p.into_inner());
+        Ok(json!({ "running": st.running, "progress": st.progress }))
+    }
             // 前端读取时是空 body，保存时 POST 的是 `{"config":{…}}` —— 按有无 config 键区分，
             // 不能靠"body 空不空"猜方法：dispatch 拿不到 HTTP method。
             "rotate/config" => match input.get("config") {

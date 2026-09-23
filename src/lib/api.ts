@@ -30,6 +30,7 @@ import type {
   SessionCopyReport,
   SessionLinksPreview,
   SessionSyncSelection,
+  SwitchJournal,
   SwitchResult,
   UpdateInfo,
   WbVariant,
@@ -292,6 +293,25 @@ const QODER_EMPTY: Record<string, () => unknown> = {
   }),
 };
 
+/**
+ * 破坏性命令：会删凭据、覆盖登录态或改动现场。webui 的 HTTP 后端（router.rs 的
+ * `DESTRUCTIVE`）要求每个都带知情标记 `confirm:<cmd>`（POST 走 body，因为
+ * `httpCall` 对 POST 不拼 query）。集中在这里注入，避免逐个调用点漏配 ——
+ * 历史上 `switch_account` 单独带过，`delete_account` 就漏了，等于没有门。
+ *
+ * 桌面端（Tauri）会忽略这个多余键，带上无害。
+ */
+const CONFIRM_COMMANDS = new Set([
+  "switch_account",
+  "delete_account",
+  "import_local",
+  "import_accounts",
+  "checkin",
+  "checkin_all",
+  "run_rotate",
+  "clear_notifications",
+]);
+
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   // demo 是编译期构建形态，必须先于空值/不适用短路判定：否则 screenshot-demo
   // 的整套演示 fixture 会被 QODER_EMPTY/QODER_UNAVAILABLE 架在前面而不可达，
@@ -311,8 +331,38 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
   if (empty) return empty() as T;
   const why = QODER_UNAVAILABLE[cmd];
   if (why) throw new Error(`此项在 Qoder 侧不适用：${why}`);
-  if (!isWebui()) return invoke<T>(cmd, args);
-  return httpCall<T>(cmd, args);
+  // 破坏性命令的知情门：webui 后端按 `confirm` 校验；命令名去掉 `_account`/`_accounts`
+  // 之类的后缀差异，统一用后端认的短名。
+  const withConfirm =
+    CONFIRM_COMMANDS.has(cmd) && isWebui()
+      ? { ...(args ?? {}), confirm: confirmToken(cmd) }
+      : args;
+  if (!isWebui()) return invoke<T>(cmd, withConfirm);
+  return httpCall<T>(cmd, withConfirm);
+}
+
+/** 命令名 → 后端 `DESTRUCTIVE` 表里的短名（`confirm` 的取值）。 */
+function confirmToken(cmd: string): string {
+  switch (cmd) {
+    case "switch_account":
+      return "switch";
+    case "delete_account":
+      return "delete";
+    case "import_local":
+      return "import-local";
+    case "import_accounts":
+      return "import";
+    case "checkin":
+      return "checkin";
+    case "checkin_all":
+      return "checkin/all";
+    case "run_rotate":
+      return "rotate/run";
+    case "clear_notifications":
+      return "notifications/clear";
+    default:
+      return cmd;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -416,8 +466,11 @@ export function deleteAccount(accountId: string): Promise<{ ok: boolean }> {
 export function setAccountProxy(
   accountId: string,
   proxy: string | null,
+  variant?: WbVariant,
 ): Promise<{ ok: boolean; account: AccountMeta }> {
-  return call("set_account_proxy", { accountId, proxy });
+  // 必须下发账号自身档位：后端按 (accountId, variant) 定位账号包，缺省按国内版
+  // 处理会把国际版账号的代理写到国内版那份包上（或报"账号不存在"）。
+  return call("set_account_proxy", { accountId, proxy, ...variantArgs(variant) });
 }
 
 /** 发起登录：国内版为扫码授权，国际版为浏览器 Web 登录授权；`variant` 缺省为国内版（档位由后端记忆，轮询无需再传）。 */
@@ -471,9 +524,8 @@ export function switchAccount(args: {
 }): Promise<SwitchResult> {
   return call("switch_account", {
     ...args,
-    // webui 的知情门在 POST body 里（httpCall 对 POST 不拼 query，router 只认这个）；
-    // 桌面端 Tauri 忽略多余键，带上无害。
-    confirm: "switch",
+    // webui 的知情门由 call() 按 CONFIRM_COMMANDS 统一注入（`confirm:"switch"`），
+    // 不再在这里手写 —— 逐个写就是 delete 漏掉那次的成因。
   } as unknown as Record<string, unknown>);
 }
 
@@ -751,6 +803,30 @@ export function setLaunchAtLoginEnabled(enabled: boolean): Promise<boolean> {
   if (demoModeEnabled) return Promise.reject(new Error(DEMO_UNAVAILABLE_MESSAGE));
   if (!isDesktop()) return Promise.resolve(false);
   return call("set_launch_at_login_enabled", { enabled });
+}
+
+// ---------------------------------------------------------------------------
+// 未收尾的切换（仅桌面端；webui 没有同名接口，卡片也不在 webui 渲染）
+// ---------------------------------------------------------------------------
+
+/**
+ * 查未收尾的切换记录。启动时调一次：进程被杀/断电可能留下停在半途的换号，
+ * 唯一能发现它的入口就是这个。webui 不提供，返回空表（不抛错，免得页面报红）。
+ */
+export function listUnfinished(): Promise<{ journals: SwitchJournal[]; warnings: string[] }> {
+  if (!isDesktop()) return Promise.resolve({ journals: [], warnings: [] });
+  return call<{ journals: SwitchJournal[]; warnings: string[] }>("unfinished_report").then((res) => ({
+    journals: res?.journals ?? [],
+    warnings: res?.warnings ?? [],
+  }));
+}
+
+/** 按记录把现场退回（撤销一次没收尾的切换）。仅桌面端。 */
+export function recoverSwitch(journal: SwitchJournal): Promise<{ ok: boolean; phase: string }> {
+  if (!isDesktop()) {
+    return Promise.reject(new Error("未收尾切换的恢复仅在桌面端可用"));
+  }
+  return call<string>("recover", { journal }).then((phase) => ({ ok: true, phase }));
 }
 
 /** 把 Tauri command / HTTP 抛出的错误统一为 Error。 */

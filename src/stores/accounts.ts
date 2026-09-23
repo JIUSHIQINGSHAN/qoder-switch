@@ -55,7 +55,7 @@ interface AccountsState {
   fetchAll: () => Promise<void>;
   refreshStatus: (signal?: AbortSignal) => Promise<void>;
   deleteAccount: (id: string) => Promise<void>;
-  setAccountProxy: (id: string, proxy: string | null) => Promise<void>;
+  setAccountProxy: (id: string, proxy: string | null, variant?: WbVariant) => Promise<void>;
   /** Fetch credits only for ids not already cached. */
   ensureCredits: (accountIds: string[]) => Promise<void>;
   /** Force-refresh credits. `silent` skips toolbar/card loading flicker (timer). */
@@ -126,10 +126,18 @@ export const useAccountsStore = create<AccountsState>((set, get) => ({
     });
   },
 
-  async setAccountProxy(id: string, proxy: string | null) {
-    const res = await api.setAccountProxy(id, proxy);
+  async setAccountProxy(id: string, proxy: string | null, variant?: WbVariant) {
+    const res = await api.setAccountProxy(id, proxy, variant);
+    // 代理变了，之前用旧代理拉到的积分结果就不再可信 —— 清掉该账号的积分缓存，
+    // 否则卡片会一直显示旧代理下的失败态（最长到下一次定时刷新）。
+    const nextCredits = { ...get().creditMap };
+    const nextUpdatedAt = { ...get().creditUpdatedAtMap };
+    delete nextCredits[id];
+    delete nextUpdatedAt[id];
     set({
       accounts: get().accounts.map((a) => (a.id === id ? res.account : a)),
+      creditMap: nextCredits,
+      creditUpdatedAtMap: nextUpdatedAt,
     });
   },
 

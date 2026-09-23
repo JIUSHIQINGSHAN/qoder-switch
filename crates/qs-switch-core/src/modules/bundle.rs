@@ -268,6 +268,75 @@ pub(crate) fn write_meta(store: &Path, bundle: &Bundle) -> Result<()> {
     atomic_write_bytes(&path, &json).map_err(|e| format!("写 bundle.json 失败: {e}"))
 }
 
+/// 往账号包里落一个成员文件，并登记进 `members`。**包内文件名一律取
+/// `role.stored_name()`**、哈希取实际写入的字节 —— 这两条是 `restore` 读包时的
+/// 唯一依据（它按 `member.file_name` 找文件、按 `member.sha256` 校验）。
+///
+/// 为什么要有这个函数：OAuth 落库原先自己拼 `auth.v1.dat` / `local_state` 这种
+/// "现场文件名"，与 `capture` 的扁平命名（`authmain` / `localstate`）不一致，
+/// 结果包建出来了却过不了 `restore` —— 既因缺 critical 成员被覆盖性检查拒写，
+/// 又因文件名对不上读不到包内文件。把约定收口在这里，新支线就不会再各写一份。
+pub fn stage_member(
+    dir: &Path,
+    members: &mut Vec<Member>,
+    role: FileRole,
+    critical: bool,
+    bytes: &[u8],
+) -> Result<()> {
+    let file_name = role.stored_name();
+    atomic_write_bytes(&dir.join(&file_name), bytes)
+        .map_err(|e| format!("写入包内文件 {file_name} 失败: {e}"))?;
+    members.retain(|m| m.role != role);
+    members.push(Member {
+        role,
+        file_name,
+        sha256: sha256_of(bytes),
+        size: bytes.len() as u64,
+        critical,
+    });
+    Ok(())
+}
+
+/// 按 `credentials()` 的布局，把现场存在的 critical 文件收进包成员表。
+///
+/// OAuth 只自造了 `auth.v1.dat`，但桌面端现场往往还躺着 `Local State`
+/// （DPAPI 主密钥）与 `auth-profile-overlays.v1.dat`。`restore` 的覆盖性检查要求：
+/// 现场存在、且 critical 的角色必须在包里；缺一个就整组拒写（防半换号）。
+/// 这里把这几份现场文件原样收进包，与「导入本机账号」同构。
+///
+/// 返回实际收录的角色名（供调用方记日志/断言）。
+pub fn collect_live_critical_members(
+    roots: &PathRoots,
+    dir: &Path,
+    members: &mut Vec<Member>,
+    variant: QoderVariant,
+    target: QoderTarget,
+) -> Result<Vec<FileRole>> {
+    let mut collected = Vec::new();
+    for f in credentials(roots, variant, target) {
+        // AuthMain 由调用方自造（OAuth 的新 token），不覆盖；非 critical 的不收
+        // （restore 只强制 critical，收进来反而多写一份现场文件）。
+        if f.role == FileRole::AuthMain || !f.critical || !f.exists() {
+            continue;
+        }
+        let bytes = read_bytes(&f.path)
+            .map_err(|e| format!("读取现场 {:?} 失败（进程占用或权限不足）: {e}", f.path))?;
+        // 与 capture 同法双读比对：目标进程会话期会持续重写这些文件，
+        // 单次读盘可能拿到撕裂内容，其摘要会被当作正台账一路放行。
+        let bytes2 = read_bytes(&f.path)
+            .map_err(|e| format!("复核读取 {:?} 失败: {e}", f.path))?;
+        if sha256_of(&bytes) != sha256_of(&bytes2) {
+            return Err(format!(
+                "{:?} 正在被写入（两次读取内容不一致），请先关闭目标客户端再尝试",
+                f.path
+            ));
+        }
+        stage_member(dir, members, f.role, f.critical, &bytes)?;
+        collected.push(f.role);
+    }
+    Ok(collected)
+}
+
 /// 读回一个已存在的 bundle；目录或元数据缺失返回 Err。
 pub fn load(
     store: &Path,
@@ -747,6 +816,56 @@ mod tests {
         // 备份目录里四个成员都该在，供事后人工恢复。
         assert!(out.backup_dir.join("authmain").is_file());
         assert!(out.backup_dir.join("localstate").is_file());
+        std::fs::remove_dir_all(tmp).ok();
+    }
+
+    /// OAuth 落包的形态回归：只自造 auth，其余 critical 从现场补齐 ——
+    /// 这条断言保证"OAuth 账号建得出来也切得过去"。
+    #[test]
+    fn staged_oauth_style_bundle_passes_restore_cover_check() {
+        let (roots, store, tmp) = fixture();
+        // 现场是账号 B 的登录态（含 Local State，OAuth 之前就是被它卡住的）。
+        seed(&roots, b"authB", b"keyB", b"mB", "b@x.com");
+
+        // 复刻 oauth.rs 的落包顺序：自造 auth → 收集现场 critical。
+        let dir = bundle_dir_in(&store, "oauth-demo", QoderVariant::Cn, QoderTarget::Desktop);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut members: Vec<Member> = Vec::new();
+        stage_member(&dir, &mut members, FileRole::AuthMain, true, b"oauth-encrypted-auth").unwrap();
+        let collected =
+            collect_live_critical_members(&roots, &dir, &mut members, QoderVariant::Cn, QoderTarget::Desktop)
+                .unwrap();
+        assert!(
+            collected.contains(&FileRole::LocalState),
+            "现场存在 Local State，必须被收进包，否则 restore 会拒写: {collected:?}"
+        );
+
+        // 包内文件名必须是 stored_name()，restore 才找得到。
+        for m in &members {
+            assert_eq!(m.file_name, m.role.stored_name());
+        }
+        let b = Bundle {
+            account_id: "oauth-demo".into(),
+            variant: QoderVariant::Cn,
+            target: QoderTarget::Desktop,
+            created_at: now_ts(),
+            members,
+            identity: Identity::default(),
+        };
+        write_meta(&store, &b).unwrap();
+
+        // 关键断言：这样的包必须通过 restore 的覆盖性检查，而不是报"半换号"。
+        let out = restore(&roots, &store, &b, &next_backup(&store)).unwrap();
+        assert!(
+            out.written.contains(&FileRole::AuthMain),
+            "OAuth 自造的 auth 必须被写回现场: {:?}",
+            out.written
+        );
+        assert_eq!(
+            live(&roots, "auth.v1.dat"),
+            b"oauth-encrypted-auth",
+            "切换后现场该是 OAuth 的登录态"
+        );
         std::fs::remove_dir_all(tmp).ok();
     }
 

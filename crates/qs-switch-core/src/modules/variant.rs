@@ -85,7 +85,15 @@ impl CredentialFile {
 
     /// bundle 内的扁平文件名（角色可区分，避免同名互相覆盖）。
     pub fn stored_name(&self) -> String {
-        format!("{:?}", self.role).to_lowercase()
+        self.role.stored_name()
+    }
+}
+
+impl FileRole {
+    /// bundle 内的扁平文件名。**决定包建成后 restore 能不能读到文件的那一个约定** ——
+    /// 想按角色写包都必须经由它，不要自己另起名字（OAuth 曾因此建出读不到的包）。
+    pub fn stored_name(self) -> String {
+        format!("{self:?}").to_lowercase()
     }
 }
 

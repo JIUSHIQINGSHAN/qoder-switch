@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 
 use crate::modules::auth_codec;
 use crate::modules::bundle;
-use crate::modules::config::{atomic_write_bytes, now_ts, sha256_hex_bytes, PathRoots};
+use crate::modules::config::{now_ts, PathRoots};
 use crate::modules::variant::{desktop_dir, FileRole, QoderTarget, QoderVariant};
 
 struct OAuthSession {
@@ -41,6 +41,24 @@ fn pkce_challenge(verifier: &str) -> String {
     let mut h = Sha256::new();
     h.update(verifier.as_bytes());
     base64_url(&h.finalize())
+}
+
+/// 从服务端 `user_id` 取一段安全前缀作为包名后缀。
+///
+/// **按字符取，不按字节**：`&id[..8]` 在 id 含多字节字符时会切在 UTF-8 边界内部
+/// 直接 panic（`auth_codec::DesktopAuth::label` 修过同一个坑）。这里再过滤成
+/// `[A-Za-z0-9_-]`，顺带满足 `validate_account_id` 的白名单。
+fn user_id_prefix(user_id: &str) -> String {
+    let clean: String = user_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(8)
+        .collect();
+    if clean.is_empty() {
+        "user".to_string()
+    } else {
+        clean
+    }
 }
 
 pub fn login_base_url(variant: QoderVariant) -> &'static str {
@@ -244,9 +262,16 @@ pub async fn oauth_status(login_id: &str, roots: &PathRoots, store: &Path) -> Va
 
     let account_id = if !email.is_empty() {
         let clean: String = email.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
-        format!("oauth-{}", &clean[..clean.len().min(16)])
+        if clean.is_empty() {
+            // 非 ASCII 邮箱（如 用户@例子.中国）过滤后可能为空 —— 退回 user_id 前缀，
+            // 否则所有这类账号都会塌成同一个 "oauth-" 目录互相覆盖。
+            format!("oauth-{}", user_id_prefix(&user_id))
+        } else {
+            let prefix: String = clean.chars().take(16).collect();
+            format!("oauth-{prefix}")
+        }
     } else {
-        format!("oauth-{}", &user_id[..user_id.len().min(8)])
+        format!("oauth-{}", user_id_prefix(&user_id))
     };
 
     let dir = bundle::bundle_dir_in(store, &account_id, variant, QoderTarget::Desktop);
@@ -254,19 +279,36 @@ pub async fn oauth_status(login_id: &str, roots: &PathRoots, store: &Path) -> Va
         return json!({ "done": true, "error": format!("创建账号目录失败: {e}") });
     }
 
-    // 写入 auth.v1.dat
-    if let Err(e) = atomic_write_bytes(&dir.join("auth.v1.dat"), &encrypted_auth) {
+    // 自造的登录态按 capture 的扁平命名（authmain）落盘，并登记 sha256 ——
+    // restore 读包只认 member.file_name 与 member.sha256，文件名一错就整包作废。
+    let mut members: Vec<bundle::Member> = Vec::new();
+    if let Err(e) = bundle::stage_member(&dir, &mut members, FileRole::AuthMain, true, &encrypted_auth) {
         return json!({ "done": true, "error": format!("写入 auth 文件失败: {e}") });
     }
 
-    // 写入 Local State 副本
-    if let Ok(ls_bytes) = std::fs::read(&local_state_path) {
-        let _ = atomic_write_bytes(&dir.join("local_state"), &ls_bytes);
+    // 补齐现场存在的 critical 成员（Local State / profile-overlays）。缺了它们，
+    // restore 的覆盖性检查会以"防半换号"为由整组拒写 —— 账号建得出来却切不过去。
+    if let Err(e) = bundle::collect_live_critical_members(
+        roots,
+        &dir,
+        &mut members,
+        variant,
+        QoderTarget::Desktop,
+    ) {
+        return json!({ "done": true, "error": format!("收集现场凭据失败: {e}") });
     }
 
-    // 写入 machine-id
-    let machine_id_bytes = machine_id.as_bytes();
-    let _ = atomic_write_bytes(&dir.join("auth.machine-id"), machine_id_bytes);
+    // machine-id 非 critical，restore 不强制；但它决定解密密钥的可用性，
+    // 一并收进包里（失败不致命，缺了也不影响覆盖性检查）。
+    if let Err(e) = bundle::stage_member(
+        &dir,
+        &mut members,
+        FileRole::DesktopMachineId,
+        false,
+        machine_id.as_bytes(),
+    ) {
+        let _ = e; // 非关键文件，静默继续
+    }
 
     // 写入 bundle.json
     let nb = bundle::Bundle {
@@ -274,15 +316,7 @@ pub async fn oauth_status(login_id: &str, roots: &PathRoots, store: &Path) -> Va
         variant,
         target: QoderTarget::Desktop,
         created_at: now_ts(),
-        members: vec![
-            bundle::Member {
-                role: FileRole::AuthMain,
-                file_name: "auth.v1.dat".into(),
-                sha256: sha256_hex_bytes(&encrypted_auth),
-                size: encrypted_auth.len() as u64,
-                critical: true,
-            }
-        ],
+        members,
         identity: bundle::Identity {
             name: Some(name.clone()),
             email: if email.is_empty() { None } else { Some(email.clone()) },
@@ -296,6 +330,7 @@ pub async fn oauth_status(login_id: &str, roots: &PathRoots, store: &Path) -> Va
             proxy: None,
         },
     };
+
 
     if let Err(e) = bundle::write_meta(store, &nb) {
         return json!({ "done": true, "error": format!("写入 bundle 元数据失败: {e}") });
@@ -358,5 +393,25 @@ mod tests {
         let res_global = oauth_start(QoderVariant::Global);
         let uri_global = res_global["verificationUri"].as_str().unwrap();
         assert!(uri_global.starts_with("https://qoder.com/device/selectAccounts?challenge="));
+    }
+
+    /// 服务端 `user_id` 可能是任意字符串：既不能按字节切片 panic（多字节字符），
+    /// 也不能让非法字符混进包名（会过不了 validate_account_id）。
+    #[test]
+    fn user_id_prefix_is_byte_safe_and_path_safe() {
+        // 多字节：旧写法 &id[..8] 会切在 UTF-8 边界内部 panic。
+        let p = user_id_prefix("用户12345678");
+        assert!(p.is_ascii(), "前缀必须全是 ASCII: {p:?}");
+        assert!(p.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+
+        // 全非法字符（例如纯中文 id）不能产出空串，否则包名塌成 "oauth-" 互相覆盖。
+        assert_eq!(user_id_prefix("全部是中文"), "user");
+
+        // 正常内容原样取前 8。
+        assert_eq!(user_id_prefix("abc123XYZ-tail"), "abc123XY");
+
+        // 拼出的包名必须能过账号名校验。
+        let id = format!("oauth-{}", user_id_prefix("用户12345678"));
+        assert!(crate::modules::bundle::validate_account_id(&id).is_ok(), "{id}");
     }
 }

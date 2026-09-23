@@ -170,10 +170,10 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
     });
   }
 
-  async function doSwitch() {
+  async function doSwitch(forced = false) {
     if (!account) return;
     setBusy(true);
-    setProgress("正在切换账号…");
+    setProgress(forced ? "强制档：正在切换账号…" : "正在切换账号…");
     setError("");
     const requestedCopy = selected.size > 0;
     const requestedSync = syncSelections.length > 0;
@@ -186,6 +186,10 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
         copySessionIds: requestedCopy ? [...selected] : undefined,
         // 勾选绑定预览凭据；执行前后端会重新校验，版本变化则跳过该项。
         syncSelections: requestedSync ? syncSelections : undefined,
+        // 强制档：跳过"被托管不许杀进程"的保护。只有用户在错误提示里点了
+        // 「强制切换」按钮才会传 true —— 后端正常档的拒绝文案正在引导用户做这件事，
+        // 但此前没有任何入口能把它传下去（契约声明了 forced，UI 从未接线）。
+        forced: forced || undefined,
       });
       const nickname = account.nickname || account.email || account.uid || "该账号";
       const parts: string[] = [];
@@ -375,6 +379,9 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
             ? "未选择同步会话"
             : null;
   const needsPermission = error.includes("无权限");
+  /** 正常档因"被托管/判不出"被拒时会给出这段文案，后端明确引导用户改走强制档。
+   *  只有这种情形才显示「强制切换」按钮 —— 其它错误用强制档只会更错。 */
+  const canForceSwitch = !busy && error.includes("强制档");
   const sessionsEmpty = !loadingSessions && sessions.length === 0;
   const copyHint = loadingSessions
     ? "正在加载会话…"
@@ -581,6 +588,24 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
                   </div>
                 )}
                 {permCheck && <div className="mt-2 text-xs">{permCheck}</div>}
+                {canForceSwitch && (
+                  <div className="mt-2 space-y-2">
+                    <div className="rounded-md border bg-muted/60 p-3 text-xs text-muted-foreground">
+                      <p className="mb-1 font-medium text-foreground">什么是强制切换？</p>
+                      <p>
+                        当前这个程序是被 Qoder 自己启动的，切换会把它连同本窗口一起关掉。
+                        正常档为防误伤会拒绝执行。
+                      </p>
+                      <p className="mt-1">
+                        点「强制切换」表示你已知情：
+                        <b>窗口会关闭，请稍后从桌面图标或托盘重新打开，用新账号登录。</b>
+                      </p>
+                    </div>
+                    <Button variant="destructive" size="sm" onClick={() => void doSwitch(true)}>
+                      强制切换
+                    </Button>
+                  </div>
+                )}
               </AlertDescription>
             </Alert>
           )}
@@ -656,7 +681,7 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
             <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
               取消
             </Button>
-            <Button onClick={doSwitch} disabled={busy}>
+            <Button onClick={() => void doSwitch()} disabled={busy}>
               {busy ? "切换中…" : "确认切换"}
             </Button>
           </div>

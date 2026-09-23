@@ -338,22 +338,49 @@ pub fn execute(
 
 /// 未完成切换（进程被杀/断电留下的）。UI 启动时查一次，逐条问用户要不要退回。
 pub fn unfinished(store: &Path) -> Result<Vec<Journal>> {
+    Ok(unfinished_with_warnings(store)?.0)
+}
+
+/// 与 `unfinished` 同一趟扫描，但把**读不出来的 journal** 也回传。
+///
+/// 为什么要单独回传：读取失败与 JSON 解析失败语义完全不同 —— 解析失败是字节已损坏、
+/// 这条记录没救了，跳过无妨；**读取失败是暂时性的**（文件被安全软件锁住、`atomic_write`
+/// 的临时态、权限瞬时不足），而这条 journal 可能正记着一次"半换号"。旧写法对两者
+/// 一律 `continue`，等于把半换号现场从恢复清单里悄悄抹掉，用户与程序都不会被告知。
+///
+/// 返回 `(未完成列表, 读取失败告警)`。告警是给人看的字符串，不含路径以外的敏感信息。
+pub fn unfinished_with_warnings(store: &Path) -> Result<(Vec<Journal>, Vec<String>)> {
     let dir = journal_dir(store);
     if !dir.is_dir() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     let mut out = Vec::new();
+    let mut warnings = Vec::new();
     for e in std::fs::read_dir(&dir).map_err(|e| format!("读 journal 失败: {e}"))? {
-        let path = e.map_err(|e| e.to_string())?.path();
+        let path = match e {
+            Ok(entry) => entry.path(),
+            Err(err) => {
+                warnings.push(format!("journal 目录有条目读不出来: {err}"));
+                continue;
+            }
+        };
         if path.extension().map(|x| x != "json").unwrap_or(true) {
             continue;
         }
         let bytes = match std::fs::read(&path) {
             Ok(b) => b,
-            Err(_) => continue,
+            Err(err) => {
+                // 读不出来 ≠ 没有。必须上报，否则半换号现场会被静默漏掉。
+                warnings.push(format!(
+                    "有一条未收尾切换记录（{}）读不出来，可能被占用或权限不足: {err}",
+                    path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+                ));
+                continue;
+            }
         };
         let j: Journal = match serde_json::from_slice(&bytes) {
             Ok(j) => j,
+            // 字节已损坏：这条记录本身没救了，跳过并从告警里排除（不是"读不出"）。
             Err(_) => continue,
         };
         if j.phase.needs_recovery() {
@@ -361,7 +388,7 @@ pub fn unfinished(store: &Path) -> Result<Vec<Journal>> {
         }
     }
     out.sort_by(|a, b| a.started_at.cmp(&b.started_at));
-    Ok(out)
+    Ok((out, warnings))
 }
 
 /// 按 journal 记录的备份目录把现场退回。
@@ -394,10 +421,32 @@ pub fn recover(store: &Path, j: &Journal) -> Result<Phase> {
         ));
     }
     if !j.backup_dir.join(bundle::MANIFEST_FILE).is_file() {
+        // 备份目录存在、清单却不在：只可能是 restore 在"建目录"与"写清单"之间被打断。
+        // restore 的写入严格排在清单之后，所以这种情况下现场一般还没被动过。但目录
+        // **未必是空的** —— 进程可能死在写清单前、却已把部分现场文件备份了进去。
+        // 所以只在确认为空时才敢删；非空一律拒删并报错，保留证据交给人工判断。
+        // （原先无条件 remove_dir_all，会把这种"已有内容却没清单"的备份不可逆地抹掉。）
+        let is_empty = match std::fs::read_dir(&j.backup_dir) {
+            Ok(mut it) => it.next().is_none(),
+            Err(e) => {
+                return Err(format!(
+                    "读备份目录 {:?} 失败，无法确认是否为空，拒绝删除: {e}",
+                    j.backup_dir
+                ));
+            }
+        };
+        if !is_empty {
+            return Err(format!(
+                "备份目录 {:?} 非空但缺少清单（{}）：可能是上次切换在写清单前被打断。\
+                 为避免误删已有备份，此处不自动处理，请人工确认后删除该目录或按清单恢复。",
+                j.backup_dir,
+                bundle::MANIFEST_FILE
+            ));
+        }
         let _ = std::fs::remove_dir_all(&j.backup_dir);
         let mut done = j.clone();
         done.phase = Phase::RolledBack;
-        done.note = Some("备份清单不存在，说明尚未写入任何现场文件".into());
+        done.note = Some("备份目录为空且无清单，说明尚未备份任何现场文件".into());
         write_journal(store, &done)?;
         return Ok(Phase::RolledBack);
     }
@@ -594,6 +643,68 @@ mod tests {
         assert!(recover(&s.store, &list[0]).unwrap() == Phase::RolledBack);
         assert_eq!(live(&s.roots), b"authB", "恢复后应退回 B");
         assert!(unfinished(&s.store).unwrap().is_empty(), "恢复后不该再被挑出");
+        std::fs::remove_dir_all(s.tmp).ok();
+    }
+
+    /// recover 遇到"备份目录存在但无清单"时必须分两种情况：
+    /// 空目录 → 安全删除并判 RolledBack；非空目录 → 拒删并报错（防误删已有备份）。
+    #[test]
+    fn recover_refuses_to_delete_non_empty_backup_without_manifest() {
+        let s = sandbox();
+        let backups = s.store.join("backups");
+
+        // 情况一：空目录、无清单 → 应删除并判已回滚。
+        let empty_dir = backups.join("empty-no-manifest");
+        std::fs::create_dir_all(&empty_dir).unwrap();
+        let j_empty = Journal {
+            id: "empty".into(),
+            account_id: "acct-x".into(),
+            variant: Cn,
+            target: QoderTarget::Desktop,
+            started_at: "2026-09-21T00:00:00Z".into(),
+            phase: Phase::TargetClosed,
+            backup_dir: empty_dir.clone(),
+            note: None,
+        };
+        assert!(recover(&s.store, &j_empty).unwrap() == Phase::RolledBack);
+        assert!(!empty_dir.exists(), "空且无清单的备份目录应被清掉");
+
+        // 情况二：非空目录、无清单 → 必须拒删，目录内容原样保留。
+        let dirty_dir = backups.join("dirty-no-manifest");
+        std::fs::create_dir_all(&dirty_dir).unwrap();
+        std::fs::write(dirty_dir.join("authmain"), b"partial-backup").unwrap();
+        let j_dirty = Journal {
+            id: "dirty".into(),
+            account_id: "acct-x".into(),
+            variant: Cn,
+            target: QoderTarget::Desktop,
+            started_at: "2026-09-21T00:01:00Z".into(),
+            phase: Phase::TargetClosed,
+            backup_dir: dirty_dir.clone(),
+            note: None,
+        };
+        let err = recover(&s.store, &j_dirty).unwrap_err();
+        assert!(err.contains("非空"), "应报出非空拒删: {err}");
+        assert!(dirty_dir.join("authmain").is_file(), "已有备份文件绝不能被删");
+        std::fs::remove_dir_all(s.tmp).ok();
+    }
+
+    /// 读不出来的 journal 必须上报，不能被当成"没有未完成切换"。
+    /// 用目录冒充一个 `.json` 文件名来制造稳定的读取失败（读目录必失败）。
+    #[test]
+    fn unfinished_reports_unreadable_journal_instead_of_silently_skipping() {
+        let s = sandbox();
+        let jdir = journal_dir(&s.store);
+        std::fs::create_dir_all(&jdir).unwrap();
+        // 造一个"名字是 .json、实体是目录"的条目：std::fs::read 会失败。
+        std::fs::create_dir_all(jdir.join("broken.json")).unwrap();
+
+        let (list, warnings) = unfinished_with_warnings(&s.store).unwrap();
+        assert!(list.is_empty(), "没有可用的未完成记录: {list:?}");
+        assert!(
+            warnings.iter().any(|w| w.contains("读不出来")),
+            "读取失败必须上报，而不是静默跳过: {warnings:?}"
+        );
         std::fs::remove_dir_all(s.tmp).ok();
     }
 

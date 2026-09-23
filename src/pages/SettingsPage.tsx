@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactElement, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { ArrowUpCircle, CircleCheck, ExternalLink, Loader2, RefreshCw, Save } from "lucide-react";
 import { toast } from "sonner";
 
@@ -19,6 +19,7 @@ import type {
   GithubConfig,
   RotateLog,
   RotateStatus,
+  SwitchJournal,
   UpdateInfo,
 } from "@/lib/types";
 import { GITHUB_RELEASE_URL, GITHUB_REPOSITORY_URL, openReleaseUrl } from "@/lib/update";
@@ -1069,6 +1070,100 @@ function AppearanceCard() {
   );
 }
 
+/**
+ * 未收尾的切换：进程被杀/断电可能让一次换号停在半途（现场是混合态）。
+ * 这是**唯一**能发现它的入口 —— 此前 core 提供了 unfinished/recover，
+ * 但前端零调用，等于这份恢复能力对用户不存在。
+ *
+ * 有记录（或有读取告警）时才渲染，平时不占版面。
+ */
+function UnfinishedSwitchCard() {
+  const [journals, setJournals] = useState<SwitchJournal[]>([]);
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+
+  const reload = useCallback(async () => {
+    try {
+      const res = await api.listUnfinished();
+      setJournals(res.journals);
+      setWarnings(res.warnings);
+    } catch (e) {
+      setWarnings([api.asError(e)]);
+    } finally {
+      setLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  async function recoverOne(j: SwitchJournal) {
+    setBusy(j.id);
+    try {
+      await api.recoverSwitch(j);
+      toast.success("已退回切换前的登录态", { description: `账号 ${j.account_id}` });
+      await reload();
+    } catch (e) {
+      toast.error("恢复失败", { description: api.asError(e) });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // 没有任何未收尾记录、也没有读取告警 → 不显示这张卡。
+  if (!loaded || (journals.length === 0 && warnings.length === 0)) return null;
+
+  return (
+    <SettingsGroup id="settings-unfinished" title="未完成的切换">
+      <CardContent className="space-y-3 p-4 sm:p-5">
+        {warnings.length > 0 && (
+          <Alert variant="warning">
+            <AlertDescription>
+              {warnings.map((w) => (
+                <div key={w} className="break-all">{w}</div>
+              ))}
+            </AlertDescription>
+          </Alert>
+        )}
+        {journals.length > 0 && (
+          <>
+            <p className="text-xs leading-5 text-muted-foreground">
+              检测到上次切换没有正常收尾（可能是程序被关闭或断电）。此时登录态可能处于
+              中途状态。建议退回切换前的账号，再重新操作一次。
+            </p>
+            <ul className="space-y-2">
+              {journals.map((j) => (
+                <li
+                  key={j.id}
+                  className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-[13px] font-medium">{j.account_id}</div>
+                    <div className="truncate text-xs text-muted-foreground">
+                      {j.started_at} · 阶段 {j.phase}
+                      {j.note ? ` · ${j.note}` : ""}
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy === j.id}
+                    onClick={() => void recoverOne(j)}
+                  >
+                    {busy === j.id ? "恢复中…" : "退回切换前"}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </CardContent>
+    </SettingsGroup>
+  );
+}
+
 /** 设置页：自动签到配置 / 权限检测 / 更新配置。 */
 export default function SettingsPage() {
   return (
@@ -1080,6 +1175,7 @@ export default function SettingsPage() {
 
       <div className="min-w-0 space-y-12">
         <AppearanceCard />
+        {api.isDesktop() || api.isDemoMode() ? <UnfinishedSwitchCard /> : null}
         <PermissionCheckCard />
         <AutoCheckinCard />
         <AutoRotateCard />

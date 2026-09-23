@@ -206,10 +206,17 @@ pub async fn delete_account(app: tauri::AppHandle, account_id: String) -> Result
 }
 
 #[tauri::command]
-pub async fn set_account_proxy(account_id: String, proxy: Option<String>) -> Result<Value, String> {
+pub async fn set_account_proxy(
+    account_id: String,
+    proxy: Option<String>,
+    variant: Option<String>,
+) -> Result<Value, String> {
     off_main(move || {
         let store = switch_root();
-        let b = bundle::set_proxy(&store, &account_id, QoderVariant::Cn, QoderTarget::Desktop, proxy)?;
+        // 档位必须由调用方下发：`set_proxy` 按 (accountId, variant, target) 定位账号包，
+        // 写死 Cn 会把国际版账号的代理写到国内版那份包上，或直接报"账号不存在"。
+        let v = variant_of(variant.as_deref());
+        let b = bundle::set_proxy(&store, &account_id, v, QoderTarget::Desktop, proxy)?;
         Ok(json!({ "ok": true, "account": view::account_meta(&b) }))
     })
     .await

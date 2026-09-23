@@ -58,6 +58,7 @@ pub fn run() {
             commands::preview,
             commands::switch_now,
             commands::unfinished,
+            commands::unfinished_report,
             commands::recover,
             commands::snapshot_now,
             commands::store_dir,

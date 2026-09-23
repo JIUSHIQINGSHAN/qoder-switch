@@ -21,6 +21,8 @@ import { useAccountsStore } from "@/stores/accounts";
 import { cn } from "@/lib/utils";
 import { creditResourceName } from "@/lib/credit-package-names";
 import { demoModeEnabled } from "@/lib/demo-mode";
+import { accountVariant } from "@/lib/variant";
+import { toast } from "sonner";
 import type { AccountMeta, CreditExpiry, CreditResource, RateLimitEntry } from "@/lib/types";
 
 const AVATAR_TONES = [
@@ -354,7 +356,7 @@ export function AccountCard({ account, onDelete, onCheckin, onSwitch, todayCheck
       {account.proxy && (
         <Tooltip>
           <TooltipTrigger asChild>
-            <Badge variant="outline" className={cn(chipClass, "gap-1 text-primary border-primary/30 bg-primary/5 cursor-pointer")} onClick={() => setProxyOpen(true)}>
+            <Badge variant="outline" className={cn(chipClass, "gap-1 text-primary border-primary/30 bg-primary/5 cursor-pointer")} onClick={() => { setProxyInput(account.proxy || ""); setProxyOpen(true); }}>
               <Globe className="size-3" />
               <span>代理</span>
             </Badge>
@@ -737,8 +739,14 @@ export function AccountCard({ account, onDelete, onCheckin, onSwitch, todayCheck
               onClick={async () => {
                 setProxySaving(true);
                 try {
-                  await useAccountsStore.getState().setAccountProxy(account.id, proxyInput.trim() || null);
+                  await useAccountsStore
+                    .getState()
+                    .setAccountProxy(account.id, proxyInput.trim() || null, accountVariant(account));
                   setProxyOpen(false);
+                } catch (e) {
+                  // 之前这里只有 finally、没有 catch：保存失败被静默吞掉，弹窗不关、
+                  // 也没有任何提示，用户以为存上了。必须显式报出来。
+                  toast.error("代理保存失败", { description: String(e) });
                 } finally {
                   setProxySaving(false);
                 }

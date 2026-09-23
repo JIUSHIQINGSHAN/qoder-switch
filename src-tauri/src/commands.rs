@@ -137,6 +137,15 @@ pub fn unfinished() -> Result<Vec<switch::Journal>, String> {
     switch::unfinished(&switch_root())
 }
 
+/// 带告警的未收尾查询：读取失败的 journal 会出现在 `warnings` 里。
+/// 设置页的「未完成的切换」卡片用这个 —— 只报列表会把"读不出来的那条"藏掉，
+/// 而那条可能正记着一次半换号。
+#[tauri::command]
+pub fn unfinished_report() -> Result<serde_json::Value, String> {
+    let (journals, warnings) = switch::unfinished_with_warnings(&switch_root())?;
+    Ok(serde_json::json!({ "journals": journals, "warnings": warnings }))
+}
+
 #[tauri::command]
 pub fn recover(journal: switch::Journal) -> Result<String, String> {
     let store = switch_root();
