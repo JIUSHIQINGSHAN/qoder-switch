@@ -69,6 +69,14 @@ jobs:
                 process.exit(1);
               }
             }
+            // npm 主包声明的平台包版本也必须一致：漏改这一处，用户 npm install 时
+            // 会去装一个不存在的平台包版本（postinstall 走 catch 分支报"未安装"）。
+            // 这是上面两组校验都没覆盖到的盲区。
+            const platformDep = require('./npm/package.json').optionalDependencies?.['qoder-switch-win32-x64'];
+            if (platformDep !== expected) {
+              console.error(\`版本不一致: npm/package.json 的 optionalDependencies 为 \${platformDep}，期望 \${expected}\`);
+              process.exit(1);
+            }
             console.log('所有文件版本与 Tag 严格一致: ' + expected);
           "
 

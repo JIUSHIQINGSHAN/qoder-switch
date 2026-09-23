@@ -1,6 +1,6 @@
 {
   "name": "qoder-switch-win32-x64",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "qoder-switch platform binary (win32-x64)：webui 服务端 qs-switch-server.exe",
   "os": [
     "win32"
