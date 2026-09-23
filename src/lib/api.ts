@@ -320,6 +320,15 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     if (cmd === "get_credit_statistics" && args?.refresh === true) {
       throw new Error(DEMO_UNAVAILABLE_MESSAGE);
     }
+    // 演示模式下允许"保存代理"这个动作：截图流程要能展示代理配置交互，
+    // 而它不属于只读命令。返回当前账号的回显即可（demo fixture 已带 proxy 键）。
+    if (cmd === "set_account_proxy") {
+      const demo = screenshotDemoResponse("get_accounts", undefined) as {
+        accounts?: AccountMeta[];
+      };
+      const found = demo.accounts?.find((a) => a.id === args?.accountId);
+      return (found ?? null) as T;
+    }
     if (!DEMO_READ_COMMANDS.has(cmd)) throw new Error(DEMO_UNAVAILABLE_MESSAGE);
     return screenshotDemoResponse(cmd, args) as T;
   }
@@ -633,7 +642,9 @@ export async function getCheckinStatus(accountId: string): Promise<{
         variant?: WbVariant;
       }[];
     }>("get_checkin_status");
-    const one = all.accounts.find((a) => a.accountId === accountId);
+    // 批量形状缺 `accounts` 时不能直接 .find —— 会 TypeError，而调用方（账号页的
+    // 今日签到 chip 拉取）把它包在 try/catch 里，异常会被静默吞掉，chip 永久消失。
+    const one = (all?.accounts ?? []).find((a) => a.accountId === accountId);
     return one
       ? {
           ok: one.ok,

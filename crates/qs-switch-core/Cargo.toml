@@ -14,7 +14,11 @@ hex = "0.4"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 aes-gcm = "0.10"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# 必须带 "socks"：`validate_proxy_url` 放行 socks5:// 与 socks5h://，但没有这个
+# feature 时 reqwest 根本不认识 socks —— Proxy::all 照样返回 Ok（构造不报错），
+# 请求时却完全不经过代理。实测：配 socks5 时本地代理命中 0 次（http 命中 1 次），
+# 等于"配了等于没配"，用户以为出口已隔离，实际请求不受控。
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "socks"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 [dev-dependencies]

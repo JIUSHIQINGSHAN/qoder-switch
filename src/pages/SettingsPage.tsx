@@ -149,6 +149,10 @@ function AutoCheckinCard() {
 
   async function save() {
     if (!cfg) return;
+    // 防重入：`disabled` 要到 React 下一次渲染才生效，同一帧内的两次点击仍会
+    // 触发两次并发保存（写盘是 read-modify-write，会丢改动）。账号页早已这么做，
+    // 设置页三处保存此前漏了。
+    if (saving) return;
     setSaving(true);
     setMsg(null);
     try {
@@ -169,6 +173,12 @@ function AutoCheckinCard() {
       const res = await api.checkinAll();
       if (res.status === "skipped" && res.reason === "already_running") {
         setMsg({ type: "err", text: "签到任务正在进行，请稍后再试" });
+        return;
+      }
+      // 与账号页保持同一容错口径：缺 accounts 不能静默当成"没有账号"，
+      // 也不该直接 TypeError（旧写法 `res.accounts.filter` 在缺键时会抛）。
+      if (!Array.isArray(res.accounts)) {
+        setMsg({ type: "err", text: "签到接口返回异常（缺少 accounts 字段）" });
         return;
       }
       const ok = res.accounts.filter((a) => a.result === "success").length;
@@ -341,6 +351,7 @@ function AutoRotateCard() {
 
   async function save() {
     if (!cfg) return;
+    if (saving) return; // 防重入，见 AutoCheckinCard::save 的说明。
     setSaving(true);
     setMsg(null);
     try {
@@ -700,6 +711,7 @@ function UpdateCard() {
   }
 
   async function saveProxy() {
+    if (proxySaving) return; // 防重入，见 AutoCheckinCard::save 的说明。
     const value = proxyUrl.trim();
     if (value) {
       try {

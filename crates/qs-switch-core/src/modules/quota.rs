@@ -116,6 +116,25 @@ fn email_from_live(auth: &auth_codec::DesktopAuth) -> String {
     auth.user.email.clone()
 }
 
+/// `RELATIVE_DAYS` 资源包的到期毫秒时间戳：`startAt(秒) * 1000 + days * 86400_000`。
+///
+/// 必须全程 checked：服务端若把 `startAt` 填成毫秒（于是又乘 1000），或把 `days`
+/// 放成天文数字，i64 会溢出 —— release 下回绕成**负数**，而下游判据是
+/// `is_expired = t <= now`，负时间戳会让**所有**有效资源包显示成"已过期"。
+/// 溢出时返回 None（"到期时间未知"），绝不返回一个错误的负数。
+///
+/// `days` 另有上界钳制：10 年（3650 天）以外的包在业务上不存在，
+/// 钳掉可避免"极大但未溢出"的值把到期时间推到几百年后。
+fn relative_days_expire_ms(start_at_secs: i64, days: i64) -> Option<i64> {
+    if start_at_secs <= 0 {
+        return None;
+    }
+    let ms = start_at_secs.checked_mul(1000)?;
+    let span = days.clamp(0, 3650).checked_mul(86_400_000)?;
+    let total = ms.checked_add(span)?;
+    (total > 0).then_some(total)
+}
+
 pub fn http_client_with_proxy(proxy_url: Option<&str>) -> reqwest::Client {
     let mut builder = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(6))
@@ -240,11 +259,7 @@ pub async fn fetch_credit_expiry(
                 } else if mode == "RELATIVE_DAYS" {
                     let days = val_obj.get("days").and_then(|v| v.as_i64()).unwrap_or(30);
                     let start_at = c.get("startAt").and_then(|v| v.as_i64()).unwrap_or(0);
-                    if start_at > 0 {
-                        Some(start_at * 1000 + days * 86_400_000)
-                    } else {
-                        None
-                    }
+                    relative_days_expire_ms(start_at, days)
                 } else {
                     None
                 };
@@ -373,8 +388,15 @@ pub async fn get_checkin_status(
                 let has_claimable = benefit_campaigns.iter().any(|c| {
                     c.get("claimStatus").and_then(|v| v.as_str()) == Some("CLAIMABLE")
                 });
+                // 必须**正面**看到 CLAIMED 才算已签到。此前用 `has_campaign && !has_claimable`，
+                // 把任何未知 claimStatus（EXPIRED / LOCKED / 官方新增枚举）都折叠成"已签到" ——
+                // 用户看到绿色成功提示，实际什么也没领到。这是本模块反复出现的
+                // "把未知状态折叠成最乐观答案" 的老毛病，这里改成只认已知的好状态。
+                let has_claimed = benefit_campaigns.iter().any(|c| {
+                    c.get("claimStatus").and_then(|v| v.as_str()) == Some("CLAIMED")
+                });
 
-                let is_checked_in = has_campaign && !has_claimable;
+                let is_checked_in = has_campaign && has_claimed && !has_claimable;
 
                 json!({
                     "ok": true,
@@ -434,15 +456,23 @@ pub async fn checkin(
     let campaigns = camp_body.get("campaigns").and_then(|v| v.as_array());
     let mut claimable_ids = Vec::new();
     let mut has_benefit = false;
+    let mut has_claimed = false;
 
     if let Some(list) = campaigns {
         for c in list {
             if c.get("actionType").and_then(|v| v.as_str()) == Some("CLAIM_BENEFIT") {
                 has_benefit = true;
-                if c.get("claimStatus").and_then(|v| v.as_str()) == Some("CLAIMABLE") {
-                    if let Some(id) = c.get("campaignId").and_then(|v| v.as_str()) {
-                        claimable_ids.push(id.to_string());
+                match c.get("claimStatus").and_then(|v| v.as_str()) {
+                    Some("CLAIMABLE") => {
+                        if let Some(id) = c.get("campaignId").and_then(|v| v.as_str()) {
+                            claimable_ids.push(id.to_string());
+                        }
                     }
+                    // 正面证据：确实领过了。
+                    Some("CLAIMED") => has_claimed = true,
+                    // 其它枚举（EXPIRED / LOCKED / 官方新增）既不是"可领"，也不能当作
+                    // "已领" —— 落到下面走"状态未知"分支，不编造成功。
+                    _ => {}
                 }
             }
         }
@@ -454,8 +484,17 @@ pub async fn checkin(
     }
 
     if claimable_ids.is_empty() {
-        crate::modules::ledger::record_checkin_log(store, account_id, &email, variant, "already", None);
-        return json!({ "result": "already", "message": "今日已签到" });
+        // 只有正面看到 CLAIMED 才报"今日已签到"。此前只判"没有可领的"就一律说已签到，
+        // 把 EXPIRED/LOCKED/未知枚举也折叠成成功 —— 用户拿到绿色提示但没领到东西。
+        if has_claimed {
+            crate::modules::ledger::record_checkin_log(store, account_id, &email, variant, "already", None);
+            return json!({ "result": "already", "message": "今日已签到" });
+        }
+        return json!({
+            "result": "inactive",
+            "inactive": true,
+            "message": "当前没有可领取的签到奖励（活动状态未知或已结束）"
+        });
     }
 
     let mut total_claimed = 0f64;
@@ -640,6 +679,32 @@ pub fn checkin_all_sync(
 mod tests {
     use super::*;
     use crate::modules::config::PathRoots;
+
+    /// RELATIVE_DAYS 到期时间必须抗溢出：宁可"未知"，也不给负数（负数会让所有
+    /// 有效包被判定为已过期）。
+    #[test]
+    fn relative_days_expire_never_overflows_to_negative() {
+        // 正常值：2026-01-01T00:00:00Z + 30 天。
+        let normal = relative_days_expire_ms(1_767_225_600, 30).unwrap();
+        assert!(normal > 0);
+        assert_eq!(normal, 1_767_225_600 * 1000 + 30 * 86_400_000);
+
+        // startAt 被误填成毫秒 → 乘 1000 溢出 → None（而不是负数）。
+        assert_eq!(relative_days_expire_ms(i64::MAX, 30), None);
+        // days 天文数字：先被钳到 3650 天，因此不会溢出，结果仍是有限正数。
+        // （钳制发生在 checked_mul 之前，这是刻意的 —— 脏数据应被收敛而非整条丢弃。）
+        let huge_days = relative_days_expire_ms(1_767_225_600, i64::MAX).unwrap();
+        assert_eq!(huge_days, 1_767_225_600 * 1000 + 3650 * 86_400_000);
+        assert!(huge_days > 0);
+        // days 超上界被钳到 3650 天，结果仍是正数且在合理范围内。
+        let clamped = relative_days_expire_ms(1_767_225_600, 100_000).unwrap();
+        assert_eq!(clamped, 1_767_225_600 * 1000 + 3650 * 86_400_000);
+        // 负数 days（脏数据）钳到 0，退化为 startAt 本身，不退化成负数。
+        assert_eq!(relative_days_expire_ms(1_767_225_600, -5).unwrap(), 1_767_225_600 * 1000);
+        // startAt 非正 → 无到期时间。
+        assert_eq!(relative_days_expire_ms(0, 30), None);
+        assert_eq!(relative_days_expire_ms(-1, 30), None);
+    }
 
     #[test]
     fn resolve_identity_does_not_silently_fallback_to_live_for_saved_or_unknown_accounts() {

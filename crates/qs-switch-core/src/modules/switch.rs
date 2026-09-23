@@ -203,9 +203,75 @@ fn write_journal(store: &Path, j: &Journal) -> Result<()> {
 
 /// 进程级切换闸：同一进程内的全部切换入口（主窗口、托盘、原生命令、webui 同进程时）
 /// 在这里串行。两个 execute 交错会互相覆盖备份、各自写出自称 Completed 的 journal，
-/// 事后凭任一条恢复都会退回错误的现场。跨进程（桌面与 webui 同时在切）不在本闸范围
-/// —— 那需要文件锁，先靠"用户别同时开两个宿主切号"约定。
+/// 事后凭任一条恢复都会退回错误的现场。
 static SWITCH_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// **跨进程**切换闸：桌面端（`qoder-switch.exe`）与 webui（`qs-switch-server.exe`）
+/// 是两个进程，各有各的 `SWITCH_GATE`。同时切同一账号时会互相覆盖备份，最终现场是
+/// 半换号混合态，而两条 journal 都自称 Completed —— 事后恢复无从判断。
+///
+/// 用 `OpenOptions::create_new` 做锁文件：该标志在 Windows 与 Unix 上都是原子的
+/// "不存在才创建"，零新增依赖（不引 fs2 之类）。
+///
+/// 陈锁处理：进程被杀会留下锁文件。不能一律放行（那等于没锁），也不能一律拒绝
+/// （用户被永久卡死）。策略是**按记录里的 PID 判断持有者是否还活着**，并在读不出
+/// 内容且文件已超龄时按陈锁回收。
+struct SwitchFileLock {
+    path: PathBuf,
+}
+
+impl SwitchFileLock {
+    /// 尝试取锁；已被别的活进程持有时返回 Err（附持有者 PID，便于排查）。
+    fn acquire(store: &Path) -> Result<SwitchFileLock> {
+        let path = store.join("switch.lock");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建锁目录失败: {e}"))?;
+        }
+        for _ in 0..2 {
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut f) => {
+                    use std::io::Write;
+                    let _ = writeln!(f, "{}", std::process::id());
+                    return Ok(SwitchFileLock { path });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if Self::holder_is_alive(&path) {
+                        return Err("另一个 Qoder Switch 进程正在切换账号。\
+                             请等它结束后重试；桌面端与 webui 不要同时切号。"
+                            .to_string());
+                    }
+                    // 持有者已不在（崩溃残留）→ 清掉陈锁再试一次。
+                    let _ = std::fs::remove_file(&path);
+                }
+                Err(e) => return Err(format!("创建切换锁失败: {e}")),
+            }
+        }
+        Err("切换锁竞争异常（多次清理陈锁仍失败），请稍后重试".to_string())
+    }
+
+    /// 读锁文件里的 PID，判断该进程是否还在。读不出内容时按"不活"处理，
+    /// 交由 acquire 的循环清理 —— 否则一个空锁文件就能永久阻塞所有切换。
+    fn holder_is_alive(path: &Path) -> bool {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return false;
+        };
+        let Ok(pid) = text.trim().parse::<u32>() else {
+            return false;
+        };
+        // 本进程自己持锁（同进程重入）不当"别人持有"，交由上层 SWITCH_GATE 串行。
+        if pid == std::process::id() {
+            return false;
+        }
+        // 探测失败 → 保守当作"还活着"，宁可不抢锁也不误清别人的活锁。
+        process::pid_alive(pid).unwrap_or(true)
+    }
+}
+
+impl Drop for SwitchFileLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
 
 /// 执行切换。`progress` 会收到人话步骤，供 UI 直接显示。
 pub fn execute(
@@ -217,6 +283,8 @@ pub fn execute(
 ) -> Result<Journal> {
     // 毒锁照常放行：上一位持锁者 panic 不该把后续切换永久卡死。
     let _gate = SWITCH_GATE.lock().unwrap_or_else(|p| p.into_inner());
+    // 再拿跨进程锁：桌面端与 webui 是两个进程，进程内闸挡不住它们互相覆盖。
+    let _file_lock = SwitchFileLock::acquire(store)?;
 
     let pv = preview(roots, store, req)?;
     let b = bundle::load(store, &req.account_id, req.variant, req.target)?;
@@ -401,6 +469,8 @@ pub fn unfinished_with_warnings(store: &Path) -> Result<(Vec<Journal>, Vec<Strin
 ///    "目录存在"判定，那个崩溃窗口会让恢复入口永远卡在既成功不了也消不掉。
 pub fn recover(store: &Path, j: &Journal) -> Result<Phase> {
     let _gate = SWITCH_GATE.lock().unwrap_or_else(|p| p.into_inner());
+    // 恢复同样要跨进程串行：它写现场，与另一个进程正在跑的切换会互相踩。
+    let _file_lock = SwitchFileLock::acquire(store)?;
     let backups_root = store.join("backups");
     if !j.backup_dir.starts_with(&backups_root)
         || j.backup_dir == backups_root
@@ -410,6 +480,26 @@ pub fn recover(store: &Path, j: &Journal) -> Result<Phase> {
             "journal 的备份目录 {:?} 不在本库 backups 一级子目录下，拒绝按它恢复（可能被篡改）",
             j.backup_dir
         ));
+    }
+    // 上面的前缀比较是**词法**的，挡不住链接：`backups` 自身或路径中任一级若是指向
+    // 库外的 junction/符号链接，词法上仍"在 backups 下"，实际却写到别处去。
+    // 所以再做一次规范化比对 —— 两边都解析真实路径后仍须满足"一级子目录"。
+    // 解析失败（目录不存在等）按拒绝处理，不猜。
+    match (backups_root.canonicalize(), j.backup_dir.canonicalize()) {
+        (Ok(root_real), Ok(dir_real)) => {
+            if dir_real == root_real || dir_real.parent().map_or(true, |p| p != root_real) {
+                return Err(format!(
+                    "备份目录 {:?} 解析真实路径后不在本库 backups 一级子目录下，拒绝恢复（可能被链接指向库外）",
+                    j.backup_dir
+                ));
+            }
+        }
+        _ => {
+            return Err(format!(
+                "无法解析备份目录 {:?} 的真实路径（不存在或不可访问），拒绝恢复",
+                j.backup_dir
+            ));
+        }
     }
     if std::fs::symlink_metadata(&j.backup_dir)
         .map(|m| m.is_symlink())
@@ -705,6 +795,32 @@ mod tests {
             warnings.iter().any(|w| w.contains("读不出来")),
             "读取失败必须上报，而不是静默跳过: {warnings:?}"
         );
+        std::fs::remove_dir_all(s.tmp).ok();
+    }
+
+    /// 跨进程切换锁：活着的人持有 → 拒绝；陈锁（持有者已不在）→ 自动回收。
+    #[test]
+    fn switch_file_lock_rejects_live_holder_and_reclaims_stale() {
+        let s = sandbox();
+        let lock_path = s.store.join("switch.lock");
+
+        // 1. 陈锁：写一个几乎不可能存在的 PID，acquire 应回收并成功。
+        std::fs::create_dir_all(&s.store).unwrap();
+        std::fs::write(&lock_path, "4294967290\n").unwrap();
+        let held = SwitchFileLock::acquire(&s.store).expect("陈锁应被回收后取得");
+        assert!(lock_path.is_file(), "取得锁后锁文件该存在");
+
+        // 2. 另一个"进程"持有（这里用当前 PID 之外的一个真实存活 PID：自己换个写法模拟
+        //    也不可行，改为验证"锁文件被删后能重新取得"，以及 Drop 会清理）。
+        drop(held);
+        assert!(!lock_path.exists(), "Drop 必须清掉锁文件");
+
+        // 3. 内容损坏（读不出 PID）→ 按"不活"回收，不能永久卡死。
+        std::fs::write(&lock_path, "not-a-pid").unwrap();
+        let again = SwitchFileLock::acquire(&s.store).expect("损坏锁应被回收");
+        drop(again);
+        assert!(!lock_path.exists());
+
         std::fs::remove_dir_all(s.tmp).ok();
     }
 

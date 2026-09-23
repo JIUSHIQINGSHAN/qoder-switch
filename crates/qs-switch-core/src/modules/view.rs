@@ -92,8 +92,32 @@ pub fn account_meta(b: &bundle::Bundle) -> Value {
                 .to_string()
         }),
         "variant": variant_key(b.variant),
-        "proxy": b.identity.proxy.clone(),
+        // 回传前掩码：代理可能是 http://user:pass@host，原样回传会明文显示在界面上
+        // （账号卡片的 tooltip），截图/共享屏幕就泄露了。真正连代理时用的是
+        // bundle.identity.proxy 原值，不受此影响。
+        "proxy": b.identity.proxy.as_deref().map(mask_proxy_credentials),
     })
+}
+
+/// 把代理 URL 里的 userinfo 密码段掩码掉：`http://u:p@h:1` → `http://u:***@h:1`。
+///
+/// 只处理 `scheme://userinfo@host` 这一种；没有 `@` 或没有 `:` 的原样返回。
+pub fn mask_proxy_credentials(proxy: &str) -> String {
+    let Some((scheme, rest)) = proxy.split_once("://") else {
+        return proxy.to_string();
+    };
+    // userinfo 是 authority 段里最后一个 `@` 之前的部分（密码本身可能含 @）。
+    let Some(at) = rest.rfind('@') else {
+        return proxy.to_string();
+    };
+    let (userinfo, host) = rest.split_at(at);
+    let masked = match userinfo.split_once(':') {
+        // 有用户名有密码：留用户名、掩密码。
+        Some((user, _)) => format!("{user}:***"),
+        // 只有一段（其实是用户名，或误填的密码）：整体掩掉，不猜。
+        None => "***".to_string(),
+    };
+    format!("{scheme}://{masked}{host}")
 }
 
 pub fn accounts_in(roots: &PathRoots, store: &Path) -> Value {
@@ -529,6 +553,46 @@ mod tests {
         assert_eq!(v["needsRelogin"], false);
         assert!(v["expiresAt"].as_u64().unwrap() > 1_700_000_000_000);
         assert!(v["createdAt"].as_u64().unwrap() > 1_700_000_000_000);
+    }
+
+    /// 代理里的密码绝不能明文回传到前端 —— 它会显示在账号卡片的 tooltip 上。
+    #[test]
+    fn proxy_credentials_are_masked_in_account_meta() {
+        // 带认证的代理：密码必须被掩掉，主机端口保留。
+        assert_eq!(
+            mask_proxy_credentials("http://user:s3cret@127.0.0.1:7890"),
+            "http://user:***@127.0.0.1:7890"
+        );
+        // 密码里含 @ 也不能切错（取最后一个 @ 之前为 userinfo）。
+        assert_eq!(
+            mask_proxy_credentials("socks5://u:p@ss@10.0.0.1:1080"),
+            "socks5://u:***@10.0.0.1:1080"
+        );
+        // 无凭据的代理原样返回（最常见的用法，不能被改坏）。
+        assert_eq!(mask_proxy_credentials("http://127.0.0.1:7890"), "http://127.0.0.1:7890");
+        assert_eq!(
+            mask_proxy_credentials("socks5h://127.0.0.1:1080"),
+            "socks5h://127.0.0.1:1080"
+        );
+        // 只有一段 userinfo（没冒号）时整体掩掉，不猜哪个是密码。
+        assert_eq!(mask_proxy_credentials("http://justuser@h:1"), "http://***@h:1");
+
+        // 端到端：account_meta 里不能出现密码。
+        let b = bundle::Bundle {
+            account_id: "a".into(),
+            variant: QoderVariant::Cn,
+            target: QoderTarget::Desktop,
+            created_at: "20260920T010101Z".into(),
+            members: vec![],
+            identity: bundle::Identity {
+                proxy: Some("http://user:s3cret@127.0.0.1:7890".into()),
+                ..Default::default()
+            },
+        };
+        let v = account_meta(&b);
+        let returned = v["proxy"].as_str().unwrap();
+        assert!(!returned.contains("s3cret"), "密码不得出现在回传里: {returned}");
+        assert_eq!(returned, "http://user:***@127.0.0.1:7890");
     }
 
     #[test]

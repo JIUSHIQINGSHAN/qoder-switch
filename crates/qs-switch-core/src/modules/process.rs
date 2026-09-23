@@ -77,6 +77,37 @@ pub fn is_running(variant: QoderVariant, target: QoderTarget) -> bool {
     running_pids(target.images(variant)).map_or(false, |p| !p.is_empty())
 }
 
+/// 某个 PID 是否仍然存在。用于清理陈锁（跨进程切换锁记录的是持有者 PID）。
+///
+/// 注意 tasklist 的两种"查不到"：PID 数值非法时退出码 **1** 并打印"无效查询"，
+/// PID 合法但不存在时退出码 0 并打印"没有运行的任务"。两者都表示**该进程不在了**，
+/// 必须返回 `Ok(false)` —— 若把非零退出码一律当 Err，崩溃残留的锁（PID 已失效）
+/// 就永远回收不掉，跨进程锁会退化成永久死锁。
+#[cfg(windows)]
+pub fn pid_alive(pid: u32) -> std::result::Result<bool, String> {
+    let mut cmd = std::process::Command::new("tasklist");
+    cmd.args(["/nh", "/fo", "csv", "/fi", &format!("PID eq {pid}")]);
+    hide_console(&mut cmd);
+    let out = match cmd.output() {
+        // 退出码非零在这里语义是"查无此进程"，不是探测失败。
+        Ok(o) => o.stdout,
+        Err(e) => return Err(format!("tasklist 无法启动: {e}")),
+    };
+    // 只认真正的 CSV 行：无匹配时 tasklist 打印本地化提示（非 CSV）。
+    Ok(String::from_utf8_lossy(&out).lines().any(|line| {
+        let mut cols = line.split("\",\"");
+        let _name = cols.next();
+        cols.next().and_then(|s| s.trim().trim_matches('"').parse::<u32>().ok()) == Some(pid)
+    }))
+}
+
+/// 非 Windows：`/proc/<pid>` 存在即视为存活（本项目的发布目标只有 Windows，
+/// 这里只是让测试/开发机可编译）。
+#[cfg(not(windows))]
+pub fn pid_alive(pid: u32) -> std::result::Result<bool, String> {
+    Ok(std::path::Path::new(&format!("/proc/{pid}")).exists())
+}
+
 /// 当前进程的祖先链镜像名（含自身，从近到远）。
 ///
 /// PowerShell 脚本走 `-EncodedCommand`：`-Command` 传多行脚本时，内嵌的 `"` 会被
@@ -318,6 +349,36 @@ mod tests {
         if running.is_empty() {
             eprintln!("NOTE: 本机当前没有 Qoder CN 桌面进程");
         }
+    }
+
+    /// `pid_alive` 的阳性对照 + 阴性对照。跨进程锁靠它判陈锁，判错会死锁或误清。
+    #[test]
+    #[cfg(windows)]
+    fn pid_alive_has_positive_and_negative_control() {
+        // 阳性：自己一定活着（先跑阳性对照是本项目测量类测试的硬要求）。
+        let me = std::process::id();
+        match pid_alive(me) {
+            Ok(true) => {}
+            other => eprintln!("NOTE: 自身 PID 探测异常（{other:?}），本环境可能限制 tasklist"),
+        }
+
+        // 阴性一：合法但不存在的 PID → 必须是 Ok(false)，不能是 Err。
+        let mut free = 0u32;
+        for cand in 999_999u32..1_000_050 {
+            if pid_alive(cand).ok() == Some(false) {
+                free = cand;
+                break;
+            }
+        }
+        assert!(free != 0, "应能找到一个不存在但合法的 PID 并判定为 false");
+
+        // 阴性二：PID 数值非法（tasklist 退出码 1）同样必须收敛成 Ok(false) ——
+        // 这条正是崩溃残留锁的形态，若返回 Err 就永远回收不掉。
+        assert_eq!(
+            pid_alive(4_294_967_290).ok(),
+            Some(false),
+            "非法 PID 必须判为不存在，否则陈锁无法回收"
+        );
     }
 
     /// 两版镜像名是前缀关系（`Qoder` ⊂ `Qoder CN`），所以匹配必须精确，

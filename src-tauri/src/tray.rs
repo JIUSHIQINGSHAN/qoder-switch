@@ -130,13 +130,25 @@ fn spawn_switch(app: AppHandle, payload: String) {
         }
     };
 
-    // 检查 ProgressCell，避免在已有切号进行时并发重入
+    // 检查 ProgressCell 并**在同一个锁内立即置位**，避免并发重入。
+    //
+    // 旧写法是"这里读一次、spawn 之后在子线程里再置位"，中间隔着一次
+    // `thread::spawn`。连点两下托盘菜单（或托盘与主窗口几乎同时发起）时，
+    // 两次调用都能在任一方置位前通过检查 —— 典型的 check-then-act 竞态。
+    // 现在改成 compare-and-set：拿到锁、看 running、不是就立刻设成 true，
+    // 全程不释放锁，第二个调用者必然看到 running=true 而退出。
     if let Some(cell) = app.try_state::<crate::compat::ProgressCell>() {
-        let g = cell.0.lock().unwrap_or_else(|p| p.into_inner());
+        let mut g = cell.0.lock().unwrap_or_else(|p| p.into_inner());
         if g.running {
+            drop(g);
             let _ = app.emit("switch-progress", "已有切换正在进行中，请稍候".to_string());
             return;
         }
+        g.running = true;
+        g.progress = Some("托盘正在切号".into());
+    } else {
+        // 没有 ProgressCell 时（理论上不该发生）仍继续，但不具备防重入能力。
+        let _ = app.emit("switch-progress", "内部状态不可用，正在尝试切换".to_string());
     }
 
     let req = switch::Request {
@@ -149,9 +161,8 @@ fn spawn_switch(app: AppHandle, payload: String) {
         let roots = PathRoots::real();
         let store: PathBuf = qs_switch_core::modules::config::switch_root();
         let handle = app.clone();
-        if let Some(cell) = handle.try_state::<crate::compat::ProgressCell>() {
-            cell.set(true, Some("托盘正在切号".into()));
-        }
+        // running 已在上面（同一个锁内）置位，这里不再重复 set(true) —— 那正是
+        // 旧竞态的来源。只需在结束时清位。
         let result = switch::execute(&roots, &store, &req, switch::Actor::Real, &mut |m| {
             let _ = handle.emit("switch-progress", m.to_string());
         });

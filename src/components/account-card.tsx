@@ -309,6 +309,10 @@ export function AccountCard({ account, onDelete, onCheckin, onSwitch, todayCheck
   const [resourcesOpen, setResourcesOpen] = useState(false);
   const [proxyOpen, setProxyOpen] = useState(false);
   const [proxyInput, setProxyInput] = useState(account.proxy || "");
+  // 回传的代理值已做密码掩码（见 view::mask_proxy_credentials），不能直接存回去 ——
+  // 否则用户"打开弹窗什么都不改点保存"会把密码段替换成字面量 `***`。
+  // 记录打开时的原值，只有用户真的改过才提交。
+  const [proxyInitial, setProxyInitial] = useState(account.proxy || "");
   const [proxySaving, setProxySaving] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   /**
@@ -356,7 +360,7 @@ export function AccountCard({ account, onDelete, onCheckin, onSwitch, todayCheck
       {account.proxy && (
         <Tooltip>
           <TooltipTrigger asChild>
-            <Badge variant="outline" className={cn(chipClass, "gap-1 text-primary border-primary/30 bg-primary/5 cursor-pointer")} onClick={() => { setProxyInput(account.proxy || ""); setProxyOpen(true); }}>
+            <Badge variant="outline" className={cn(chipClass, "gap-1 text-primary border-primary/30 bg-primary/5 cursor-pointer")} onClick={() => { setProxyInput(account.proxy || ""); setProxyInitial(account.proxy || ""); setProxyOpen(true); }}>
               <Globe className="size-3" />
               <span>代理</span>
             </Badge>
@@ -443,6 +447,7 @@ export function AccountCard({ account, onDelete, onCheckin, onSwitch, todayCheck
                 )}
                 <DropdownMenuItem onSelect={() => {
                   setProxyInput(account.proxy || "");
+                  setProxyInitial(account.proxy || "");
                   setProxyOpen(true);
                 }}>
                   <Globe />配置代理
@@ -720,6 +725,9 @@ export function AccountCard({ account, onDelete, onCheckin, onSwitch, todayCheck
                 autoComplete="off"
               />
               <p className="text-xs text-muted-foreground">留空并保存表示清除代理，恢复为系统直连出口。</p>
+              <p className="text-xs text-muted-foreground">
+                地址里的密码会显示为 ***（原文保存在本机，不会明文展示）；不改动此处直接保存不会影响已有配置。
+              </p>
             </div>
           </div>
           <DialogFooter className="gap-2 sm:gap-0">
@@ -739,9 +747,12 @@ export function AccountCard({ account, onDelete, onCheckin, onSwitch, todayCheck
               onClick={async () => {
                 setProxySaving(true);
                 try {
-                  await useAccountsStore
-                    .getState()
-                    .setAccountProxy(account.id, proxyInput.trim() || null, accountVariant(account));
+                  // 原值未改动 → 不做任何写入。它可能是掩码串，存回去会毁掉真密码。
+                  if (proxyInput.trim() !== proxyInitial.trim()) {
+                    await useAccountsStore
+                      .getState()
+                      .setAccountProxy(account.id, proxyInput.trim() || null, accountVariant(account));
+                  }
                   setProxyOpen(false);
                 } catch (e) {
                   // 之前这里只有 finally、没有 catch：保存失败被静默吞掉，弹窗不关、

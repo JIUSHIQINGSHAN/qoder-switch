@@ -76,6 +76,10 @@ impl ProgressCell {
 }
 
 /// 前端在切换对话框里轮询这个；桌面端主要靠事件，但契约要求它存在。
+///
+/// 刻意保持同步（留在主线程）：它只读一个进程内 cell，没有文件或进程 IO。
+/// 前端每 600ms 轮询一次，若为它走 spawn_blocking，反而每次都要跨线程调度，
+/// 得不偿失。真正要挪出主线程的是**有 IO** 的那些读命令（见本文件其它 `off_main`）。
 #[tauri::command]
 pub fn switch_progress(cell: tauri::State<'_, ProgressCell>) -> Value {
     let g = cell.0.lock().unwrap_or_else(|p| p.into_inner());
@@ -223,13 +227,13 @@ pub async fn set_account_proxy(
 }
 
 #[tauri::command]
-pub fn get_auto_rotate_config() -> UiRotateConfig {
-    view::read_ui_config(&switch_root())
+pub async fn get_auto_rotate_config() -> Result<UiRotateConfig, String> {
+    off_main(|| Ok(view::read_ui_config(&switch_root()))).await
 }
 
 #[tauri::command]
-pub fn save_auto_rotate_config(config: Value) -> Result<UiRotateConfig, String> {
-    view::merge_ui_config(&switch_root(), &config)
+pub async fn save_auto_rotate_config(config: Value) -> Result<UiRotateConfig, String> {
+    off_main(move || view::merge_ui_config(&switch_root(), &config)).await
 }
 
 #[tauri::command]
@@ -258,8 +262,8 @@ pub async fn run_rotate(variant: Option<String>) -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub fn get_rotate_logs() -> Value {
-    view::rotate_logs(&switch_root())
+pub async fn get_rotate_logs() -> Result<Value, String> {
+    off_main(|| Ok(view::rotate_logs(&switch_root()))).await
 }
 
 #[tauri::command]
@@ -431,19 +435,22 @@ pub async fn get_credit_statistics(refresh: Option<bool>) -> Value {
 }
 
 #[tauri::command]
-pub fn get_auto_checkin_config() -> Value {
-    qs_switch_core::modules::ledger::read_checkin_config(&switch_root())
+pub async fn get_auto_checkin_config() -> Result<Value, String> {
+    off_main(|| Ok(qs_switch_core::modules::ledger::read_checkin_config(&switch_root()))).await
 }
 
 #[tauri::command]
-pub fn save_auto_checkin_config(config: Value) -> Result<Value, String> {
-    qs_switch_core::modules::ledger::write_checkin_config(&switch_root(), &config)
-        .map_err(|e| e.to_string())
+pub async fn save_auto_checkin_config(config: Value) -> Result<Value, String> {
+    off_main(move || {
+        qs_switch_core::modules::ledger::write_checkin_config(&switch_root(), &config)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn get_checkin_logs() -> Value {
-    qs_switch_core::modules::ledger::read_checkin_logs(&switch_root())
+pub async fn get_checkin_logs() -> Result<Value, String> {
+    off_main(|| Ok(qs_switch_core::modules::ledger::read_checkin_logs(&switch_root()))).await
 }
 
 /// 权限自检：Windows 认证目录写探针。
@@ -490,7 +497,7 @@ mod tests {
         let s = tauri::async_runtime::block_on(rotate_status(Some("cn".into()))).unwrap();
         assert_eq!(s["cliConfigured"], false, "Qoder 无 CLI 指针机制");
         assert!(s.get("config").is_some());
-        assert!(get_rotate_logs()["logs"].is_array());
+        assert!(tauri::async_runtime::block_on(get_rotate_logs()).unwrap()["logs"].is_array());
     }
 
     #[test]
@@ -557,7 +564,9 @@ mod tests {
             tauri::async_runtime::block_on(get_status(Some("ai".into()))).unwrap(),
             view::app_status(&roots, QoderVariant::Global));
         assert_eq!(get_capabilities(), view::capabilities());
-        assert_eq!(get_rotate_logs(), view::rotate_logs(&switch_root()));
+        assert_eq!(
+            tauri::async_runtime::block_on(get_rotate_logs()).unwrap(),
+            view::rotate_logs(&switch_root()));
     }
 
     /// 绑定漂移门禁（P0 级历史缺陷）：Tauri v2 按**参数名**从 invoke 载荷逐键取值，

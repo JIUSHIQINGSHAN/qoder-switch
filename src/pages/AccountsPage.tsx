@@ -478,7 +478,12 @@ export default function AccountsPage() {
    */
   async function runBatchCheckin() {
     const res = await api.checkinAll(variant);
-    return res.accounts ?? [];
+    // 不能把"后端没给 accounts"折叠成空数组：那会被上层渲染成
+    // "无账号需要签到" + 绿色成功，而实际是一次失败。缺键就抛，让调用方走错误分支。
+    if (!Array.isArray(res.accounts)) {
+      throw new Error("签到接口返回异常（缺少 accounts 字段）");
+    }
+    return res.accounts;
   }
 
   /**
