@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::{json, Value};
 
@@ -21,6 +22,36 @@ pub fn openapi_base(variant: QoderVariant) -> &'static str {
         QoderVariant::Cn => "https://openapi.qoder.com.cn",
         QoderVariant::Global => "https://openapi.qoder.sh",
     }
+}
+
+/// 签到任务互斥门：手动批量签到（`checkin_all`）与自动调度（`ledger::run_auto_checkin_once`）
+/// 共用。**非阻塞**抢占 —— 抢不到就直接返回 `already_running`，绝不排队：
+/// 排队会让「全部立即签到」按钮一直转圈，而两轮签到本身没有任何意义。
+///
+/// 用 `AtomicBool` 而不是 `Mutex`：`checkin_all` 是 async 函数（Tauri 命令要求 Future 为
+/// `Send`），而 `MutexGuard` 不是 `Send`，跨 `.await` 持有会让整个 Future 失去 `Send`。
+/// 这里用 CAS 占位 + RAII guard 释放，guard 本身是 `Send`，也顺带没有中毒语义要处理。
+///
+/// 只覆盖单进程内的并发（手动 vs 自动、设置页 vs 账号页）。桌面端与 webui 是两个进程，
+/// 跨进程的重复由 `run_auto_checkin_once` 的「当天已签短路」收敛：先签完的那个写日志，
+/// 另一个下一轮读到日志就跳过，不必为此引入文件锁。
+static CHECKIN_INFLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// 抢占成功后的占位凭证，drop 时释放（panic 展开同样会走到）。
+pub(crate) struct CheckinGuard;
+
+impl Drop for CheckinGuard {
+    fn drop(&mut self) {
+        CHECKIN_INFLIGHT.store(false, Ordering::Release);
+    }
+}
+
+/// 非阻塞抢占签到门。`None` = 已有一轮签到在跑（手动或自动）。
+pub(crate) fn try_acquire_checkin() -> Option<CheckinGuard> {
+    CHECKIN_INFLIGHT
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .ok()
+        .map(|_| CheckinGuard)
 }
 
 /// 解析指定账号的有效 Bearer Token（优先读取账号包解密结果，次级读取现场文件）。
@@ -695,11 +726,19 @@ pub fn checkin_sync(
 ///
 /// `only_variant = None` 时覆盖全部档位；账号页/设置页按当前档位传入。
 /// 之前只回 `{result,count}`，前端 `res.accounts.filter` 直接崩。
+///
+/// 已有一轮签到在跑时返回 `{status:"skipped", reason:"already_running", accounts:[]}` ——
+/// 这是前端 `checkinAll` 返回值里早已声明、此前却从未被后端兑现的契约。
+/// `accounts` 保持存在（空数组）而不是省略，前端两处的 `Array.isArray` 守卫才不会误报异常。
 pub async fn checkin_all(
     roots: &PathRoots,
     store: &Path,
     only_variant: Option<QoderVariant>,
 ) -> Value {
+    // 抢不到门 = 手动或自动已有一轮在跑，直接让出，不排队。
+    let Some(_gate) = try_acquire_checkin() else {
+        return json!({ "status": "skipped", "reason": "already_running", "accounts": [] });
+    };
     let accounts = bundle::list_all(store);
     let mut out = Vec::new();
     for b in accounts {

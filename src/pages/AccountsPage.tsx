@@ -480,6 +480,11 @@ export default function AccountsPage() {
    */
   async function runBatchCheckin() {
     const res = await api.checkinAll(variant);
+    // 后端已有另一轮签到在跑（手动或自动调度线程抢占同一道门）。这不是错误，
+    // 但也不能当成"无账号需要签到"渲染成绿色成功 —— 抛出去让调用方提示重试。
+    if (res.status === "skipped" && res.reason === "already_running") {
+      throw new Error("签到任务正在进行，请稍后再试");
+    }
     // 不能把"后端没给 accounts"折叠成空数组：那会被上层渲染成
     // "无账号需要签到" + 绿色成功，而实际是一次失败。缺键就抛，让调用方走错误分支。
     if (!Array.isArray(res.accounts)) {

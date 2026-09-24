@@ -240,8 +240,9 @@ macOS 侧 2026-09-23 实跑结果（装了 `Qoder CN.app` 0.3.4 并已登录的�
   （端点来自 10router 取证并实测 200），账号卡显示总容量/剩余/临期资源包
 - 每日签到与 Credits 领取：`POST /sash/api/v1/me/campaigns/{id}/claim`；单账号签到、
   批量签到、官方未开放签到（无 CLAIM_BENEFIT 活动）判为 `inactive` 而不是谎报"已签到"
-- 自动签到本机调度：配置持久化在 `checkin-config.json`，两个宿主共用同一条调度线程
-  （启动即核验一次、之后按惰性刷新间隔复查），签到结果落在 `checkin-logs.json`
+- 自动签到本机调度：配置持久化在 `checkin-config.json`，两个宿主共用同一份调度实现
+  （各自进程内起一条线程；启动即核验一次、之后按惰性刷新间隔复查，今天已签的账号跳过
+  网络查询），签到结果落在 `checkin-logs.json`；手动与自动共用一道进程级互斥门
 - 积分统计：Qoder 无官方用量端点，统计页用本机配额快照（`credit-snapshots.jsonl`，
   按账号 10 分钟节流）聚合日消耗/账号明细/签到事件 —— 真实观察值，不编造
 - OAuth 设备码登录：浏览器授权 + S256 PKCE + `deviceToken/poll`，授权成功即自动采集入库

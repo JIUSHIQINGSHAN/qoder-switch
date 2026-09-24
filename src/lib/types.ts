@@ -328,10 +328,12 @@ export interface SwitchJournal {
 
 export interface CheckinConfig {
   enabled: boolean;
-  /** Legacy persisted fields; accepted by the backend but ignored by scheduling. */
+  /**
+   * 上游遗留字段：后端已不再读写，纯类型兼容。
+   * 本项目调度只认 enabled 与 lazy_refresh_hours。
+   */
   start_hour?: number;
   end_hour?: number;
-  keepalive_days: number;
   lazy_refresh_hours: number;
 }
 

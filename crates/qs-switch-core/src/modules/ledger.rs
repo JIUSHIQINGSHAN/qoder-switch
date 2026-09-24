@@ -4,7 +4,7 @@
 //!
 //! 不打印任何凭据：这里只落账号 id / 邮箱 / 数值与结果枚举。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -39,8 +39,12 @@ fn snapshots_path(store: &Path) -> PathBuf {
 }
 
 /// 前端 `CheckinConfig` 契约（snake_case 沿用上游）。缺省关闭 —— 自动打网络请求
-/// 的开关必须默认关闭。阈值给的是可用缺省（7 天保活 / 6 小时惰性核验），
-/// 不是 0：0 会让设置页刚打开就显示"每天无条件刷新"这种从来没发生过的语义。
+/// 的开关必须默认关闭。惰性刷新给 6 小时这个可用缺省，不是 0：0 会让设置页刚打开
+/// 就显示"每小时无条件刷新"这种从来没发生过的语义。
+///
+/// 上游还带过 `keepalive_days`（保活天数）与 `start_hour`/`end_hour`，本项目的调度
+/// 从未读取过它们。签到是每日一次的幂等领取，「今天签没签」由本机日志即可判定，
+/// 不需要第二个时间维度 —— 因此只持久化真正生效的字段，不再留下永不生效的开关。
 pub fn read_checkin_config(store: &Path) -> Value {
     let raw: Value = std::fs::read(checkin_config_path(store))
         .ok()
@@ -48,7 +52,6 @@ pub fn read_checkin_config(store: &Path) -> Value {
         .unwrap_or_else(|| json!({}));
     json!({
         "enabled": raw.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false),
-        "keepalive_days": raw.get("keepalive_days").and_then(|x| x.as_u64()).unwrap_or(7),
         "lazy_refresh_hours": raw.get("lazy_refresh_hours").and_then(|x| x.as_u64()).unwrap_or(6),
     })
 }
@@ -59,9 +62,6 @@ pub fn write_checkin_config(store: &Path, patch: &Value) -> crate::Result<Value>
     let mut cur = read_checkin_config(store);
     if let Some(b) = patch.get("enabled").and_then(|x| x.as_bool()) {
         cur["enabled"] = json!(b);
-    }
-    if let Some(n) = patch.get("keepalive_days").and_then(|x| x.as_u64()) {
-        cur["keepalive_days"] = json!(n.clamp(0, 90));
     }
     if let Some(n) = patch.get("lazy_refresh_hours").and_then(|x| x.as_u64()) {
         cur["lazy_refresh_hours"] = json!(n.clamp(1, 72));
@@ -474,6 +474,28 @@ pub fn credit_statistics(roots: &PathRoots, store: &Path, refresh: bool) -> Valu
     out
 }
 
+/// 今天该账号是否已有某类结果的日志。自动流程用它做两件事：
+/// 失败按天去重（否则每小时一轮会把一个坏账号刷成日志墙），以及「当天已签短路」。
+pub fn has_today_log(store: &Path, account_id: &str, result: &str) -> bool {
+    let today = today_key();
+    read_logs_raw(store).iter().any(|l| {
+        l.account_id.as_deref() == Some(account_id) && l.result == result && date_key_ms(l.ts) == today
+    })
+}
+
+/// 今天已成功签到的账号集合（`success` 与 `already` 都算已签）。
+/// 自动签到据此短路：本地日志已有今天的结论，就不必再问一次服务端。
+fn checked_in_today(store: &Path) -> HashSet<String> {
+    let today = today_key();
+    read_logs_raw(store)
+        .into_iter()
+        .filter(|l| {
+            date_key_ms(l.ts) == today && (l.result == "success" || l.result == "already")
+        })
+        .filter_map(|l| l.account_id)
+        .collect()
+}
+
 /// 自动签到的一次核验：启动时与每 `lazy_refresh_hours` 间隔调用。
 /// 只做幂等的"未签则签"，绝不碰切换（换号是另一条红线，由用户亲手决定）。
 pub fn run_auto_checkin_once(roots: &PathRoots, store: &Path) -> Value {
@@ -481,6 +503,13 @@ pub fn run_auto_checkin_once(roots: &PathRoots, store: &Path) -> Value {
     if !cfg["enabled"].as_bool().unwrap_or(false) {
         return json!({ "status": "disabled" });
     }
+    // 与手动批量签到共用同一道门：抢不到说明手动那一轮正在跑，让出即可。
+    let Some(_gate) = quota::try_acquire_checkin() else {
+        return json!({ "status": "skipped", "reason": "already_running" });
+    };
+    // 一轮开始时读一次今天的日志：已签的账号直接跳过网络查询。
+    // 签到是每日一次的活动，这条短路能把「每轮 N 次查询」压到「每轮只查未签的」。
+    let done_today = checked_in_today(store);
     let mut checked = 0u32;
     let (mut success, mut already, mut inactive, mut error) = (0u32, 0u32, 0u32, 0u32);
     for b in bundle::list_all(store) {
@@ -488,8 +517,24 @@ pub fn run_auto_checkin_once(roots: &PathRoots, store: &Path) -> Value {
         if b.target != QoderTarget::Desktop || b.variant != QoderVariant::Cn {
             continue;
         }
+        // 本地已有今天的成功结论 → 短路，省一次 campaigns 查询。
+        if done_today.contains(&b.account_id) {
+            already += 1;
+            continue;
+        }
         let st = quota::get_checkin_status_sync(roots, store, &b.account_id, b.variant);
         if st.get("ok").and_then(|x| x.as_bool()) != Some(true) {
+            // 失败必须可见：此前只累加计数，而返回值又被调用方 `let _ =` 丢弃，
+            // 凭据解不开 / 网络错误这些情况在界面上一个字都看不到。
+            // 按天去重 —— 同一账号今天已记过 error 就不再写，否则每小时一轮会刷成日志墙。
+            let msg = st
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("查询签到状态失败");
+            if !has_today_log(store, &b.account_id, "error") {
+                let email = b.identity.email.clone().unwrap_or_default();
+                record_checkin_log(store, &b.account_id, &email, b.variant, "error", Some(msg));
+            }
             error += 1;
             continue;
         }
@@ -572,10 +617,13 @@ mod tests {
         let merged = write_checkin_config(&dir, &json!({ "enabled": true, "lazy_refresh_hours": 0 })).unwrap();
         assert_eq!(merged["enabled"], true);
         assert_eq!(merged["lazy_refresh_hours"], 1, "低于下限收口到 1");
-        let merged = write_checkin_config(&dir, &json!({ "keepalive_days": 999 })).unwrap();
-        assert_eq!(merged["keepalive_days"], 90);
         // 只写 patch 不能把没提到的字段冲掉。
-        assert_eq!(merged["enabled"], true);
+        let merged = write_checkin_config(&dir, &json!({ "lazy_refresh_hours": 12 })).unwrap();
+        assert_eq!(merged["enabled"], true, "未提及的 enabled 必须保留");
+        assert_eq!(merged["lazy_refresh_hours"], 12);
+        // 上游遗留字段不再持久化：写了也不落盘，界面上不会出现永不生效的开关。
+        let merged = write_checkin_config(&dir, &json!({ "keepalive_days": 999 })).unwrap();
+        assert!(merged.get("keepalive_days").is_none(), "{merged}");
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -651,6 +699,66 @@ mod tests {
         // 无配置文件 = disabled：调度循环必须直接返回，一个账号都不碰。
         let r = run_auto_checkin_once(&PathRoots::real(), &dir);
         assert_eq!(r["status"], "disabled", "{r}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn today_log_lookup_is_day_and_result_scoped() {
+        let dir = temp_store();
+        record_checkin_log(&dir, "acct-a", "a@x.com", QoderVariant::Cn, "error", Some("HTTP 500"));
+        assert!(has_today_log(&dir, "acct-a", "error"));
+        assert!(!has_today_log(&dir, "acct-a", "success"), "结果类型必须区分");
+        assert!(!has_today_log(&dir, "acct-b", "error"), "账号必须区分");
+
+        // 昨天的 error 不能算今天 —— 否则今天的失败会被永久去重掉，用户再也看不到。
+        std::fs::write(
+            checkin_logs_path(&dir),
+            serde_json::to_vec(&[CheckinLogEntry {
+                ts: chrono::Utc::now().timestamp_millis() - 86_400_000,
+                account_id: Some("acct-a".into()),
+                email: "a@x.com".into(),
+                result: "error".into(),
+                error: None,
+                variant: "cn".into(),
+            }])
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(!has_today_log(&dir, "acct-a", "error"), "昨天的日志不算今天");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn checked_in_today_excludes_failures() {
+        let dir = temp_store();
+        assert!(checked_in_today(&dir).is_empty(), "无日志时短路集合为空");
+        record_checkin_log(&dir, "acct-ok", "ok@x.com", QoderVariant::Cn, "success", None);
+        record_checkin_log(&dir, "acct-already", "al@x.com", QoderVariant::Cn, "already", None);
+        record_checkin_log(&dir, "acct-err", "err@x.com", QoderVariant::Cn, "error", Some("HTTP 500"));
+        let set = checked_in_today(&dir);
+        assert!(set.contains("acct-ok"));
+        assert!(set.contains("acct-already"));
+        // error 绝不能进短路集合：否则查询失败的账号会被当成"已签"永久跳过。
+        assert!(!set.contains("acct-err"), "{set:?}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// 互斥门与「启用但库里无账号」串在同一个测试里：两者都碰全局 `CHECKIN_GATE`，
+    /// 拆成两个 `#[test]` 会在 cargo 的并行测试下互相抢锁而 flaky。
+    #[test]
+    fn checkin_gate_serializes_and_enabled_noop_is_done() {
+        let first = quota::try_acquire_checkin().expect("首次必须抢到");
+        assert!(quota::try_acquire_checkin().is_none(), "持锁期间第二次抢占必须失败");
+        drop(first);
+        assert!(quota::try_acquire_checkin().is_some(), "释放后必须能再抢到");
+
+        // enabled 但没有账号：一轮跑完、计数全 0，证明门能被正常获取与释放。
+        let dir = temp_store();
+        write_checkin_config(&dir, &json!({ "enabled": true })).unwrap();
+        let r = run_auto_checkin_once(&PathRoots::real(), &dir);
+        assert_eq!(r["status"], "done", "{r}");
+        assert_eq!(r["checked"], 0);
+        assert_eq!(r["error"], 0);
         std::fs::remove_dir_all(dir).ok();
     }
 }

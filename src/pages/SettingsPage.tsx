@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactElement, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { ArrowUpCircle, CircleCheck, ExternalLink, Loader2, RefreshCw, Save } from "lucide-react";
 import { toast } from "sonner";
 
@@ -166,7 +166,16 @@ function AutoCheckinCard() {
     }
   }
 
+  /**
+   * 同步防重入：`busy` 是异步 state，同一帧内连点两次仍会触发两次并发请求。
+   * 后端虽然已有进程级互斥门（第二次会返回 already_running），但这里先拦一道，
+   * 免得用户看到一条本可避免的「正在进行」提示。与同文件 `save()` 的 `saving` 同理。
+   */
+  const checkinBusyRef = useRef(false);
+
   async function checkinAllNow() {
+    if (checkinBusyRef.current) return;
+    checkinBusyRef.current = true;
     setBusy(true);
     setMsg(null);
     try {
@@ -199,6 +208,7 @@ function AutoCheckinCard() {
     } catch (e) {
       setMsg({ type: "err", text: api.asError(e) });
     } finally {
+      checkinBusyRef.current = false;
       setBusy(false);
     }
   }
@@ -229,22 +239,6 @@ function AutoCheckinCard() {
               />
             </SettingsFieldRow>
 
-            <SettingsFieldRow
-              label="保活阈值"
-              description="天；0 表示每天无条件刷新"
-              htmlFor="ac-keep"
-              operational
-            >
-              <Input
-                id="ac-keep"
-                className="w-full sm:w-48"
-                type="number"
-                min={0}
-                max={90}
-                value={cfg.keepalive_days}
-                onChange={(e) => setNum("keepalive_days", e.target.value)}
-              />
-            </SettingsFieldRow>
             <SettingsFieldRow label="惰性刷新" description="小时" htmlFor="ac-lazy" operational>
               <Input
                 id="ac-lazy"

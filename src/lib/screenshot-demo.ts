@@ -330,7 +330,7 @@ function buildStatistics(): CreditStatistics {
 }
 
 function checkinConfig(): CheckinConfig {
-  return { enabled: true, keepalive_days: 7, lazy_refresh_hours: 12 };
+  return { enabled: true, lazy_refresh_hours: 12 };
 }
 
 /**
