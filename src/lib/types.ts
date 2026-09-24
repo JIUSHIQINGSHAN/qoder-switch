@@ -38,6 +38,29 @@ export interface AppStatus {
   variant?: WbVariant;
 }
 
+/**
+ * 账号库自动备份现状（默认落在 `<用户文档目录>/QoderSwitch-AccountBackups`）。
+ *
+ * 刻意放在账号库**之外**：账号库一旦被整体替换（本仓库真实遇到过的情形），
+ * 放在里面的备份会跟着一起消失，等于没备份。
+ *
+ * `recoverable` 是后端给的一句话判据 —— 账号库是空的、而最新备份里还有账号。
+ * 只有这种情况才值得主动提示恢复；其余情况不打扰用户。
+ */
+export interface BackupStatus {
+  /** 备份目录；取不到文档目录时为 null。 */
+  dir: string | null;
+  /** 现有备份份数（上限 5，新的在前）。 */
+  count: number;
+  /** 最新一份备份的完整路径。 */
+  latest: string | null;
+  /** 最新一份备份里有多少个不同账号 —— 恢复前先知道能拿回几个。 */
+  latestAccounts: number;
+  /** 当前账号库里的账号卡片数。 */
+  accounts: number;
+  recoverable: boolean;
+}
+
 export interface OAuthStartResult {
   loginId: string;
   verificationUri: string;
@@ -449,6 +472,13 @@ export interface CreditExpiry {
   expired?: boolean;
   resources?: CreditResource[];
   error?: string;
+  /**
+   * 账号包已不在账号库里（列表加载之后被删/被移走）。
+   *
+   * 这时卡片是"幽灵"：任何按 id 的操作都只会失败。前端据此重新拉一次账号列表，
+   * 把这张卡片清掉 —— 只靠 `error` 文案判断太脆，文案会随迭代改。
+   */
+  accountMissing?: boolean;
 }
 
 export interface CreditStatsSummary {

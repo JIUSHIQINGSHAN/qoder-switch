@@ -69,6 +69,24 @@ macOS `app,dmg`。Tauri 会按宿主自动合并 `src-tauri/tauri.macos.conf.jso
 （`app,dmg` + `LSMinimumSystemVersion 12.0`）—— base `tauri.conf.json` 里的
 `targets: ["nsis"]` 因此不需要为了 mac 改掉，Windows 行为一字未动。
 
+### 清理构建产物
+
+构建会往六处写东西：cargo 的 `target/`、vite 的 `dist/`、tauri-build 生成的
+`src-tauri/gen/schemas/`、`tauri icon` 的备份目录，以及 `pack-npm.sh` 暂存的
+`npm/webui_dist/` 与 `npm/platform/*/bin/`。只删 `target/` 会留下后面几处的陈旧产物，
+下次构建可能拿旧 `dist` 或旧二进制打包 —— 所以清理统一走 `scripts/clean.sh`，
+落点表就一张，不靠记忆手敲 `rm -rf`：
+
+```bash
+bash scripts/clean.sh            # 列出清单，确认后清理（保留 node_modules）
+bash scripts/clean.sh --dry-run  # 只预览将删除的路径与体积，不动任何文件
+bash scripts/clean.sh --yes      # 免确认（非交互环境必须显式带，否则脚本拒绝删除）
+bash scripts/clean.sh --all      # 连 node_modules 一起清（之后需 npm install）
+```
+
+`src-tauri/icons/`、`Cargo.lock`、`package-lock.json` 等已入库文件不会被清理；
+`CARGO_TARGET_DIR` 指向仓库外（Windows 的 `E:/qs-target`）时清单里会标 `⚠ 位于仓库外`。
+
 ### 工具链位置与产物
 
 Windows 上 `RUSTUP_HOME` / `CARGO_HOME` 若不在默认位置，脚本会读环境变量或按

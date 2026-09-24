@@ -8,7 +8,7 @@
 //! 按 Windows 用户加密的 —— 因此**换机器或换 Windows 账号后导入会静默变成未登录**，
 //! 只能在同一 Windows 用户内复用。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -243,6 +243,182 @@ fn sha256_of(bytes: &[u8]) -> String {
     hex::encode(h.finalize())
 }
 
+/// 自动备份保留的份数。
+pub const BACKUP_KEEP: usize = 5;
+
+/// 备份文件名特征。前后缀一起用于识别"这是本工具的整库备份" —— 清理旧备份时
+/// 按它过滤，同目录下用户的其它文件一律不碰。
+const BACKUP_PREFIX: &str = "qoder-switch-accounts-";
+const BACKUP_SUFFIX: &str = ".json";
+
+/// 默认备份目录：`<用户文档目录>/QoderSwitch-AccountBackups`。
+///
+/// 刻意放在 store **之外**：store 一旦被整体替换（本仓库真实遇到过的情形），
+/// 放在 store 里的备份会跟着一起消失，等于没备份。放文档目录还有个额外好处 ——
+/// 重装、迁移甚至换机器时，它都会自然被带走。
+pub fn backup_dir() -> Option<PathBuf> {
+    dirs::document_dir().map(|d| d.join("QoderSwitch-AccountBackups"))
+}
+
+/// 导出 store 里**全部**账号包，合成一份整库快照。
+///
+/// 与 [`export_account`] 的分工：那个按单个账号导，供界面上的「导出」按钮按需取；
+/// 这个是整库导，供自动备份用。账号包是不可再生的凭据副本 —— 现场只保留当前登录
+/// 的那一个，其余账号一旦包丢了就只能重新扫码，所以整库必须有独立副本。
+pub fn export_all(store: &Path) -> Result<Export> {
+    let mut bundles = Vec::new();
+    // 同一账号在多个轴上都有包时只导一次：export_account 内部已遍历全部轴。
+    let mut seen = std::collections::BTreeSet::new();
+    for b in bundle::list_all(store) {
+        if !seen.insert(b.account_id.clone()) {
+            continue;
+        }
+        // 单个包损坏不该让整库备份失败 —— 能备份多少算多少，坏的留给用户单独处置。
+        if let Ok(mut e) = export_account(store, &b.account_id) {
+            bundles.append(&mut e.bundles);
+        }
+    }
+    if bundles.is_empty() {
+        return Err("账号库里没有任何可备份的账号包".into());
+    }
+    Ok(Export {
+        format: FORMAT_VERSION,
+        exported_at: crate::modules::config::now_ts(),
+        bundles,
+    })
+}
+
+/// 账号库的内容指纹：只看"有哪些包、每个包里有哪些文件、各自哈希多少"，
+/// **刻意不含 `exported_at`** —— 否则每次导出的字节都不同，去重就永远不命中。
+fn export_fingerprint(e: &Export) -> String {
+    use sha2::{Digest, Sha256};
+    let mut rows: Vec<String> = Vec::new();
+    for b in &e.bundles {
+        for f in &b.files {
+            rows.push(format!(
+                "{}|{:?}|{:?}|{}|{}",
+                b.account_id, b.variant, b.target, f.role, f.sha256
+            ));
+        }
+    }
+    rows.sort();
+    let mut h = Sha256::new();
+    for r in &rows {
+        h.update(r.as_bytes());
+        h.update(b"\n");
+    }
+    hex::encode(h.finalize())
+}
+
+/// 读回一份备份文件（恢复前预览、以及去重比对都要用）。
+pub fn load_backup(path: &Path) -> Result<Export> {
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("读备份 {} 失败: {e}", path.display()))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|e| format!("解析备份 {} 失败: {e}", path.display()))
+}
+
+/// 把整库备份到 `dest`，并按文件名时间戳只保留最近 [`BACKUP_KEEP`] 份。
+///
+/// 账号库为空时返回 `Ok(None)` —— 那不是错误，只是没什么可备份的。
+///
+/// 内容与最新一份备份完全一致时**不落新文件**，直接复用那一份。否则"连点两次
+/// 导入本机账号"会把 [`BACKUP_KEEP`] 个备份位占满成同一份，真正有区分度的历史
+/// 反而被挤出去 —— 备份的价值全在"能回到更早的某个状态"。
+///
+/// `dest` 由调用方给定而不是内部直接取 [`backup_dir`]：测试必须能指向临时目录，
+/// 否则跑一次测试就往用户的真实文档目录里写东西。
+pub fn auto_backup(store: &Path, dest: &Path) -> Result<Option<PathBuf>> {
+    let export = match export_all(store) {
+        Ok(e) => e,
+        Err(e) if e.contains("没有任何可备份") => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let fingerprint = export_fingerprint(&export);
+    if let Some(newest) = list_backups(dest).first() {
+        let same = load_backup(newest)
+            .map(|e| export_fingerprint(&e) == fingerprint)
+            .unwrap_or(false);
+        if same {
+            // 跳过写入也必须执行修剪：否则"目录里已超过上限、内容又恰好没变"时
+            // 保留策略永远不收敛（比如用户手工复制进来几份，或上限被调小过）。
+            prune_backups(dest, BACKUP_KEEP)?;
+            return Ok(Some(newest.clone()));
+        }
+    }
+    std::fs::create_dir_all(dest)
+        .map_err(|e| format!("创建备份目录 {} 失败: {e}", dest.display()))?;
+    // 文件名带内容指纹：同一秒内的两份**不同**备份不能互相覆盖（只按秒命名会撞名，
+    // 而 atomic_write_bytes 是覆盖写）。时间戳在前，字典序仍是时间序。
+    let path = dest.join(format!(
+        "{BACKUP_PREFIX}{}-{}{BACKUP_SUFFIX}",
+        crate::modules::config::now_ts(),
+        &fingerprint[..8]
+    ));
+    crate::modules::config::atomic_write_bytes(&path, &to_bytes(&export)?)
+        .map_err(|e| format!("写备份文件失败: {e}"))?;
+    prune_backups(dest, BACKUP_KEEP)?;
+    Ok(Some(path))
+}
+
+/// 在**真实账号库**上做一次自动备份，尽力而为：返回 `None` 表示"这次没备"
+/// （空库、取不到文档目录、或传入的路径不是真实账号库）。任何失败都不上抛 ——
+/// 备份是护栏，护栏自己不能把用户的正常操作绊倒。
+///
+/// 只在 `store` 等于 [`crate::modules::config::switch_root`] 时动作：单测与沙箱演练
+/// 传进来的临时 store 绝不能往用户的文档目录里写东西。这条守卫是本函数的契约，
+/// 由 `auto_backup_default_refuses_a_sandbox_store` 钉死。
+pub fn auto_backup_default(store: &Path) -> Option<PathBuf> {
+    if store != crate::modules::config::switch_root().as_path() {
+        return None;
+    }
+    let dest = backup_dir()?;
+    auto_backup(store, &dest).ok().flatten()
+}
+
+/// 现有备份文件，**新的在前**。前端据此判断"账号库空了但备份还在"。
+pub fn list_backups(dest: &Path) -> Vec<PathBuf> {
+    let Ok(read) = std::fs::read_dir(dest) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = read
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| is_backup_file(p))
+        .collect();
+    // 文件名里的时间戳是 `%Y%m%dT%H%M%SZ`，字典序即时间序。
+    files.sort();
+    files.reverse();
+    files
+}
+
+fn is_backup_file(p: &Path) -> bool {
+    p.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.starts_with(BACKUP_PREFIX) && n.ends_with(BACKUP_SUFFIX))
+        .unwrap_or(false)
+}
+
+/// 只保留最近 `keep` 份。按文件名排序而不是 mtime —— 复制与云同步会打乱 mtime，
+/// 但改不了名字里的时间戳。
+fn prune_backups(dest: &Path, keep: usize) -> Result<()> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dest)
+        .map_err(|e| format!("读备份目录 {} 失败: {e}", dest.display()))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| is_backup_file(p))
+        .collect();
+    files.sort();
+    if files.len() <= keep {
+        return Ok(());
+    }
+    for old in &files[..files.len() - keep] {
+        std::fs::remove_file(old)
+            .map_err(|e| format!("清理旧备份 {} 失败: {e}", old.display()))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,6 +575,115 @@ mod tests {
         let res = import(&other, bad_json.as_bytes(), false);
         assert!(res.is_err(), "桌面端缺少关键凭据文件必须拒绝");
         assert!(res.unwrap_err().contains("缺少关键凭据文件"));
+        std::fs::remove_dir_all(tmp).ok();
+    }
+
+    /// 整库备份：全部账号一起导，且只保留最近 N 份。
+    #[test]
+    fn auto_backup_writes_whole_store_and_keeps_recent() {
+        let (roots, store, tmp) = sandbox();
+        seed(&roots);
+        bundle::capture(&roots, &store, "acct-a", QoderVariant::Cn, QoderTarget::Desktop).unwrap();
+
+        let dest = tmp.join("backups");
+        let p1 = auto_backup(&store, &dest).unwrap().expect("有包就该写出备份");
+        assert!(p1.is_file(), "备份文件应存在: {p1:?}");
+        // 备份必须落在 store 之外 —— 落在 store 里会随 store 一起消失，等于没备份。
+        assert!(!p1.starts_with(&store), "备份不能写在 store 内部: {p1:?}");
+
+        let parsed: Export = serde_json::from_slice(&std::fs::read(&p1).unwrap()).unwrap();
+        assert_eq!(parsed.format, FORMAT_VERSION);
+        assert!(
+            parsed.bundles.iter().any(|b| b.account_id == "acct-a"),
+            "整库备份里应含 acct-a"
+        );
+
+        // 塞进比保留份数更多的旧备份，再备份一次，最旧的应被清掉。
+        for i in 1..(BACKUP_KEEP + 2) {
+            std::fs::write(
+                dest.join(format!("{BACKUP_PREFIX}2026010{i}T000000Z{BACKUP_SUFFIX}")),
+                b"{}",
+            )
+            .unwrap();
+        }
+        auto_backup(&store, &dest).unwrap();
+
+        let left = list_backups(&dest);
+        assert_eq!(left.len(), BACKUP_KEEP, "应只保留 {BACKUP_KEEP} 份: {left:?}");
+        // 新的在前。
+        let name = |p: &PathBuf| p.file_name().unwrap().to_string_lossy().to_string();
+        assert!(name(&left[0]) > name(&left[1]), "列表应是新的在前: {left:?}");
+
+        std::fs::remove_dir_all(tmp).ok();
+    }
+
+    /// 空账号库不是错误，也不该产出空备份文件或凭空建目录。
+    #[test]
+    fn auto_backup_on_empty_store_is_a_noop() {
+        let (_roots, store, tmp) = sandbox();
+        let dest = tmp.join("backups");
+        assert!(auto_backup(&store, &dest).unwrap().is_none());
+        assert!(!dest.exists(), "空库连备份目录都不该创建");
+        std::fs::remove_dir_all(tmp).ok();
+    }
+
+    /// 清理旧备份时，同目录下不属于本工具的文件一律不能碰。
+    #[test]
+    fn prune_only_touches_our_own_backups() {
+        let (_roots, _store, tmp) = sandbox();
+        let dest = tmp.join("backups");
+        std::fs::create_dir_all(&dest).unwrap();
+        let keep_me = dest.join("我的笔记.json");
+        std::fs::write(&keep_me, b"do not touch").unwrap();
+        for i in 0..(BACKUP_KEEP + 3) {
+            std::fs::write(
+                dest.join(format!("{BACKUP_PREFIX}2026010{i}T000000Z{BACKUP_SUFFIX}")),
+                b"{}",
+            )
+            .unwrap();
+        }
+
+        prune_backups(&dest, BACKUP_KEEP).unwrap();
+
+        assert!(keep_me.is_file(), "同目录下的其它文件不能被误删");
+        assert_eq!(list_backups(&dest).len(), BACKUP_KEEP);
+        std::fs::remove_dir_all(tmp).ok();
+    }
+
+    /// 库内容没变就不该再落一份新备份，否则 BACKUP_KEEP 个位置会被同一份占满，
+    /// "能回到更早的状态"这个唯一价值就没了。
+    #[test]
+    fn auto_backup_skips_when_content_is_unchanged() {
+        let (roots, store, tmp) = sandbox();
+        seed(&roots);
+        bundle::capture(&roots, &store, "acct-a", QoderVariant::Cn, QoderTarget::Desktop).unwrap();
+
+        let dest = tmp.join("backups");
+        let p1 = auto_backup(&store, &dest).unwrap().unwrap();
+        let p2 = auto_backup(&store, &dest).unwrap().unwrap();
+        assert_eq!(p1, p2, "内容没变应复用同一份备份");
+        assert_eq!(list_backups(&dest).len(), 1, "不该多落文件");
+
+        // 账号集合变了就必须落新的一份。两次备份在同一秒内完成 —— 文件名带内容
+        // 指纹，所以不会撞名互相覆盖。
+        bundle::capture(&roots, &store, "acct-b", QoderVariant::Cn, QoderTarget::Desktop).unwrap();
+        let p3 = auto_backup(&store, &dest).unwrap().unwrap();
+        assert_ne!(p3, p1, "账号集合变了必须落新备份");
+        assert_eq!(list_backups(&dest).len(), 2);
+        std::fs::remove_dir_all(tmp).ok();
+    }
+
+    /// 默认入口只认真实账号库 —— 沙箱 store 必须被拒，否则跑一次测试就往用户的
+    /// 文档目录里写凭据副本。
+    #[test]
+    fn auto_backup_default_refuses_a_sandbox_store() {
+        let (roots, store, tmp) = sandbox();
+        seed(&roots);
+        bundle::capture(&roots, &store, "acct-a", QoderVariant::Cn, QoderTarget::Desktop).unwrap();
+        assert!(
+            auto_backup_default(&store).is_none(),
+            "沙箱 store 不是 switch_root()，绝不能触发默认备份"
+        );
         std::fs::remove_dir_all(tmp).ok();
     }
 }

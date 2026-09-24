@@ -675,6 +675,7 @@ mod compat {
     const OWNED: &[&str] = &[
         "status",
         "accounts",
+        "backup-status",
         "capabilities",
         "import-local",
         "delete",
@@ -805,6 +806,8 @@ mod compat {
         let r: Result<Value> = match cmd {
             "status" => Ok(view::app_status(roots, v)),
             "accounts" => Ok(view::accounts_in(roots, store)),
+            // 备份现状：账号库空了但备份还在时，前端据此显示"可从备份恢复"。
+            "backup-status" => Ok(view::backup_status(store)),
             "capabilities" => Ok(view::capabilities()),
             // 与桌面端 compat.rs 走**同一个** core 函数：返回体必须逐键一致，
             // 否则前端在两个宿主下会拿到不同形状（历史上分叉过一次 capabilities）。
@@ -826,6 +829,8 @@ mod compat {
                 if b.is_empty() {
                     return Err("该目标在本机不落盘凭据，没有可认领的文件".into());
                 }
+                // 与桌面端同一条：账号库刚多了一个包，立刻存一份备份。
+                let _ = qs_switch_core::modules::export_import::auto_backup_default(store);
                 Ok(json!({ "ok": true, "account": view::account_meta(&b) }))
             }
             "delete" => {
@@ -838,6 +843,8 @@ mod compat {
                 if meta.is_symlink() || !meta.is_dir() {
                     return Err(format!("账号目录不存在或不是真实目录: {}", dir.display()));
                 }
+                // 与桌面端同一条：先备份再删，备份里带着即将被删的包。
+                let _ = qs_switch_core::modules::export_import::auto_backup_default(store);
                 std::fs::remove_dir_all(&dir)
                     .map_err(|e| format!("删除失败: {e}"))?;
                 Ok(json!({ "ok": true }))
@@ -881,7 +888,10 @@ mod compat {
                         .map_err(|e| format!("indexes 不是合法的下标数组: {e}"))?),
                     None => None,
                 };
-                view::import_records(store, text, idx.as_deref())
+                let r = view::import_records(store, text, idx.as_deref());
+                // 与桌面端同一条：无论成败都备份（失败可能已写下部分分片）。
+                let _ = qs_switch_core::modules::export_import::auto_backup_default(store);
+                r
             }
             "switch" => {
                 // 这道门不能因为换了宿主就消失：compat 路由接管 switch 后同样要求知情标记。

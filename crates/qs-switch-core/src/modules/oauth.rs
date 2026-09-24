@@ -335,6 +335,11 @@ pub async fn oauth_status(login_id: &str, roots: &PathRoots, store: &Path) -> Va
         return json!({ "done": true, "error": format!("写入 bundle 元数据失败: {e}") });
     }
 
+    // 新账号一落库就备份一次。挂在这里而不是两个宿主里：扫码入库是桌面端与 webui
+    // **共用**的 core 路径，挂钩点只有一处，漏接不了。`auto_backup_default` 自带
+    // "只认真实账号库"守卫，沙箱演练不会写进用户的文档目录。
+    let _ = crate::modules::export_import::auto_backup_default(store);
+
     // 移除已完成的会话
     {
         let mut lock = sessions_map().lock().unwrap();

@@ -83,6 +83,7 @@ pub fn run() {
             compat::export_accounts_to_path,
             compat::preview_import_accounts,
             compat::import_accounts,
+            compat::get_backup_status,
             compat::get_capabilities,
             compat::list_notifications,
             compat::record_notification,

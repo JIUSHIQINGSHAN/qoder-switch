@@ -133,6 +133,40 @@ pub fn accounts(roots: &PathRoots) -> Value {
     accounts_in(roots, &switch_root())
 }
 
+/// 备份现状。前端据此判断"账号库空了、但备份里还有账号" —— 那是唯一值得主动
+/// 提示恢复的时刻，其余情况不打扰用户。
+///
+/// `recoverable` 是给前端的一句话判据，不在前端重算：两个宿主都得拿到同一个结论。
+pub fn backup_status(store: &Path) -> Value {
+    let dir = export_import::backup_dir();
+    let backups = dir
+        .as_deref()
+        .map(export_import::list_backups)
+        .unwrap_or_default();
+    let latest = backups.first();
+    // 最新一份里有多少个**不同**账号（同一账号可能横跨多个轴）——
+    // 恢复前先让用户知道能拿回几个，而不是先点再发现是空的。
+    let latest_accounts = latest
+        .and_then(|p| export_import::load_backup(p).ok())
+        .map(|e| {
+            e.bundles
+                .iter()
+                .map(|b| b.account_id.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+        })
+        .unwrap_or(0);
+    let cards = bundle::list_all(store).len();
+    json!({
+        "dir": dir.map(|d| d.display().to_string()),
+        "count": backups.len(),
+        "latest": latest.map(|p| p.display().to_string()),
+        "latestAccounts": latest_accounts,
+        "accounts": cards,
+        "recoverable": cards == 0 && latest_accounts > 0,
+    })
+}
+
 /// 导出记录：一条里同时给身份字段（预览要展示）和 `payload`（导入只用它）。
 ///
 /// 两个宿主共用这个函数而不是各写一份 —— 桌面端原先自己拼了一遍记录，

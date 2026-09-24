@@ -5,6 +5,7 @@ import type {
   AppNotification,
   AppStatus,
   AutoRotateConfig,
+  BackupStatus,
   CodeBuddyCliInstallResult,
   CodeBuddyCliStatus,
   CodeBuddyCliSwitchResult,
@@ -98,6 +99,7 @@ type Route = { method: "GET" | "POST"; path: string };
 const ROUTES: Record<string, Route> = {
   get_status: { method: "GET", path: "/api/status" },
   get_accounts: { method: "GET", path: "/api/accounts" },
+  get_backup_status: { method: "GET", path: "/api/backup-status" },
   get_codebuddy_cli_status: { method: "GET", path: "/api/codebuddy-cli/status" },
   install_codebuddy_cli_helper: { method: "POST", path: "/api/codebuddy-cli/install-helper" },
   switch_codebuddy_cli_account: { method: "POST", path: "/api/codebuddy-cli/switch" },
@@ -390,6 +392,14 @@ export function getStatus(variant?: WbVariant): Promise<AppStatus> {
 /** 返回全部档位的账号，由调用方按 `variant` 过滤。 */
 export function getAccounts(): Promise<{ accounts: AccountMeta[] }> {
   return call("get_accounts");
+}
+
+/**
+ * 账号库自动备份现状。账号库空了、而备份里还有账号时 `recoverable` 为 true ——
+ * 界面据此显示"可从备份恢复"的提示条，其余情况不打扰用户。
+ */
+export function getBackupStatus(): Promise<BackupStatus> {
+  return call("get_backup_status");
 }
 
 export function getCodebuddyCliStatus(): Promise<CodeBuddyCliStatus> {
