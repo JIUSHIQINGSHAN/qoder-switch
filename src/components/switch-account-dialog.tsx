@@ -619,7 +619,9 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
                       </p>
                       <p className="mt-1">
                         点「强制切换」表示你已知情：
-                        <b>窗口会关闭，请稍后从桌面图标或托盘重新打开，用新账号登录。</b>
+                        <b>本窗口会关闭</b>，切换完成后程序会尝试自动重新打开
+                        {variantAppName(accountVariant(account))}；若自动打开失败，
+                        请从桌面图标或托盘手动启动，用新账号登录。
                       </p>
                     </div>
                     <Button variant="destructive" size="sm" onClick={() => void doSwitch(true)}>

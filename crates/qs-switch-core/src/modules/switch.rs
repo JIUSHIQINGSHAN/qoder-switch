@@ -342,8 +342,10 @@ pub fn execute(
                 j.note = Some(format!("拒绝终止目标：{why}"));
                 write_journal(store, &j)?;
                 return Err(format!(
-                    "拒绝执行：{why}。终止目标进程会连同本会话一起结束；\
-                     请改从独立启动的 qoder-switch 发起，或确认后果后使用强制档。"
+                    "拒绝执行：{why}。终止目标进程可能会连同本会话一起结束。可选：\
+                     ① 先手动关闭目标客户端，再回到这里切换（目标不在运行时无需终止进程，不会触发本拦截）；\
+                     ② 从开始菜单/桌面图标独立启动 qoder-switch 后再切；\
+                     ③ 已知情后果的话，使用强制档。"
                 ));
             }
             pv.hosted.clone()
@@ -387,18 +389,32 @@ pub fn execute(
     };
     progress(&format!("写回并校验通过：{:?}", out.written));
 
-    if matches!(actor, Actor::Real) && req.restart {
+    // 重启门：除演练档外都要收尾。
+    //
+    // 曾写死 `Actor::Real`，把强制档排除在外 —— 但强制档恰恰是"程序被托管、
+    // 正常档杀不掉"时**唯一走得通**的路径，于是那条路上永远是"切完还得自己开客户端"。
+    // 而且 `switch_result` 会按入参 `restart` 回填 `restarted:true`，界面显示"已重启"
+    // 而实际没有 —— 用户看到的是自相矛盾的提示。现在强制档与正常档同样收尾。
+    let mut restarted = false;
+    if req.restart && !matches!(actor, Actor::Simulated) {
         if let Some(exe) = variant::executable(roots, req.variant, req.target) {
             progress(&format!("重新启动 {exe:?}"));
             // 启动失败绝不能把这次切换打成失败：文件已换好且校验通过，journal 若
             // 停在待恢复相位，恢复入口会把用户刚要求的换号整个回滚掉（历史缺陷）。
-            if let Err(e) = process::launch(&exe) {
-                progress(&format!("自动启动失败（{e}），请手动打开目标客户端"));
-                j.note = Some(format!("自动启动失败: {e}"));
+            match process::launch(&exe) {
+                Ok(()) => restarted = true,
+                Err(e) => {
+                    progress(&format!("自动启动失败（{e}），请手动打开目标客户端"));
+                    j.note = Some(format!("自动启动失败: {e}"));
+                }
             }
         } else {
             progress("未能定位可执行文件，已跳过自动启动（请手动打开）");
         }
+    }
+    // 把"是否真的重启了"记进 journal 备注，供调用方回传真实值（见 switch_result）。
+    if req.restart && !restarted && j.note.is_none() {
+        j.note = Some("未自动启动目标客户端，请手动打开".into());
     }
 
     j.phase = Phase::Completed;
@@ -639,6 +655,14 @@ mod tests {
         assert!(live(&s.roots) == b"authA", "拒绝后不该动过现场");
         let left = unfinished(&s.store).unwrap();
         assert!(left.is_empty(), "Failed 状态不该被当成待恢复: {left:?}");
+        // 拒绝文案必须给出可操作的出路，并保留前端依赖的两个关键词：
+        // "强制档" 是切换对话框显示「强制切换」按钮的触发词，改丢它按钮就没了；
+        // "关闭目标客户端" 是不走强制档的最简出路（目标不在跑时托管判定不触发）。
+        assert!(e.contains("强制档"), "文案必须保留'强制档'（前端按钮触发词）: {e}");
+        assert!(
+            e.contains("关闭目标客户端"),
+            "文案应提示'先关闭目标客户端再切'这条最简出路: {e}"
+        );
         std::fs::remove_dir_all(s.tmp).ok();
     }
 

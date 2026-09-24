@@ -265,10 +265,25 @@ pub fn import_records(
 ///
 /// 键名按前端 `SwitchResult` 契约：`account`（不是 accountId）、`backup`（备份目录，
 /// 无则 null）、`variant`。`restarted`/`message` 是契约之外的附加信息，前端可无视。
+///
+/// `restart` 入参只表示**用户是否要求重启**；`restarted` 字段报告的是**实际有没有重启**。
+/// 早先它直接回填入参，于是"要求重启但启动失败/未定位到可执行文件"时界面仍显示已重启，
+/// 与事实相反。现在从 journal 的备注里读真实结果（`execute` 负责写入）。
 pub fn switch_result(j: &switch::Journal, restart: bool, ignored_session: bool) -> Value {
     let mut message = format!("已切到 {}（{:?}）", j.account_id, j.phase);
     if ignored_session {
         message.push_str("；会话复制未执行 —— Qoder 的会话不按账号归属，跨账号复制会串数据");
+    }
+    // 实际重启结果：execute 在未成功启动时会留下备注；没有这条备注且要求了重启，
+    // 才算真的重启了。演练档（Simulated）从来不重启，也不会进这里（它不写 Completed 前的备注）。
+    let start_failed = j
+        .note
+        .as_deref()
+        .map(|n| n.contains("自动启动失败") || n.contains("未自动启动"))
+        .unwrap_or(false);
+    let restarted = restart && !start_failed;
+    if !restarted && restart {
+        message.push_str("；未能自动启动目标客户端，请手动打开");
     }
     let backup = if j.backup_dir.as_os_str().is_empty() {
         Value::Null
@@ -280,7 +295,7 @@ pub fn switch_result(j: &switch::Journal, restart: bool, ignored_session: bool) 
         "account": j.account_id,
         "variant": variant_key(j.variant),
         "backup": backup,
-        "restarted": restart,
+        "restarted": restarted,
         "message": message,
     })
 }
@@ -784,5 +799,46 @@ mod tests {
         let mut j2 = j.clone();
         j2.backup_dir = std::path::PathBuf::new();
         assert_eq!(switch_result(&j2, false, false)["backup"], serde_json::Value::Null);
+    }
+
+    /// `restarted` 必须报**实际**结果，而不是把入参回填。早先它直接回传 `restart`，
+    /// 于是"要求重启但没启动成功"时界面显示"已重启"，与事实相反。
+    #[test]
+    fn switch_result_reports_actual_restart_not_the_request() {
+        let mut j = switch::Journal {
+            id: "j1".into(),
+            account_id: "acct-a".into(),
+            variant: QoderVariant::Cn,
+            target: QoderTarget::Desktop,
+            started_at: "20260921T000000Z".into(),
+            phase: switch::Phase::Completed,
+            backup_dir: std::path::PathBuf::from("E:/backup/dir"),
+            note: None,
+        };
+
+        // 要求重启且启动成功（无失败备注）→ restarted 为真。
+        assert_eq!(switch_result(&j, true, false)["restarted"], true);
+
+        // 要求重启但启动失败 → restarted 必须为假，且 message 要说清需手动打开。
+        j.note = Some("自动启动失败: 找不到文件".into());
+        let v = switch_result(&j, true, false);
+        assert_eq!(v["restarted"], false, "启动失败不能被报成已重启: {v}");
+        assert!(
+            v["message"].as_str().unwrap().contains("手动打开"),
+            "失败时 message 应提示手动打开: {v}"
+        );
+
+        // 未定位到可执行文件（execute 也会留备注）同样算未重启。
+        j.note = Some("未自动启动目标客户端，请手动打开".into());
+        assert_eq!(switch_result(&j, true, false)["restarted"], false);
+
+        // 用户没要求重启 → restarted 为假，且不该额外塞"手动打开"的提示。
+        j.note = None;
+        let v = switch_result(&j, false, false);
+        assert_eq!(v["restarted"], false);
+        assert!(
+            !v["message"].as_str().unwrap().contains("手动打开"),
+            "未要求重启时不该提示手动打开: {v}"
+        );
     }
 }
