@@ -133,6 +133,40 @@ pub fn accounts(roots: &PathRoots) -> Value {
     accounts_in(roots, &switch_root())
 }
 
+/// 备份现状。前端据此判断"账号库空了、但备份里还有账号" —— 那是唯一值得主动
+/// 提示恢复的时刻，其余情况不打扰用户。
+///
+/// `recoverable` 是给前端的一句话判据，不在前端重算：两个宿主都得拿到同一个结论。
+pub fn backup_status(store: &Path) -> Value {
+    let dir = export_import::backup_dir();
+    let backups = dir
+        .as_deref()
+        .map(export_import::list_backups)
+        .unwrap_or_default();
+    let latest = backups.first();
+    // 最新一份里有多少个**不同**账号（同一账号可能横跨多个轴）——
+    // 恢复前先让用户知道能拿回几个，而不是先点再发现是空的。
+    let latest_accounts = latest
+        .and_then(|p| export_import::load_backup(p).ok())
+        .map(|e| {
+            e.bundles
+                .iter()
+                .map(|b| b.account_id.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+        })
+        .unwrap_or(0);
+    let cards = bundle::list_all(store).len();
+    json!({
+        "dir": dir.map(|d| d.display().to_string()),
+        "count": backups.len(),
+        "latest": latest.map(|p| p.display().to_string()),
+        "latestAccounts": latest_accounts,
+        "accounts": cards,
+        "recoverable": cards == 0 && latest_accounts > 0,
+    })
+}
+
 /// 导出记录：一条里同时给身份字段（预览要展示）和 `payload`（导入只用它）。
 ///
 /// 两个宿主共用这个函数而不是各写一份 —— 桌面端原先自己拼了一遍记录，
@@ -450,6 +484,10 @@ pub fn notifications(items: Vec<crate::modules::notifications::NotificationEntry
 /// 上游那套是 macOS 的「完全磁盘访问」授权，Windows 没有这个机制 —— 但「能不能
 /// 真的写进 Qoder 的认证目录」在 Windows 上同样是真实会失败的检查（目录只读、被
 /// 占用、属于别的用户）。所以这里给 Windows 一个能跑的写探针，而不是直接报"不适用"。
+///
+/// macOS 上写探针**不够**：那边真正会卡住的是读登录钥匙串（桌面凭据的主密钥由
+/// Qoder 创建，本工具去读需要用户放行）。所以 mac 上多跑一道钥匙串探针，
+/// 否则"权限正常"会是句谎话 —— 目录可写但一个账号包都解不开。
 pub fn auth_permission_probe(roots: &PathRoots, v: QoderVariant) -> Value {
     let auth = credentials(roots, v, QoderTarget::Desktop)
         .into_iter()
@@ -463,9 +501,27 @@ pub fn auth_permission_probe(roots: &PathRoots, v: QoderVariant) -> Value {
         Ok(()) => {
             // 探针写完即删；删除失败不影响"可写"这个结论，但要记下来。
             let rm = std::fs::remove_file(&probe);
+            let mut message = if rm.is_ok() {
+                "认证目录可写，权限正常".to_string()
+            } else {
+                "认证目录可写（探针清理失败，不影响切换）".to_string()
+            };
+            #[cfg(target_os = "macos")]
+            {
+                match crate::modules::auth_codec::mac_master_key_from_keychain(v) {
+                    Ok(_) => message.push_str("；登录钥匙串可读，账号包可解密"),
+                    Err(e) => return json!({
+                        "ok": false,
+                        "error": format!("认证目录可写，但读不到登录钥匙串里的 safeStorage 口令: {e}"),
+                        "dir": dir.display().to_string(),
+                        "hint": "macOS 上解不开登录态就没法查配额与签到。请在弹出的钥匙串授权里点「始终允许」；\
+                                若已拒绝过，到「钥匙串访问」里删掉本 App 对该条目的访问记录后重试。",
+                    }),
+                }
+            }
             json!({
                 "ok": true,
-                "message": if rm.is_ok() { "认证目录可写，权限正常" } else { "认证目录可写（探针清理失败，不影响切换）" },
+                "message": message,
                 "dir": dir.display().to_string(),
                 "hint": "",
             })
@@ -474,7 +530,12 @@ pub fn auth_permission_probe(roots: &PathRoots, v: QoderVariant) -> Value {
             "ok": false,
             "error": format!("无法写入认证目录: {e}"),
             "dir": dir.display().to_string(),
-            "hint": "确认本 App 对该目录有写权限；若被安全软件拦截请放行",
+            "hint": if cfg!(target_os = "macos") {
+                "确认本 App 对该目录有写权限；macOS 若在「隐私与安全性 → 文件和文件夹」里拒过，\
+                 需要在系统设置里重新放行"
+            } else {
+                "确认本 App 对该目录有写权限；若被安全软件拦截请放行"
+            },
         }),
     }
 }
@@ -497,7 +558,11 @@ pub fn capabilities() -> Value {
             "自动签到本机调度与签到日志（checkin-config / checkin-logs）",
             "积分统计本机快照聚合（credit-snapshots，无官方用量端点）",
             "OAuth 设备码登录（基于 10router 取证端点）",
-            "认证目录写权限自检（Windows 写探针）"
+            if cfg!(target_os = "macos") {
+                "权限自检（认证目录写探针 + 登录钥匙串可读性）"
+            } else {
+                "认证目录写权限自检（Windows 写探针）"
+            }
         ],
         "unavailable": [
             { "name": "会话跨账号复制", "reason": "Qoder 会话不按账号归属，复制会串数据" },

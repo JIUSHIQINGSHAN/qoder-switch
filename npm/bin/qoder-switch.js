@@ -10,10 +10,15 @@ const path = require("path");
 
 const FILE = {
   "win32-x64": "qs-switch-server.exe",
+  "darwin-arm64": "qs-switch-server",
+  "darwin-x64": "qs-switch-server",
 }[`${process.platform}-${process.arch}`];
 
 if (!FILE) {
-  console.error(`qoder-switch: 暂无 ${process.platform}-${process.arch} 平台包（当前仅发布 win32-x64）`);
+  console.error(
+    `qoder-switch: 暂无 ${process.platform}-${process.arch} 平台包` +
+      `（当前发布 win32-x64 / darwin-arm64 / darwin-x64）`
+  );
   process.exit(1);
 }
 

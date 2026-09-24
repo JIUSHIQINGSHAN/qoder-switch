@@ -13,13 +13,15 @@ const path = require("path");
 
 const FILE = {
   "win32-x64": "qs-switch-server.exe",
+  "darwin-arm64": "qs-switch-server",
+  "darwin-x64": "qs-switch-server",
 }[`${process.platform}-${process.arch}`];
 
 const PLATFORM_PKG = `qoder-switch-${process.platform}-${process.arch}`;
 
 if (!FILE) {
   console.warn(
-    `qoder-switch: 跳过平台 ${process.platform}-${process.arch}（当前仅发布 win32-x64），` +
+    `qoder-switch: 跳过平台 ${process.platform}-${process.arch}（当前发布 win32-x64 / darwin-arm64 / darwin-x64），` +
       `可手动下载二进制后放置到 bin/ 目录`,
   );
   process.exit(0);

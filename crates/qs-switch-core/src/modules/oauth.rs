@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use crate::modules::auth_codec;
 use crate::modules::bundle;
 use crate::modules::config::{now_ts, PathRoots};
-use crate::modules::variant::{desktop_dir, FileRole, QoderTarget, QoderVariant};
+use crate::modules::variant::{FileRole, QoderTarget, QoderVariant};
 
 struct OAuthSession {
     variant: QoderVariant,
@@ -232,9 +232,8 @@ pub async fn oauth_status(login_id: &str, roots: &PathRoots, store: &Path) -> Va
         }
     }
 
-    // 存入本地账号库
-    let local_state_path = desktop_dir(roots, variant).join("Local State");
-    let key = match auth_codec::aes_key_from_local_state(&local_state_path) {
+    // 取本机主密钥：Windows 来自桌面目录的 Local State，macOS 来自登录钥匙串。
+    let key = match auth_codec::master_key(roots, variant) {
         Ok(k) => k,
         Err(e) => return json!({ "done": true, "error": format!("无法读取本机加密主密钥: {e}") }),
     };
@@ -335,6 +334,11 @@ pub async fn oauth_status(login_id: &str, roots: &PathRoots, store: &Path) -> Va
     if let Err(e) = bundle::write_meta(store, &nb) {
         return json!({ "done": true, "error": format!("写入 bundle 元数据失败: {e}") });
     }
+
+    // 新账号一落库就备份一次。挂在这里而不是两个宿主里：扫码入库是桌面端与 webui
+    // **共用**的 core 路径，挂钩点只有一处，漏接不了。`auto_backup_default` 自带
+    // "只认真实账号库"守卫，沙箱演练不会写进用户的文档目录。
+    let _ = crate::modules::export_import::auto_backup_default(store);
 
     // 移除已完成的会话
     {

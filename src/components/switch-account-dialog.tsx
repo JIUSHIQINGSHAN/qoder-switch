@@ -560,26 +560,47 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
                   <div className="mt-2 space-y-2">
                     <div className="rounded-md border bg-muted/60 p-3 text-xs text-muted-foreground">
                       <p className="mb-1 font-medium text-foreground">如何授权（只需 3 步）：</p>
-                      <ol className="list-decimal space-y-1 pl-4">
-                        <li>点击下方「打开完全磁盘访问」</li>
-                        <li>
-                          把 <b>qoder-switch.app</b> 从 Finder 拖进面板列表（即使没提示框也直接拖），
-                          打开它的开关
-                        </li>
-                        <li>授权后这里会自动检测到，无需其他操作</li>
-                      </ol>
+                      {api.isMacHost() ? (
+                        /* macOS：写权限之外还有一道真正的门 —— 读 Qoder 创建的
+                           登录钥匙串条目（桌面凭据的主密钥在那里，不在文件里）。 */
+                        <ol className="list-decimal space-y-1 pl-4">
+                          <li>点击下方「在访达中显示」，确认本 App 的位置与身份</li>
+                          <li>
+                            点「立即检测」，在弹出的<b>钥匙串授权</b>框里选<b>始终允许</b>
+                            （只点「允许」的话下次还会再问）
+                          </li>
+                          <li>
+                            若目录仍不可写，再进「系统设置 → 隐私与安全性 → 完全磁盘访问」，
+                            把 <b>qoder-switch.app</b> 拖进列表并打开开关
+                          </li>
+                        </ol>
+                      ) : (
+                        <ol className="list-decimal space-y-1 pl-4">
+                          <li>
+                            确认本工具与 Qoder 跑在<b>同一个 Windows 用户</b>下
+                            （凭据由 DPAPI 按用户加密，换用户既写不进也解不开）
+                          </li>
+                          <li>
+                            若认证目录只读或被占用，先关掉 Qoder 再试；
+                            杀软拦截时把本工具加入白名单
+                          </li>
+                          <li>点「立即检测」复查，无需其他操作</li>
+                        </ol>
+                      )}
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      <Button variant="outline" size="sm" onClick={openPermissionSettings}>
-                        <ExternalLink />
-                        打开完全磁盘访问
-                      </Button>
+                      {api.isMacHost() && (
+                        <Button variant="outline" size="sm" onClick={openPermissionSettings}>
+                          <ExternalLink />
+                          打开完全磁盘访问
+                        </Button>
+                      )}
                       <Button
                         variant="outline"
                         size="sm"
                         onClick={() => void api.revealAppInFinder()}
                       >
-                        在 Finder 中显示
+                        {api.isMacHost() ? "在访达中显示" : "在资源管理器中显示"}
                       </Button>
                       <Button variant="secondary" size="sm" onClick={runPermissionCheck}>
                         立即检测

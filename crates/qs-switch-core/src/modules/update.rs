@@ -152,8 +152,12 @@ pub fn compare_versions(a: &str, b: &str) -> i64 {
 pub fn updater_manifest_urls(owner: &str, repo: &str, os: &str, arch: &str) -> Vec<String> {
     let owner = owner.trim().trim_matches('/');
     let repo = repo.trim().trim_matches('/');
+    // Tauri 的 updater manifest 平台键是 `darwin-aarch64` / `windows-x86_64` /
+    // `linux-x86_64`（`std::env::consts::OS` 在 mac 上却是 "macos"）。这里必须对齐
+    // Tauri 那一侧，否则 CI 产出的清单文件名与本函数拼出的 URL 永远差一个词，
+    // 表现为"检查更新"永远 404。
     let os_slug = match os {
-        "macos" | "darwin" => "macos",
+        "macos" | "darwin" => "darwin",
         other => other,
     };
     let mut urls = vec![format!(

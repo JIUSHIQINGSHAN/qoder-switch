@@ -260,6 +260,49 @@ mod tests {
         }
     }
 
+    /// 权限探针端点必须由 webui 宿主接管，且返回形状与桌面端逐键一致。
+    ///
+    /// 为什么单独钉一条：桌面端 compat.rs 与 webui 的 compat 路由是**两个宿主各自**的
+    /// 接线，只在其中一个里加命令，另一个宿主下同一个按钮就会抛"未知端点"。而前端
+    /// 只在 macOS 上显示这些按钮，所以 Windows 上跑不出这个分叉 —— README 记过一次
+    /// 同类分叉（capabilities 措辞与轮换阈值默认值），这里用测试钉死。
+    ///
+    /// 用沙箱根：目录不存在 → 写探针失败 → 走错误分支，**不会**去碰钥匙串或网络，
+    /// 所以本测试不会弹授权框、不需要联网。
+    #[test]
+    fn check_auth_permission_is_owned_and_returns_the_desktop_contract_keys() {
+        let dir = TempDir::new("perm");
+        let roots = PathRoots::sandbox(&dir.0);
+        let resp = compat::dispatch_in(&roots, &dir.0, "check-auth-permission", "", r#"{"variant":"cn"}"#)
+            .expect("路由必须被 webui 宿主接管，否则前端只会拿到 404");
+        assert_eq!(resp.status, 200, "裸契约对象走 200");
+        let v: Value = serde_json::from_str(&resp.body).unwrap();
+        // 前端直接读这几个键，少一个就会在渲染期对 undefined 取值。
+        for key in ["ok", "dir", "hint"] {
+            assert!(v.get(key).is_some(), "缺 {key}：{v}");
+        }
+        assert_eq!(v["ok"], json!(false), "沙箱目录不存在，应报不可写");
+        assert!(!v["error"].as_str().unwrap().is_empty(), "不可写时要带上原因");
+    }
+
+    /// 另外两个权限命令会真的打开系统设置 / 访达，**不能在测试里分发**。
+    /// 所以只查注册表本身：漏登记就会返回 false，而 `definitely-not-a-route`
+    /// 那条反向断言保证这个查询本身可信。
+    #[test]
+    fn permission_action_routes_are_registered_in_compat() {
+        for cmd in [
+            "check-auth-permission",
+            "open-permission-settings",
+            "reveal-app-in-finder",
+        ] {
+            assert!(
+                compat::is_owned(cmd),
+                "{cmd} 未注册进 webui 宿主，mac 上那个按钮必然抛「未知端点」"
+            );
+        }
+        assert!(!compat::is_owned("definitely-not-a-route"), "注册表查询本身要可信");
+    }
+
     #[test]
     fn unknown_endpoint_is_404_not_panic() {
         let dir = TempDir::new("unknown");
@@ -632,6 +675,7 @@ mod compat {
     const OWNED: &[&str] = &[
         "status",
         "accounts",
+        "backup-status",
         "capabilities",
         "import-local",
         "delete",
@@ -657,7 +701,19 @@ mod compat {
         "checkin/all",
         "oauth/start",
         "oauth/status",
+        // 权限三件套。macOS 上「检测权限」是这条链上唯一能讲清"钥匙串没放行"的入口，
+        // 缺路由会让 webui 形态的按钮直接抛"未知端点"。
+        "check-auth-permission",
+        "open-permission-settings",
+        "reveal-app-in-finder",
     ];
+
+    /// 某路径是否由本宿主接管。**仅测试用**：有些命令一分发就会真的打开系统设置，
+    /// 只能查注册表而不能试跑。
+    #[cfg(test)]
+    pub fn is_owned(cmd: &str) -> bool {
+        OWNED.contains(&cmd)
+    }
 
     /// 命中则处理并返回 Some，未命中返回 None 交给自有端点。
     #[allow(dead_code)]
@@ -750,7 +806,22 @@ mod compat {
         let r: Result<Value> = match cmd {
             "status" => Ok(view::app_status(roots, v)),
             "accounts" => Ok(view::accounts_in(roots, store)),
+            // 备份现状：账号库空了但备份还在时，前端据此显示"可从备份恢复"。
+            "backup-status" => Ok(view::backup_status(store)),
             "capabilities" => Ok(view::capabilities()),
+            // 与桌面端 compat.rs 走**同一个** core 函数：返回体必须逐键一致，
+            // 否则前端在两个宿主下会拿到不同形状（历史上分叉过一次 capabilities）。
+            "check-auth-permission" => Ok(view::auth_permission_probe(roots, v)),
+            "open-permission-settings" => {
+                let pane = input.get("target").and_then(|x| x.as_str()).unwrap_or("");
+                qs_switch_core::modules::process::open_system_settings_pane(pane)?;
+                Ok(json!({ "ok": true }))
+            }
+            "reveal-app-in-finder" => {
+                let exe = std::env::current_exe().map_err(|e| format!("取不到自身路径: {e}"))?;
+                qs_switch_core::modules::process::reveal_in_file_manager(&exe)?;
+                Ok(json!({ "ok": true }))
+            }
             "import-local" => {
                 let id = account_id_or_local(&input, v);
                 let t = target_of(input.get("target"));
@@ -758,6 +829,8 @@ mod compat {
                 if b.is_empty() {
                     return Err("该目标在本机不落盘凭据，没有可认领的文件".into());
                 }
+                // 与桌面端同一条：账号库刚多了一个包，立刻存一份备份。
+                let _ = qs_switch_core::modules::export_import::auto_backup_default(store);
                 Ok(json!({ "ok": true, "account": view::account_meta(&b) }))
             }
             "delete" => {
@@ -770,6 +843,8 @@ mod compat {
                 if meta.is_symlink() || !meta.is_dir() {
                     return Err(format!("账号目录不存在或不是真实目录: {}", dir.display()));
                 }
+                // 与桌面端同一条：先备份再删，备份里带着即将被删的包。
+                let _ = qs_switch_core::modules::export_import::auto_backup_default(store);
                 std::fs::remove_dir_all(&dir)
                     .map_err(|e| format!("删除失败: {e}"))?;
                 Ok(json!({ "ok": true }))
@@ -813,7 +888,10 @@ mod compat {
                         .map_err(|e| format!("indexes 不是合法的下标数组: {e}"))?),
                     None => None,
                 };
-                view::import_records(store, text, idx.as_deref())
+                let r = view::import_records(store, text, idx.as_deref());
+                // 与桌面端同一条：无论成败都备份（失败可能已写下部分分片）。
+                let _ = qs_switch_core::modules::export_import::auto_backup_default(store);
+                r
             }
             "switch" => {
                 // 这道门不能因为换了宿主就消失：compat 路由接管 switch 后同样要求知情标记。

@@ -1,0 +1,82 @@
+name: ci
+
+# 双平台**验证**闸门。与 release.yml 的分工：这里只管"两个平台都还活着"，
+# 不打安装包、不发 Release、不签更新包 —— 所以任何 push / PR 都能跑，不必打 tag。
+#
+# 为什么必须有这个文件：本仓库原本只有 windows-latest 一条链。macOS 适配进来之后，
+# 平台的分叉点（进程探测、凭据解码、.app 解析、钥匙串读取）全在 cfg 里 ——
+# 只在其中一台机器上测，等于另一半代码从来没有编译过。改 Windows 那半边时会静默
+# 改坏，改 mac 那半边也一样。
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      # 一个平台红就先停下来看：两个平台的失败往往是同一个共享代码引起的，
+      # fail-fast 省一份 runner 时间，也避免只盯其中一个。
+      fail-fast: true
+      matrix:
+        os: [windows-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # 缓存必须按 OS 分家：两个平台的 target/ 内容互不兼容，共用会来回失效。
+          key: ${{ matrix.os }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 前端类型检查 + 构建
+        # tauri 的 generate_context! 宏在编译期就要 ../dist 存在，所以必须先建前端。
+        run: npm run build
+
+      - name: Rust 全量测试（含两个平台的 cfg 分支）
+        run: cargo test --workspace
+
+  # macOS 的 Intel 半边：产物在 release.yml 里真造，这里只保证**编得出来**。
+  # 交叉 check 不需要链接，所以比交叉 build 便宜得多，能挡住大多数回归。
+  macos-intel-check:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-x86_64-check
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: cargo check --target x86_64-apple-darwin
+        run: cargo check --workspace --all-targets --target x86_64-apple-darwin

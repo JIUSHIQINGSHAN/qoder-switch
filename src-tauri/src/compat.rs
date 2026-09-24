@@ -180,6 +180,8 @@ pub async fn import_local(
                 v, t
             ));
         }
+        // 账号库刚多了一个包 —— 立刻存一份到文档目录。备份失败不影响认领本身。
+        let _ = qs_switch_core::modules::export_import::auto_backup_default(&store);
         Ok(json!({ "ok": true, "account": view::account_meta(&b) }))
     })
     .await?;
@@ -201,6 +203,9 @@ pub async fn delete_account(app: tauri::AppHandle, account_id: String) -> Result
         if meta.is_symlink() || !meta.is_dir() {
             return Err(format!("账号目录不存在或不是真实目录: {}", dir.display()));
         }
+        // **先备份再删**：删账号不可逆，而账号包是不可再生的凭据副本（现场只保留
+        // 当前登录的那一个，其余丢了只能重新扫码）。这一份备份里还带着即将被删的包。
+        let _ = qs_switch_core::modules::export_import::auto_backup_default(&switch_root());
         std::fs::remove_dir_all(&dir).map_err(|e| format!("删除 {} 失败: {e}", dir.display()))?;
         Ok(json!({ "ok": true }))
     })
@@ -317,11 +322,21 @@ pub async fn import_accounts(
     indexes: Option<Vec<usize>>,
 ) -> Result<Value, String> {
     let res = off_main(move || {
-        view::import_records(&switch_root(), &file_text, indexes.as_deref())
+        let store = switch_root();
+        let r = view::import_records(&store, &file_text, indexes.as_deref());
+        // 无论成败都备份：导入中途失败会留下写了一半的分片，那个状态同样值得留档。
+        let _ = qs_switch_core::modules::export_import::auto_backup_default(&store);
+        r
     })
     .await?;
     let _ = crate::tray::refresh_tray_menu(&app);
     Ok(res)
+}
+
+/// 备份现状。账号库空了但备份里还有账号时，前端据此显示"可从备份恢复"的提示条。
+#[tauri::command]
+pub async fn get_backup_status() -> Result<Value, String> {
+    off_main(|| Ok(view::backup_status(&switch_root()))).await
 }
 
 /// 前端逐项确认"哪些能力在 Qoder 侧不存在"，用于在界面上写明而不是装作能用。
@@ -453,10 +468,26 @@ pub async fn get_checkin_logs() -> Result<Value, String> {
     off_main(|| Ok(qs_switch_core::modules::ledger::read_checkin_logs(&switch_root()))).await
 }
 
-/// 权限自检：Windows 认证目录写探针。
+/// 权限自检：认证目录写探针（Windows）+ 钥匙串可读性（macOS）。
 #[tauri::command]
 pub fn check_auth_permission(variant: Option<String>) -> Value {
     view::auth_permission_probe(&PathRoots::real(), variant_of(variant.as_deref()))
+}
+
+/// 打开系统授权面板。macOS 上是「完全磁盘访问」；其他平台没有这一步，
+/// 明确报"不适用"而不是静默无反应。
+#[tauri::command]
+pub fn open_permission_settings(pane: Option<String>) -> Result<Value, String> {
+    qs_switch_core::modules::process::open_system_settings_pane(pane.as_deref().unwrap_or(""))?;
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+/// 在系统文件管理器里定位本 App（macOS 访达 / Windows 资源管理器）。
+#[tauri::command]
+pub fn reveal_app_in_finder() -> Result<Value, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("取不到自身路径: {e}"))?;
+    qs_switch_core::modules::process::reveal_in_file_manager(&exe)?;
+    Ok(serde_json::json!({ "ok": true }))
 }
 
 #[tauri::command]

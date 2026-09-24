@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import {
   CalendarCheck,
+  CircleAlert,
   Columns3,
   Download,
   ExternalLink,
@@ -127,6 +128,7 @@ export default function AccountsPage() {
     accounts,
     variant,
     status,
+    backup,
     loading,
     error,
     fetchAll,
@@ -890,6 +892,28 @@ export default function AccountsPage() {
             </div>
           </TooltipProvider>
         </div>
+        {/* 账号库空了、但备份里还有账号 —— 这正是"账号凭空消失"的现场。
+            先给恢复入口，再谈排查；否则用户面对的是一个无法处置的空列表。 */}
+        {backup?.recoverable && (
+          <Alert variant="destructive" className="mb-4">
+            <CircleAlert />
+            <AlertTitle>账号库是空的，但备份里还有 {backup.latestAccounts} 个账号</AlertTitle>
+            <AlertDescription>
+              <p>
+                每次账号库变动都会自动备份一份，最新的在 {backup.dir ?? "用户文档目录"}。
+                先把账号恢复回来，再去排查它们是怎么消失的。
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-1 h-8"
+                onClick={() => setImportOpen(true)}
+              >
+                <FileUp />导入备份
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
         {loading && visibleAccounts.length === 0 ? (
           <div className="flex items-center gap-2 py-16 text-sm text-muted-foreground">
             <Loader2 className="animate-spin" />

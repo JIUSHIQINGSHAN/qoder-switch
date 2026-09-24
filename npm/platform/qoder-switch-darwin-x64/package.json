@@ -1,0 +1,19 @@
+{
+  "name": "qoder-switch-darwin-x64",
+  "version": "0.1.6",
+  "description": "qoder-switch platform binary (darwin-x64)：webui 服务端 qs-switch-server（Intel）",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JIUSHIQINGSHAN/qoder-switch.git"
+  }
+}

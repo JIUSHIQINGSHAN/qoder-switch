@@ -110,7 +110,7 @@ pub fn preview(
         .collect();
 
     // 探测失败必须与"目标没在跑"区分：把失败折叠成空列表会让后续的关进程门
-    // fail-open（tasklist 被策略挡掉时照常备份写入，与活着的 Qoder 赛跑）。
+    // fail-open（探测工具被策略挡掉时照常备份写入，与活着的 Qoder 赛跑）。
     let (running, probe_error) = match process::running_pids(req.target.images(req.variant)) {
         Ok(pids) => (pids, None),
         Err(e) => (Vec::new(), Some(e.clone())),
@@ -119,7 +119,10 @@ pub fn preview(
 
     let mut warnings = Vec::new();
     if let Some(err) = &probe_error {
-        warnings.push(format!("进程探测失败（{err}）：正式执行会被拒绝，请检查 tasklist 可用性"));
+        warnings.push(format!(
+            "进程探测失败（{err}）：正式执行会被拒绝，请检查 {} 是否可用",
+            process::PROBE_TOOL
+        ));
     }
     if !uncovered.is_empty() {
         warnings.push(format!(
@@ -629,32 +632,87 @@ mod tests {
         std::fs::remove_dir_all(s.tmp).ok();
     }
 
-    /// 本机 QODER_PRODUCT_ID=qoder-cn，正常档必须拒绝终止目标。
+    /// 造出「本进程由 CN 客户端托管」的环境标记，析构时把原值写回去。
+    ///
+    /// 环境变量是进程级的，而测试默认并行 —— 所以必须还原，不能只设不管。
+    /// 污染面已核查：`host_env()` 的另两个调用点都只把结论用在提示文案上
+    /// （`preview` 的 warnings、`rotate::suggest` 的 note 与 `executable_from_here`），
+    /// 不参与任何断言；`this_session_is_recognised_as_hosted_by_cn` 读到标记后
+    /// 反而会走完整断言分支并通过。
+    struct HostMark {
+        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl HostMark {
+        fn cn_app() -> Self {
+            const KEYS: [&str; 2] = ["QODER_PRODUCT_ID", "QODERCN_SESSION_TYPE"];
+            let saved = KEYS.iter().map(|k| (*k, std::env::var_os(*k))).collect();
+            std::env::set_var("QODER_PRODUCT_ID", "qoder-cn");
+            std::env::set_var("QODERCN_SESSION_TYPE", "app");
+            Self { saved }
+        }
+    }
+
+    impl Drop for HostMark {
+        fn drop(&mut self) {
+            for (k, v) in &self.saved {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+    }
+
+    /// 被托管时正常档必须拒绝终止目标。
+    ///
+    /// 「被托管」由环境标记**直接定案**：`hosted_by` 只要见到匹配档位的 `QODER_*`
+    /// 变量就返回 `Yes`，根本不再看父链。所以这里显式造出该标记，而不是指望运行环境
+    /// 自带 —— 后者只在 Qoder 客户端内嵌的终端里成立，换到普通终端就完全走样：
+    ///   - 普通终端里判定是 `No`，测试非但失败，还会拿**真实档**一路跑完，包括
+    ///     `process::close` —— 也就是真去 SIGTERM 正在运行的 Qoder 客户端，再等满
+    ///     20s 超时后强杀（实测这条测试耗时 21.63s，正是这么来的）；
+    ///   - 沙箱里 `ps` 被策略挡掉时，`running_pids` 报错会被原先的前置检查挡下，
+    ///     测试静默跳过，安全门等于没跑。
+    /// 造出标记后，两种环境都会在托管判定处早退，结论一致，且不碰任何真实进程。
     #[test]
     fn real_actor_refuses_when_hosted() {
+        let _env = HostMark::cn_app();
         let s = sandbox();
         seed(&s.roots, b"authA", b"keyA", "a@x.com");
         bundle::capture(&s.roots, &s.store, "acct-a", Cn, QoderTarget::Desktop).unwrap();
-        if process::running_pids(QoderTarget::Desktop.images(Cn)).map_or(true, |p| p.is_empty()) {
-            eprintln!("NOTE: 目标没在跑，拒绝逻辑无从验证");
-            return;
-        }
+
         let mut steps = Vec::new();
-        let e = execute(
+        let e = match execute(
             &s.roots,
             &s.store,
             &req("acct-a"),
             Actor::Real,
             &mut |m| steps.push(m.to_string()),
-        )
-        .unwrap_err();
+        ) {
+            Err(e) => e,
+            // 走到这里说明托管标记没起作用，真实环境里此刻 Qoder 已经被杀了。
+            Ok(j) => panic!("被托管时正常档必须拒绝，实际却完成了切换: {j:?}"),
+        };
+        // 探测工具不可用时会在托管判定之前先 fail-closed 早退（另一条门），
+        // 那种情况下本测试验不到托管文案 —— 跳过，不误判成失败。
+        if e.contains("无法探测目标进程") {
+            eprintln!("NOTE: 本机进程探测不可用，跳过托管文案校验: {e}");
+            return;
+        }
         assert!(e.contains("拒绝执行"), "被托管时正常档必须拒绝: {e}");
         assert!(live(&s.roots) == b"authA", "拒绝后不该动过现场");
+        // 拒绝必须发生在关进程**之前**：一旦落到 `process::close`，真实环境里
+        // Qoder 客户端就被杀了。这条断言把两者的次序钉死。
+        assert!(
+            !steps.iter().any(|s| s.contains("关闭")),
+            "托管拦截必须先于关进程，实际步骤: {steps:?}"
+        );
         let left = unfinished(&s.store).unwrap();
         assert!(left.is_empty(), "Failed 状态不该被当成待恢复: {left:?}");
         // 拒绝文案必须给出可操作的出路，并保留前端依赖的两个关键词：
         // "强制档" 是切换对话框显示「强制切换」按钮的触发词，改丢它按钮就没了；
-        // "关闭目标客户端" 是不走强制档的最简出路（目标不在跑时托管判定不触发）。
+        // "关闭目标客户端" 是不走强制档的最简出路。
         assert!(e.contains("强制档"), "文案必须保留'强制档'（前端按钮触发词）: {e}");
         assert!(
             e.contains("关闭目标客户端"),

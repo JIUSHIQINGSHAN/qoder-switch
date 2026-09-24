@@ -33,29 +33,14 @@ pub fn resolve_token(
     Ok(resolve_identity(roots, store, account_id, variant)?.0)
 }
 
-fn decrypt_from_bundle_dir(dir: &Path) -> Result<(String, String)> {
-    // 兼容三种历史命名：auth_main（带下划线）、authmain（无下划线）、auth.v1.dat（DPAPI 包格式）
-    let auth_path = ["auth_main", "authmain", "auth.v1.dat"]
-        .iter()
-        .map(|n| dir.join(n))
-        .find(|p| p.is_file())
-        .ok_or_else(|| "凭据文件不存在".to_string())?;
-
-    // 兼容两种 key 文件命名：local_state（带下划线）、localstate（无下划线）
-    let key_path = ["local_state", "localstate"]
-        .iter()
-        .map(|n| dir.join(n))
-        .find(|p| p.is_file())
-        .ok_or_else(|| "Local State 密钥文件不存在".to_string())?;
-
-    let key = auth_codec::aes_key_from_local_state(&key_path)
-        .map_err(|e| format!("读取 Local State 密钥失败: {e}"))?;
-    let blob = std::fs::read(&auth_path)
-        .map_err(|e| format!("读取凭据文件失败: {e}"))?;
-    let dec = auth_codec::decrypt_blob(&key, &blob)
-        .map_err(|e| format!("解密凭据失败: {e}"))?;
-    let auth = auth_codec::parse_auth(&dec)
-        .map_err(|e| format!("解析凭据失败: {e}"))?;
+fn decrypt_from_bundle_dir(
+    dir: &Path,
+    roots: &PathRoots,
+    variant: QoderVariant,
+) -> Result<(String, String)> {
+    // 凭据命名兼容、密钥载体与解码方案全部收在 auth_codec::decrypt_bundle_auth 里：
+    // Windows 用包内 Local State（DPAPI），macOS 用本机钥匙串（PBKDF2+CBC）。
+    let auth = auth_codec::decrypt_bundle_auth(dir, roots, variant)?;
     if auth.token.trim().is_empty() {
         return Err("解析得到的登录 Token 为空".to_string());
     }
@@ -89,8 +74,11 @@ pub fn resolve_identity_full(
             .clone()
             .filter(|e| !e.trim().is_empty());
         let dir = bundle.dir_in(store);
-        let (token, auth_email) = decrypt_from_bundle_dir(&dir).map_err(|e| {
-            format!("账号 {account_id} 凭据解密失败（跨 Windows 用户或 Local State 不匹配，需在本机重新登录一次）: {e}")
+        let (token, auth_email) = decrypt_from_bundle_dir(&dir, roots, variant).map_err(|e| {
+            format!(
+                "账号 {account_id} 凭据解密失败（{}，需在本机重新登录一次）: {e}",
+                auth_codec::portability_hint()
+            )
         })?;
         return Ok((token, email.unwrap_or(auth_email), proxy));
     }
@@ -109,7 +97,60 @@ pub fn resolve_identity_full(
         }
     }
 
-    Err(format!("无法读取账号 {account_id} 的有效登录凭据"))
+    // 走到这里说明桌面轴没有可用的包。但"读不到"其实有三种成因，处置方式完全不同，
+    // 不能含糊成同一句话让用户去猜：
+    //   - 库里任何目标都没有它 → 卡片是**列表加载之后**才被删掉的幽灵，唯一该做的是
+    //     刷新列表（前端据 accountMissing 自愈），而不是反复重登；
+    //   - 只有 CLI / Work 目标的包 → 积分与签到只认桌面客户端凭据（CLI 不落盘可解密的
+    //     登录态），这是能力边界，不是故障；
+    //   - 桌面包在、只是解不开 → 已在上面单独报错，不会走到这里。
+    // 文案保留「无法读取账号 …」前缀：它是对外契约，调用方与测试都按它判类别。
+    Err(match account_presence(store, account_id) {
+        AccountPresence::Missing => format!(
+            "无法读取账号 {account_id} 的有效登录凭据：该账号包已不在账号库中（可能已被删除或移走）。\
+             请刷新账号列表；若要重新使用它，请重新导入本机账号或重新扫码登录。"
+        ),
+        AccountPresence::OtherTargets(targets) => format!(
+            "无法读取账号 {account_id} 的有效登录凭据：账号库里只有 {} 的账号包，没有桌面客户端凭据。\
+             积分与签到只支持桌面客户端登录态。",
+            targets.join("、")
+        ),
+    })
+}
+
+/// 账号在库里"还剩什么"。只做 `bundle::load` 判存在，**不解密** —— 这里回答的是
+/// "包在不在、在哪个目标上"，与"能不能解开"是两件事。
+enum AccountPresence {
+    /// 任何 (档位·目标) 组合下都没有这个账号的包。
+    Missing,
+    /// 只有非桌面目标的包（人话标签，如「Qoder 国内版·Qoder CLI」）。
+    OtherTargets(Vec<String>),
+}
+
+fn account_presence(store: &Path, account_id: &str) -> AccountPresence {
+    if bundle::validate_account_id(account_id).is_err() {
+        return AccountPresence::Missing;
+    }
+    let others: Vec<String> = crate::modules::variant::all_axes()
+        .into_iter()
+        .filter(|(_, t)| *t != QoderTarget::Desktop)
+        .filter(|(v, t)| {
+            bundle::load(store, account_id, *v, *t)
+                .map(|b| !b.is_empty())
+                .unwrap_or(false)
+        })
+        .map(|(v, t)| format!("{}·{}", v.label(), t.label()))
+        .collect();
+    if others.is_empty() {
+        AccountPresence::Missing
+    } else {
+        AccountPresence::OtherTargets(others)
+    }
+}
+
+/// 账号包是否已从库里彻底消失（前端据此刷新列表、清掉幽灵卡片）。
+pub fn account_is_missing(store: &Path, account_id: &str) -> bool {
+    matches!(account_presence(store, account_id), AccountPresence::Missing)
 }
 
 fn email_from_live(auth: &auth_codec::DesktopAuth) -> String {
@@ -162,10 +203,24 @@ fn build_headers(token: &str) -> HashMap<String, String> {
     h.insert("Authorization".into(), format!("Bearer {token}"));
     h.insert("Cosy-ClientType".into(), "10".into());
     h.insert("Cosy-Version".into(), "0.3.3".into());
-    h.insert("Cosy-MachineOS".into(), "windows".into());
+    // 端点取证自 Windows，但把这个值写死成 "windows" 会在 mac 上**继续工作同时说谎**
+    // —— 服务端若按 OS 指纹做风控或统计，我们只会看到 200，看不到后果。按宿主报真值。
+    h.insert("Cosy-MachineOS".into(), machine_os_tag().into());
     h.insert("User-Agent".into(), "Qoder".into());
     h.insert("Accept".into(), "application/json".into());
     h
+}
+
+/// `Cosy-MachineOS` 的取值。与 Qoder 客户端自身上报的字符串对齐（见 `docs/qoder-endpoints.md`
+/// 的实测记录）；拿不准时宁可报真实平台，也不要报另一个平台的值。
+fn machine_os_tag() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "windows"
+    }
 }
 
 /// 查询账号的积分/配额详细情况（对齐前端 CreditExpiry 契约）。
@@ -177,7 +232,17 @@ pub async fn fetch_credit_expiry(
 ) -> Value {
     let (token, email, proxy) = match resolve_identity_full(roots, store, account_id, variant) {
         Ok(t) => t,
-        Err(e) => return json!({ "ok": false, "error": e, "resources": [] }),
+        // `accountMissing` 是给前端的结构化信号：账号包在列表加载之后被删掉时，
+        // 页面上的卡片已经是幽灵 —— 重拉一次列表就能自愈。只靠 error 文案判断太脆
+        // （文案会随迭代改），所以标志位单独给。
+        Err(e) => {
+            return json!({
+                "ok": false,
+                "error": e,
+                "resources": [],
+                "accountMissing": account_is_missing(store, account_id),
+            })
+        }
     };
 
     let base = openapi_base(variant);
@@ -761,6 +826,58 @@ mod tests {
             let (tok, _em) = local_res.unwrap();
             assert!(!tok.trim().is_empty());
         }
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 「读不到桌面凭据」的两种成因必须分开报，且 `accountMissing` 只在真的没包时为真：
+    /// - 包已被删（界面上的幽灵卡片）→ 文案指向"刷新列表"，标志为 true，前端据此自愈；
+    /// - 只有 CLI 目标的包 → 说清是能力边界，标志为 false（否则前端会白刷一次列表）。
+    ///
+    /// 回归背景：账号包在列表加载之后被删掉时，卡片会一直挂着一条用户无法处置的报错；
+    /// 而 CLI 轴包被 `list_all` 列出、桌面轴查询失败时，用户会误以为账号坏了。
+    #[test]
+    fn missing_bundle_and_cli_only_bundle_are_reported_differently() {
+        let tmp = std::env::temp_dir().join(format!(
+            "qs-quota-presence-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let roots = PathRoots::sandbox(&tmp);
+        let store = tmp.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+
+        // 1) 库里任何 (档位·目标) 都没有这个账号 → Missing。
+        let err = resolve_identity(&roots, &store, "ghost-account", QoderVariant::Cn).unwrap_err();
+        assert!(err.contains("无法读取账号"), "前缀是对外契约: {err}");
+        assert!(err.contains("刷新账号列表"), "要给出可操作的下一步: {err}");
+        assert!(account_is_missing(&store, "ghost-account"));
+
+        // 2) 只有 CLI 目标的包 → 是能力边界，不能说成"包丢了"。
+        let dir = bundle::bundle_dir_in(&store, "cli-only", QoderVariant::Cn, QoderTarget::Cli);
+        std::fs::create_dir_all(&dir).unwrap();
+        let b = bundle::Bundle {
+            account_id: "cli-only".into(),
+            variant: QoderVariant::Cn,
+            target: QoderTarget::Cli,
+            created_at: crate::modules::config::now_ts(),
+            members: vec![bundle::Member {
+                role: crate::modules::variant::FileRole::CliUser,
+                file_name: "cliuser".into(),
+                sha256: "00".into(),
+                size: 1,
+                critical: true,
+            }],
+            identity: bundle::Identity {
+                name: Some("cli 账号".into()),
+                ..Default::default()
+            },
+        };
+        bundle::write_meta(&store, &b).unwrap();
+
+        let err = resolve_identity(&roots, &store, "cli-only", QoderVariant::Cn).unwrap_err();
+        assert!(err.contains("桌面客户端"), "要点明缺的是桌面凭据: {err}");
+        assert!(!err.contains("已不在账号库中"), "有包就不能说包丢了: {err}");
+        assert!(!account_is_missing(&store, "cli-only"), "有 CLI 包不算丢失");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

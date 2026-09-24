@@ -5,6 +5,7 @@ import type {
   AppNotification,
   AppStatus,
   AutoRotateConfig,
+  BackupStatus,
   CodeBuddyCliInstallResult,
   CodeBuddyCliStatus,
   CodeBuddyCliSwitchResult,
@@ -98,6 +99,7 @@ type Route = { method: "GET" | "POST"; path: string };
 const ROUTES: Record<string, Route> = {
   get_status: { method: "GET", path: "/api/status" },
   get_accounts: { method: "GET", path: "/api/accounts" },
+  get_backup_status: { method: "GET", path: "/api/backup-status" },
   get_codebuddy_cli_status: { method: "GET", path: "/api/codebuddy-cli/status" },
   install_codebuddy_cli_helper: { method: "POST", path: "/api/codebuddy-cli/install-helper" },
   switch_codebuddy_cli_account: { method: "POST", path: "/api/codebuddy-cli/switch" },
@@ -134,7 +136,10 @@ const ROUTES: Record<string, Route> = {
   checkin_all: { method: "POST", path: "/api/checkin/all" },
   get_auto_checkin_config: { method: "GET", path: "/api/checkin/config" },
   save_auto_checkin_config: { method: "POST", path: "/api/checkin/config" },
-  get_checkin_logs: { method: "GET", path: "/api/checkin/logs" },  list_notifications: { method: "GET", path: "/api/notifications" },
+  get_checkin_logs: { method: "GET", path: "/api/checkin/logs" },
+  check_auth_permission: { method: "POST", path: "/api/check-auth-permission" },
+  open_permission_settings: { method: "POST", path: "/api/open-permission-settings" },
+  reveal_app_in_finder: { method: "POST", path: "/api/reveal-app-in-finder" },  list_notifications: { method: "GET", path: "/api/notifications" },
   record_notification: { method: "POST", path: "/api/notifications/record" },
   clear_notifications: { method: "POST", path: "/api/notifications/clear" },
   get_auto_rotate_config: { method: "GET", path: "/api/rotate/config" },
@@ -222,8 +227,9 @@ const QODER_UNAVAILABLE: Record<string, string> = {
   get_codebuddy_ide_status: "国际版桌面端尚无独立状态命令",
   switch_codebuddy_ide_account: "国际版桌面端尚无独立状态命令",
   detect_codebuddy_ide_account: "国际版桌面端尚无独立状态命令",
-  open_permission_settings: "macOS 专属操作（Windows 无完全磁盘访问授权）",
-  reveal_app_in_finder: "macOS 专属操作",
+  // open_permission_settings / reveal_app_in_finder 以前挂在这里（当时只有 Windows）。
+  // 现在两个宿主命令都已实现并按平台分流，挂在这里会让 macOS 上那几个已经放出来
+  // 的按钮必然抛错，所以移除；平台差异由 isMacHost() 那侧的显隐负责。
 };
 
 /**
@@ -386,6 +392,14 @@ export function getStatus(variant?: WbVariant): Promise<AppStatus> {
 /** 返回全部档位的账号，由调用方按 `variant` 过滤。 */
 export function getAccounts(): Promise<{ accounts: AccountMeta[] }> {
   return call("get_accounts");
+}
+
+/**
+ * 账号库自动备份现状。账号库空了、而备份里还有账号时 `recoverable` 为 true ——
+ * 界面据此显示"可从备份恢复"的提示条，其余情况不打扰用户。
+ */
+export function getBackupStatus(): Promise<BackupStatus> {
+  return call("get_backup_status");
 }
 
 export function getCodebuddyCliStatus(): Promise<CodeBuddyCliStatus> {

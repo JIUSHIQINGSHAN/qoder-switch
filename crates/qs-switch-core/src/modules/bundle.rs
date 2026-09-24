@@ -835,10 +835,23 @@ mod tests {
         let collected =
             collect_live_critical_members(&roots, &dir, &mut members, QoderVariant::Cn, QoderTarget::Desktop)
                 .unwrap();
-        assert!(
-            collected.contains(&FileRole::LocalState),
-            "现场存在 Local State，必须被收进包，否则 restore 会拒写: {collected:?}"
-        );
+        // Local State 该不该被收进包，取决于它在本平台是否承载秘密：
+        // - Windows：里面是 DPAPI 包裹的主密钥，critical=true，漏了就会被覆盖性检查
+        //   判为"半换号"，账号建得出来却切不过去 —— 这正是本条回归要守住的。
+        // - macOS：实测该文件只有 uninstall_metrics，主密钥在登录钥匙串，所以它在
+        //   credentials() 里被标成非 critical，不收进包才是对的。
+        // 两个平台共用的真不变量是下面那句 restore 必须成功，而不是"必须收到 Local State"。
+        if cfg!(target_os = "macos") {
+            assert!(
+                !collected.contains(&FileRole::LocalState),
+                "macOS 上 Local State 不承载主密钥，不该被当作 critical 收进包: {collected:?}"
+            );
+        } else {
+            assert!(
+                collected.contains(&FileRole::LocalState),
+                "现场存在 Local State，必须被收进包，否则 restore 会拒写: {collected:?}"
+            );
+        }
 
         // 包内文件名必须是 stored_name()，restore 才找得到。
         for m in &members {
@@ -875,8 +888,15 @@ mod tests {
         seed(&roots, b"authA", b"keyA", b"mA", "a@x.com");
         let mut b =
             capture(&roots, &store, "acct-a", QoderVariant::Cn, QoderTarget::Desktop).unwrap();
-        // 模拟"包只带了 auth.v1.dat，没带 Local State"。
-        b.members.retain(|m| m.role != FileRole::LocalState);
+        // 模拟"包漏掉一个现场存在且 critical 的文件"。挑哪个角色随平台而变：
+        // Windows 上 Local State 装着 DPAPI 主密钥，漏了就是半换号；macOS 上它
+        // 只有 uninstall_metrics、已被标成非 critical，所以那边改用 AuthMain 验同一条闸门。
+        let dropped = if cfg!(target_os = "macos") { FileRole::AuthMain } else { FileRole::LocalState };
+        assert!(
+            b.members.iter().any(|m| m.role == dropped && m.critical),
+            "{dropped:?} 在本平台必须是 critical，否则这条测试什么都没测到"
+        );
+        b.members.retain(|m| m.role != dropped);
 
         let err = restore(&roots, &store, &b, &store.join("backups").join("bk")).unwrap_err();
         assert!(err.contains("半换号"), "错误信息该说明拒写原因: {err}");
