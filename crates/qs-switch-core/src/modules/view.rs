@@ -501,7 +501,9 @@ pub fn auth_permission_probe(roots: &PathRoots, v: QoderVariant) -> Value {
         Ok(()) => {
             // 探针写完即删；删除失败不影响"可写"这个结论，但要记下来。
             let rm = std::fs::remove_file(&probe);
-            let message = if rm.is_ok() {
+            // mac 分支会 push_str；Windows 上不可变，allow 压掉 cfg 差异导致的警告。
+            #[allow(unused_mut)]
+            let mut message = if rm.is_ok() {
                 "认证目录可写，权限正常".to_string()
             } else {
                 "认证目录可写（探针清理失败，不影响切换）".to_string()
