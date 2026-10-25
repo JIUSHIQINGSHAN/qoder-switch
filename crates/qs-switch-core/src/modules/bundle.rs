@@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
 use crate::modules::config::{
     atomic_write_bytes, now_ts, read_bytes, sha256_hex, PathRoots,
 };
-use crate::modules::variant::{bundle_prefix, credentials, FileRole, QoderTarget, QoderVariant};
+use crate::modules::variant::{
+    bundle_prefix, credentials, CredentialFile, FileRole, QoderTarget, QoderVariant,
+};
 use crate::Result;
 
 /// 包内一个文件成员。
@@ -32,7 +34,7 @@ pub struct Member {
 }
 
 /// 从明文回显或解密后的登录态读出的账号身份，用于列表展示；不含任何 token。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Identity {
     #[serde(default)]
     pub name: Option<String>,
@@ -56,6 +58,44 @@ pub struct Identity {
     /// 独立代理配置（例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<String>,
+}
+
+// 手写 Debug 而不派生：proxy 是用户手输的连接串，可能内嵌 `user:pass` 明文
+// （view 层回显走 mask_proxy_credentials，Debug 这条通路却一直裸奔）。
+// 只掩 proxy；name/email/plan 等本来就是展示用的身份标签，照常可读。
+// Bundle / ExportedBundle 上的 derive(Debug) 依赖本 impl，输出随之掩码。
+impl std::fmt::Debug for Identity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Identity")
+            .field("name", &self.name)
+            .field("email", &self.email)
+            .field("plan", &self.plan)
+            .field("product", &self.product)
+            .field("logged_in", &self.logged_in)
+            .field("snapshot_at", &self.snapshot_at)
+            .field("uid", &self.uid)
+            .field("expires_at", &self.expires_at)
+            .field("refresh_expires_at", &self.refresh_expires_at)
+            .field(
+                "proxy",
+                &self
+                    .proxy
+                    .as_ref()
+                    .map(|p| secret_fingerprint(p.as_bytes())),
+            )
+            .finish()
+    }
+}
+
+/// 与 auth_codec::secret_fingerprint 同式（只露长度与哈希前缀，绝不输出原文）。
+/// 复用本模块已有的 sha256_of，不为几行掩码跨模块再开一个口子。
+fn secret_fingerprint(secret: &[u8]) -> String {
+    let hex = sha256_of(secret);
+    format!(
+        "len={}, sha256={}..",
+        secret.len(),
+        &hex[..16.min(hex.len())]
+    )
 }
 
 /// RFC3339（`2026-10-19T06:19:41Z`）→ 毫秒。前端契约里的时间戳是毫秒数。
@@ -590,14 +630,83 @@ impl RestoreOutcome {
 }
 
 /// 凭磁盘清单回滚（崩溃恢复入口，不需要内存上下文）。
+///
+/// 生产入口：以 `PathRoots::real()` 兜底转调 `undo_backup_in`。roots 必须可注入
+/// 而不能在校验体内写死 —— 沙箱测试的 item 路径全在临时目录，写死 real() 会把
+/// 整单拒掉；这样两个入口（`switch::recover` 与本函数）才在同一信任锚下校验。
 pub fn undo_backup(backup_dir: &Path) -> Result<()> {
+    undo_backup_in(backup_dir, &PathRoots::real())
+}
+
+/// `undo_backup` 的可注入 roots 内层。磁盘清单可能被篡改 —— 与 `switch::recover`
+/// 对 journal/backup_dir 的威胁模型一致 —— 所以不能"清单写哪就写哪"：先以清单
+/// 自带的 (variant,target) 经 `variant::credentials` 声明的凭据路径集合为信任锚，
+/// 逐条做 recover 同级别的三重校验（词法包含 → canonicalize 真实路径复核 →
+/// 拒符号链接），被拒条目不落盘，并与其余条目的写入失败一并按"回滚不完整"
+/// 聚合上报，不中断也不吞错。
+pub fn undo_backup_in(backup_dir: &Path, roots: &PathRoots) -> Result<()> {
     let bytes = read_bytes(&backup_dir.join(MANIFEST_FILE))
         .map_err(|e| format!("读 {:?} 失败: {e}", backup_dir.join(MANIFEST_FILE)))?;
     let m: BackupManifest = serde_json::from_slice(&bytes)
         .map_err(|e| format!("备份清单解析失败: {e}"))?;
-    restore_from_backup(backup_dir, &m.items)
+    // 信任锚只认调用方传入的 roots（与切换时的凭据布局同源）。清单里的
+    // variant/target 即使被伪造，也只是换到另一份代码固定的声明集合，不会放大。
+    let allowed = credentials(roots, m.variant, m.target);
+    let mut keep = Vec::new();
+    let mut errs = Vec::new();
+    for b in &m.items {
+        match validate_backup_path(&allowed, &b.path) {
+            Ok(()) => keep.push(b.clone()),
+            Err(reason) => errs.push(format!("{:?}: {}", b.path, reason)),
+        }
+    }
+    if errs.is_empty() {
+        // 全部条目都过了锚校验：直接沿用 restore_from_backup 的既有聚合语义，
+        // 错误文案与旧路径逐字一致。
+        return restore_from_backup(backup_dir, &keep);
+    }
+    // 有被拒条目：其余条目仍要继续回滚（不中断），写入失败与拒绝合并上报。
+    if let Err(e) = restore_from_backup(backup_dir, &keep) {
+        errs.push(e);
+    }
+    Err(format!("回滚不完整: {}", errs.join(" | ")))
 }
 
+/// 单条备份 item 的路径校验。与 `switch::recover` 对 journal.backup_dir 的三重
+/// 防线同式，威胁模型相同：磁盘上的清单可能被篡改，未校验的 `path` 等于任意
+/// 路径写/删原语。
+///
+/// 1. 词法包含 —— `path` 必须逐字等于该 (variant,target) 布局声明的某个凭据路径；
+/// 2. canonicalize 双向复核 —— 词法比较挡不住链接，两边解析出的真实路径仍须相同，
+///    解析失败（不存在或不可访问）按拒绝处理，不猜；
+/// 3. 拒符号链接 —— 路径本身是链接（或缺失）时一律拒绝，与 recover 同式 fail-closed。
+// 返回类型用 crate::Result（错误类型固定为 String，不重复给泛型实参）。
+fn validate_backup_path(allowed: &[CredentialFile], path: &Path) -> Result<()> {
+    let declared = allowed
+        .iter()
+        .find(|f| f.path.as_path() == path)
+        .ok_or_else(|| "不在该 (版本·目标) 声明的凭据路径集合内，拒绝按清单写回".to_string())?;
+    match (path.canonicalize(), declared.path.canonicalize()) {
+        (Ok(item_real), Ok(declared_real)) if item_real == declared_real => {}
+        _ => {
+            return Err(format!(
+                "解析真实路径后不等于声明的凭据路径 {:?}（不存在或被链接指向别处），拒绝写回",
+                declared.path
+            ));
+        }
+    }
+    if std::fs::symlink_metadata(path)
+        .map(|m| m.is_symlink())
+        .unwrap_or(true)
+    {
+        return Err("路径不是真实文件（缺失或为符号链接），拒绝写回".to_string());
+    }
+    Ok(())
+}
+
+/// 执行回滚动作本身。**这里的 `path` 必须先过信任锚校验**：磁盘清单入口
+/// （`undo_backup_in`）逐条校验后才把条目交进来；restore 内部的 rollback 与
+/// `RestoreOutcome::undo` 传的是内存 items（本次 restore 记下的受信路径），无需再验。
 fn restore_from_backup(backup_dir: &Path, backups: &[BackupItem]) -> Result<()> {
     let mut errs = Vec::new();
     for b in backups {
@@ -806,7 +915,9 @@ mod tests {
         let out2 = restore(&roots, &store, &a, &bk2).unwrap();
         assert_eq!(live(&roots, "auth.v1.dat"), b"authA");
         drop(out2);
-        undo_backup(&bk2).unwrap();
+        // 测试的 item 路径全在沙箱临时目录，必须显式传同一套 roots ——
+        // real() 兜底会按真实凭据布局拒掉整单（见 undo_backup_in 的信任锚）。
+        undo_backup_in(&bk2, &roots).unwrap();
         assert_eq!(
             live(&roots, "auth.v1.dat"),
             b"authB",
@@ -1050,6 +1161,58 @@ mod tests {
 
         assert_eq!(std::fs::read(&restored_path).unwrap(), b"original");
         assert!(!created_path.exists(), "原本不存在的文件回滚时应删除");
+        std::fs::remove_dir_all(tmp).ok();
+    }
+
+    /// 恶意清单可判定：`_restore.json` 可能被篡改，item.path 指向凭据路径集合
+    /// 之外时必须拒写该条并如实上报（错误含被拒路径与原因），同单里的正常条目
+    /// 照常写回 —— 这就是 undo_backup_in 与 recover 同款的信任锚语义。
+    #[test]
+    fn undo_backup_in_rejects_paths_outside_credential_anchor() {
+        let (roots, store, tmp) = fixture();
+        seed(&roots, b"authA", b"keyA", b"mA", "a@x.com");
+
+        // 正常条目走真实布局路径（seed 已让现场存在）；恶意条目指向锚外的
+        // store 侧目录 —— 绝对路径、且不在 credentials(Cn, Desktop) 声明集合内。
+        let good_path = desktop_dir(&roots, QoderVariant::Cn).join("auth.v1.dat");
+        let evil_path = store.join("escaped").join("evil.dat");
+        let bk = store.join("backups").join("evil-manifest");
+        std::fs::create_dir_all(&bk).unwrap();
+        std::fs::write(bk.join("authmain"), b"restored-A").unwrap();
+        std::fs::write(bk.join("evil"), b"evil-bytes").unwrap();
+
+        let manifest = BackupManifest {
+            variant: QoderVariant::Cn,
+            target: QoderTarget::Desktop,
+            taken_at: now_ts(),
+            items: vec![
+                BackupItem {
+                    role: FileRole::AuthMain,
+                    path: good_path.clone(),
+                    saved_name: Some("authmain".into()),
+                    sha256: None,
+                },
+                BackupItem {
+                    role: FileRole::AuthMain,
+                    path: evil_path.clone(),
+                    saved_name: Some("evil".into()),
+                    sha256: None,
+                },
+            ],
+        };
+        write_json(&bk.join(MANIFEST_FILE), &manifest).unwrap();
+
+        let err = undo_backup_in(&bk, &roots).unwrap_err();
+        assert!(err.contains("回滚不完整"), "被拒条目要按聚合语义上报: {err}");
+        assert!(err.contains("evil.dat"), "错误信息必须含被拒路径: {err}");
+        assert!(err.contains("凭据路径集合"), "错误信息必须含拒绝原因: {err}");
+        // 正常条目照常写回，恶意条目一个字节都不能落盘。
+        assert_eq!(
+            std::fs::read(&good_path).unwrap(),
+            b"restored-A",
+            "集合内的正常条目不该被恶意条目连坐"
+        );
+        assert!(!evil_path.exists(), "锚外路径绝不能被写出");
         std::fs::remove_dir_all(tmp).ok();
     }
 }

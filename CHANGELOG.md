@@ -4,9 +4,42 @@
 
 ---
 
-## [未发布] macOS 适配（基于 v0.1.6 rebase）
+## [0.2.0] - 2026-10-25 国际版风控签到 + macOS 适配
 
 ### 新增功能
+- **Qoder 国际版每日签到**（协议吸取自 [CreditDaddy](https://github.com/techysy/CreditDaddy)，
+  MIT；端点落档 `docs/qoder-endpoints.md` §5，待真机只读探测确认）：
+  - 签到链路与国内版同形（`/sash/api/v1/me/campaigns` + `/claim`，基址
+    `openapi.qoder.sh`），国际版额外携带客户端生成的**设备风控三头**
+    （`Cosy-MachineToken/Code/Type`）。新增 `risk` 模块：定位本机 Qoder 客户端
+    自带的 `resources/umid/runtime-info` 组件并按官方参数调用（stdin 传账号、
+    25s 超时、CREATE_NO_WINDOW），按 `档位:uid` 进程内缓存 50 分钟（客户端自身
+    60±5 分钟刷新，保守取短）；任何失败**降级为不带风控头继续**并在结果里如实标注
+    `riskError`，绝不编造成功。
+  - 签到头对齐客户端 `createAuthorizedHeaders`：真实客户端版本号（读
+    `build-manifest.json` 的 productVersion，不硬编码）、`架构_平台` 口径的
+    `Cosy-MachineOS`、`Cosy-MachineId`（优先客户端 `auth.machine-id`，缺失时按
+    档位持久化 UUID）、可选 `Cosy-MachineHostname`。国内版请求头保持原样不动。
+  - **每台设备每日限领一个国际版账号**：按列表序尝试，首个成功写入名额备忘
+    （`checkin-device-claim.json`，业务日按 10:00 UTC+8 翻日），后续账号直接判
+    `limited`（提示点名占用者），自动调度轮对已占用账号静默跳过、不刷日志。
+- **国际版最小可见性恢复**：账号列表放开档位过滤并加回「国内版/国际版」Tab，
+  国际版账号开放签到与积分/额度查看；**切换仍仅国内版**（托盘与切换链路不动，
+  国际版卡片上的切换按钮置灰并注明）。单账号签到命令的档位改为按账号包解析，
+  根除「前端未传 variant → 缺省 Cn → 打错域名/找错包」的陷阱（两宿主同修）。
+- 签到日志新增 `limited` 结果与对应文案（设置页「设备名额已占用」）；批量签到
+  汇总区分 `inactive` / `limited`。
+
+### 测试
+- core 新增 11 条测试（risk 模块 7 条 + 签到 HTTP mock 4 条）：本地 TcpListener
+  手写 mock（零新依赖）覆盖 CLAIMABLE/CLAIMED/inactive/401/limited 与两档请求头
+  契约；真机发现链测试沿用 `#[ignore]` 约定另行补充。
+
+---
+
+### macOS 适配（基于 v0.1.6 rebase）
+
+#### 新增功能
 - **macOS 全链路支持**（在 macOS 15.6.1 / arm64 上实测，Windows 行为保持不变）：
   - **凭据解码**：新增 Keychain + PBKDF2-HMAC-SHA1(saltysalt/1003/16) + AES-128-CBC 分支。
     实测本机钥匙串条目 `Qoder CN App Safe Storage` / `Qoder CN App Key`，

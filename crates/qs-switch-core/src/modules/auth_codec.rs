@@ -37,7 +37,7 @@ use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
-use crate::modules::config::{read_bytes, PathRoots};
+use crate::modules::config::{read_bytes, sha256_hex_bytes, PathRoots};
 use crate::modules::variant::{credentials, FileRole, QoderVariant, QoderTarget};
 use crate::Result;
 
@@ -59,13 +59,39 @@ const MAC_IV: [u8; 16] = [0x20; 16];
 /// 桌面主密钥。两个平台的**算法与长度都不同**，所以用类型把差异收在这里，
 /// 而不是让调用方各自传 `&[u8]` 再猜长度 —— 长度猜错的后果是"解不开"，
 /// 而"解不开"在认领路径上会被静默降级成明文回显，很难查。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum MasterKey {
     /// Windows：Local State → DPAPI 解出的 32 字节密钥，blob 走 AES-256-GCM。
     Windows([u8; KEY_LEN]),
     /// macOS：钥匙串口令 → PBKDF2 派生的 16 字节密钥，blob 走 AES-128-CBC。
     #[cfg(target_os = "macos")]
     MacOS([u8; MAC_KEY_LEN]),
+}
+
+// 手写 Debug 而不派生：变体里装的是能解开全部凭据的原始密钥字节，派生的
+// {:?} 会把 32/16 字节一字不落打进日志、错误信息与崩溃转储。掩成
+// "长度 + 哈希前缀"后仍够核对"长度对不对、两把钥匙是否同源"，但还原不出原文。
+impl std::fmt::Debug for MasterKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Windows(k) => f.debug_tuple("Windows").field(&secret_fingerprint(k)).finish(),
+            #[cfg(target_os = "macos")]
+            Self::MacOS(k) => f.debug_tuple("MacOS").field(&secret_fingerprint(k)).finish(),
+        }
+    }
+}
+
+/// 秘密字段的 Debug 掩码：只露长度与 SHA-256 前 16 个十六进制位。
+/// 仓库红线：Debug 只允许"长度、键名、哈希前缀"——不足以还原原文，
+/// 但足以区分"同一把钥匙还是两把"。摘要恒为 64 位 hex，`min` 只是照
+/// bundle.rs 错误信息里的同款防御写法防切片越界，正常路径走不到。
+fn secret_fingerprint(secret: &[u8]) -> String {
+    let hex = sha256_hex_bytes(secret);
+    format!(
+        "len={}, sha256={}..",
+        secret.len(),
+        &hex[..16.min(hex.len())]
+    )
 }
 
 impl MasterKey {
@@ -106,7 +132,7 @@ pub struct AuthUser {
 }
 
 /// 解密后的桌面登录态。`expires_at` 一类字段保留原始字符串形态（ISO8601 + `Z`）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DesktopAuth {
     pub schema_version: u32,
     #[serde(skip_serializing)]
@@ -116,6 +142,29 @@ pub struct DesktopAuth {
     pub expires_at: String,
     pub refresh_expires_at: String,
     pub user: AuthUser,
+}
+
+// 手写 Debug 而不派生：serde 侧 token/refresh_token 已 skip_serializing，
+// Debug 这条通路却一直裸奔 —— 任何一处 {:?}（日志、错误信息、崩溃转储）都会
+// 打出 token 明文，两条防线必须对称。只掩这两个字段，expires_at / user 等
+// 非秘密字段照常可读，不误伤调试可用性。
+impl std::fmt::Debug for DesktopAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesktopAuth")
+            .field("schema_version", &self.schema_version)
+            .field(
+                "token",
+                &secret_fingerprint(self.token.as_bytes()),
+            )
+            .field(
+                "refresh_token",
+                &secret_fingerprint(self.refresh_token.as_bytes()),
+            )
+            .field("expires_at", &self.expires_at)
+            .field("refresh_expires_at", &self.refresh_expires_at)
+            .field("user", &self.user)
+            .finish()
+    }
 }
 
 impl DesktopAuth {
@@ -204,6 +253,21 @@ pub fn aes_key_from_local_state(local_state: &Path) -> Result<[u8; KEY_LEN]> {
     let mut out = [0u8; KEY_LEN];
     out.copy_from_slice(&key);
     Ok(out)
+}
+
+/// 仅测试（且仅 Windows）：构造一份**本机 DPAPI 可解**的 Local State 文本，让
+/// 跨模块的 mock 测试能造出"可解密的账号包"。解析器的读法是「整串 base64 解码
+/// 之后，字节前缀应为 DPAPI」—— 所以这里编码的明文是 DPAPI 头 + 密封体的拼接。
+#[cfg(all(test, windows))]
+pub(crate) fn test_local_state_json(key: &[u8; KEY_LEN]) -> Result<String> {
+    let sealed = dpapi_protect(key)?;
+    let payload: Vec<u8> = b"DPAPI"
+        .iter()
+        .chain(sealed.iter())
+        .copied()
+        .collect();
+    let enc = base64::engine::general_purpose::STANDARD.encode(&payload);
+    Ok(serde_json::json!({ "os_crypt": { "encrypted_key": enc } }).to_string())
 }
 
 /// macOS：从登录钥匙串读 safeStorage 口令，再 PBKDF2 派生出 AES-128 主密钥。

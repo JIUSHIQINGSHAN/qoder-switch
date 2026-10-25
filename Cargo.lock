@@ -3033,7 +3033,7 @@ dependencies = [
 
 [[package]]
 name = "qoder-switch"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "qs-switch-core",
  "serde",
@@ -3049,7 +3049,7 @@ dependencies = [
 
 [[package]]
 name = "qs-switch-core"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -3070,7 +3070,7 @@ dependencies = [
 
 [[package]]
 name = "qs-switch-server"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "qs-switch-core",
  "serde",

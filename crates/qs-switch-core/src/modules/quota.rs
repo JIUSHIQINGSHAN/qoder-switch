@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use crate::modules::auth_codec;
 use crate::modules::bundle;
 use crate::modules::config::PathRoots;
+use crate::modules::risk;
 use crate::modules::variant::{QoderTarget, QoderVariant};
 use crate::Result;
 
@@ -21,6 +22,54 @@ pub fn openapi_base(variant: QoderVariant) -> &'static str {
         QoderVariant::Cn => "https://openapi.qoder.com.cn",
         QoderVariant::Global => "https://openapi.qoder.sh",
     }
+}
+
+/// 测试注入点：HTTP mock 测试把基址指到本地 TcpListener。进程级而不是
+/// thread-local —— block_on/block_in_place 会跨线程跳，thread-local 不可靠；
+/// 使用方（测试）自己持锁串行化。
+#[cfg(test)]
+static MOCK_BASE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn set_mock_base(base: Option<String>) {
+    *MOCK_BASE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = base;
+}
+
+fn api_base(variant: QoderVariant) -> String {
+    #[cfg(test)]
+    if let Some(b) = MOCK_BASE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+    {
+        return b;
+    }
+    openapi_base(variant).to_string()
+}
+
+/// 单账号命令的档位自愈：账号包目录本身就带档位前缀，这里按账号 id 在两档里
+/// 定位桌面包。此前 `variant_of(None)=Cn` 的缺省贯穿两个宿主 —— 前端没传 variant
+/// 时对 Global 账号发单账号签到会打错域名、找错包。显式给出的档位仍然优先
+/// （尊重调用方；包真不在该档位时由后续 load 报错，文案会指路）。
+pub fn resolve_variant_for_account(
+    store: &Path,
+    account_id: &str,
+    explicit: Option<QoderVariant>,
+) -> QoderVariant {
+    if let Some(v) = explicit {
+        return v;
+    }
+    for v in QoderVariant::ALL {
+        if bundle::load(store, account_id, v, QoderTarget::Desktop)
+            .map(|b| !b.is_empty())
+            .unwrap_or(false)
+        {
+            return v;
+        }
+    }
+    QoderVariant::Cn
 }
 
 /// 解析指定账号的有效 Bearer Token（优先读取账号包解密结果，次级读取现场文件）。
@@ -37,14 +86,14 @@ fn decrypt_from_bundle_dir(
     dir: &Path,
     roots: &PathRoots,
     variant: QoderVariant,
-) -> Result<(String, String)> {
+) -> Result<(String, String, String)> {
     // 凭据命名兼容、密钥载体与解码方案全部收在 auth_codec::decrypt_bundle_auth 里：
     // Windows 用包内 Local State（DPAPI），macOS 用本机钥匙串（PBKDF2+CBC）。
     let auth = auth_codec::decrypt_bundle_auth(dir, roots, variant)?;
     if auth.token.trim().is_empty() {
         return Err("解析得到的登录 Token 为空".to_string());
     }
-    Ok((auth.token, auth.user.email))
+    Ok((auth.token, auth.user.email, auth.user.id))
 }
 
 /// 与 `resolve_token` 同一取值顺序，但把邮箱一并带出。
@@ -54,17 +103,18 @@ pub fn resolve_identity(
     account_id: &str,
     variant: QoderVariant,
 ) -> Result<(String, String)> {
-    let (token, email, _) = resolve_identity_full(roots, store, account_id, variant)?;
+    let (token, email, _, _) = resolve_identity_full(roots, store, account_id, variant)?;
     Ok((token, email))
 }
 
-/// 与 `resolve_identity` 一致，但同时返回账号绑定的独立代理（如有）。
+/// 与 `resolve_identity` 一致，但同时返回账号 uid（风控 stdin 与缓存键需要）
+/// 和账号绑定的独立代理（如有）。
 pub fn resolve_identity_full(
     roots: &PathRoots,
     store: &Path,
     account_id: &str,
     variant: QoderVariant,
-) -> Result<(String, String, Option<String>)> {
+) -> Result<(String, String, String, Option<String>)> {
     // 1. 若账号包存在于存储中：凭据必须且只能来源于此包，解密失败报错，绝不静默回退现场以防串号
     if let Ok(bundle) = bundle::load(store, account_id, variant, QoderTarget::Desktop) {
         let proxy = bundle.identity.proxy.clone();
@@ -73,14 +123,23 @@ pub fn resolve_identity_full(
             .email
             .clone()
             .filter(|e| !e.trim().is_empty());
+        let uid = bundle
+            .identity
+            .uid
+            .clone()
+            .filter(|s| !s.trim().is_empty());
         let dir = bundle.dir_in(store);
-        let (token, auth_email) = decrypt_from_bundle_dir(&dir, roots, variant).map_err(|e| {
-            format!(
-                "账号 {account_id} 凭据解密失败（{}，需在本机重新登录一次）: {e}",
-                auth_codec::portability_hint()
-            )
-        })?;
-        return Ok((token, email.unwrap_or(auth_email), proxy));
+        let (token, auth_email, auth_uid) =
+            decrypt_from_bundle_dir(&dir, roots, variant).map_err(|e| {
+                format!(
+                    "账号 {account_id} 凭据解密失败（{}，需在本机重新登录一次）: {e}",
+                    auth_codec::portability_hint()
+                )
+            })?;
+        // uid 优先用包元数据里留的，缺了再回退解密结果 —— 两者都来自解密时的
+        // 同一份登录态，只是写入时机不同（capture 即存 vs 后来补齐）。
+        let uid = uid.unwrap_or(auth_uid);
+        return Ok((token, email.unwrap_or(auth_email), uid, proxy));
     }
 
     // 2. 账号包不存在：仅当目标账号明确为当前桌面现场账号时，才允许从现场读取
@@ -92,7 +151,12 @@ pub fn resolve_identity_full(
     if is_local_id {
         if let Ok(auth) = auth_codec::read_desktop_auth(roots, variant) {
             if !auth.token.trim().is_empty() {
-                return Ok((auth.token.clone(), email_from_live(&auth), None));
+                return Ok((
+                    auth.token.clone(),
+                    email_from_live(&auth),
+                    auth.user.id.clone(),
+                    None,
+                ));
             }
         }
     }
@@ -223,6 +287,81 @@ fn machine_os_tag() -> &'static str {
     }
 }
 
+/// 签到叠加头里 `Cosy-MachineOS` 的口径：客户端 `createAuthorizedHeaders` 用的是
+/// 「架构_平台」形（`x86_64_win32` / `aarch64_darwin`…），与基础头的 `windows`
+/// 是两套口径（CreditDaddy 对客户端的逐头对照）。Windows ARM 的取值未实测，
+/// 按同一构词法给出，真机探测时一并确认。
+fn machine_os_tag_overlay() -> &'static str {
+    if cfg!(target_os = "macos") {
+        if cfg!(target_arch = "aarch64") {
+            "aarch64_darwin"
+        } else {
+            "x86_64_darwin"
+        }
+    } else if cfg!(target_os = "linux") {
+        if cfg!(target_arch = "aarch64") {
+            "aarch64_linux"
+        } else {
+            "x86_64_linux"
+        }
+    } else if cfg!(target_arch = "aarch64") {
+        "aarch64_win32"
+    } else {
+        "x86_64_win32"
+    }
+}
+
+/// 签到/活动链路的请求头。
+///
+/// 国内版保持既有最小头集**原样不动** —— 它在工作，不给它叠加任何东西。
+/// 国际版在其上叠加客户端 `createAuthorizedHeaders` 的设备身份：真实客户端版本
+/// （`build-manifest.json` 的 productVersion）、`架构_平台` 口径的 MachineOS、
+/// MachineId/Hostname，以及设备风控三头；风控凭据取不到时**降级为不带风控头
+/// 继续请求**，`risk_error` 把原因带回给调用方进日志/提示 —— 服务端的表现是
+/// "没有每日积分活动"，绝不编造成功。
+fn build_campaign_headers(
+    roots: &PathRoots,
+    store: &Path,
+    token: &str,
+    variant: QoderVariant,
+    uid: &str,
+) -> (HashMap<String, String>, Option<String>) {
+    let mut h = build_headers(token);
+    if variant == QoderVariant::Cn {
+        return (h, None);
+    }
+    if let Some(ver) = risk::client_product_version(roots, variant) {
+        h.insert("Cosy-Version".into(), ver);
+    }
+    h.insert("Cosy-MachineOS".into(), machine_os_tag_overlay().into());
+    h.insert("Cosy-MachineId".into(), risk::machine_id_for(roots, store, variant));
+    if let Some(host) = risk::machine_hostname() {
+        h.insert("Cosy-MachineHostname".into(), host);
+    }
+    match uid.is_empty() {
+        true => (
+            h,
+            Some("设备风控凭据不可用：账号缺少 uid，无法生成设备身份".to_string()),
+        ),
+        false => match risk::get_risk_identity(roots, variant, uid) {
+            Some(r) => {
+                h.insert("Cosy-MachineToken".into(), r.machine_token);
+                h.insert("Cosy-MachineCode".into(), r.machine_code);
+                h.insert("Cosy-MachineType".into(), r.machine_type);
+                (h, None)
+            }
+            None => (
+                h,
+                Some(
+                    "设备风控凭据不可用（未找到本机 Qoder 客户端的 runtime-info 组件）——\
+                     本次请求未带风控身份，服务端可能不发放每日积分活动"
+                        .to_string(),
+                ),
+            ),
+        },
+    }
+}
+
 /// 查询账号的积分/配额详细情况（对齐前端 CreditExpiry 契约）。
 pub async fn fetch_credit_expiry(
     roots: &PathRoots,
@@ -230,7 +369,7 @@ pub async fn fetch_credit_expiry(
     account_id: &str,
     variant: QoderVariant,
 ) -> Value {
-    let (token, email, proxy) = match resolve_identity_full(roots, store, account_id, variant) {
+    let (token, email, _uid, proxy) = match resolve_identity_full(roots, store, account_id, variant) {
         Ok(t) => t,
         // `accountMissing` 是给前端的结构化信号：账号包在列表加载之后被删掉时，
         // 页面上的卡片已经是幽灵 —— 重拉一次列表就能自愈。只靠 error 文案判断太脆
@@ -245,7 +384,7 @@ pub async fn fetch_credit_expiry(
         }
     };
 
-    let base = openapi_base(variant);
+    let base = api_base(variant);
     let client = http_client_with_proxy(proxy.as_deref());
     let headers = build_headers(&token);
 
@@ -420,16 +559,16 @@ pub async fn get_checkin_status(
     account_id: &str,
     variant: QoderVariant,
 ) -> Value {
-    let (token, _email, proxy) = match resolve_identity_full(roots, store, account_id, variant) {
+    let (token, _email, uid, proxy) = match resolve_identity_full(roots, store, account_id, variant) {
         Ok(t) => t,
         Err(e) => {
             return json!({ "ok": false, "error": e, "todayCheckedIn": false, "variant": crate::modules::view::variant_key(variant) })
         }
     };
 
-    let base = openapi_base(variant);
+    let base = api_base(variant);
     let client = http_client_with_proxy(proxy.as_deref());
-    let headers = build_headers(&token);
+    let (headers, risk_error) = build_campaign_headers(roots, store, &token, variant, &uid);
     let camp_url = format!("{base}/sash/api/v1/me/campaigns?clientType=10");
 
     let mut req = client.get(&camp_url);
@@ -463,15 +602,23 @@ pub async fn get_checkin_status(
 
                 let is_checked_in = has_campaign && has_claimed && !has_claimable;
 
-                json!({
+                let mut out = json!({
                     "ok": true,
                     "todayCheckedIn": is_checked_in,
                     "variant": vk,
                     "accounts": [],
                     "resources": []
-                })
+                });
+                if let Some(re) = &risk_error {
+                    out["riskError"] = json!(re);
+                }
+                out
             } else {
-                json!({ "ok": true, "todayCheckedIn": false, "variant": vk, "accounts": [], "resources": [] })
+                let mut out = json!({ "ok": true, "todayCheckedIn": false, "variant": vk, "accounts": [], "resources": [] });
+                if let Some(re) = &risk_error {
+                    out["riskError"] = json!(re);
+                }
+                out
             }
         }
         Ok(res) => json!({ "ok": false, "todayCheckedIn": false, "error": format_http_error("查询签到状态", res.status()), "variant": vk }),
@@ -486,7 +633,7 @@ pub async fn checkin(
     account_id: &str,
     variant: QoderVariant,
 ) -> Value {
-    let (token, email, proxy) = match resolve_identity_full(roots, store, account_id, variant) {
+    let (token, email, uid, proxy) = match resolve_identity_full(roots, store, account_id, variant) {
         Ok(t) => t,
         Err(e) => {
             crate::modules::ledger::record_checkin_log(store, account_id, "", variant, "error", Some(&e));
@@ -494,9 +641,24 @@ pub async fn checkin(
         }
     };
 
-    let base = openapi_base(variant);
+    // 国际版「每台设备每日限领一个账号」：名额被同机其它账号占着时，连活动查询
+    // 都可以省 —— 直接如实标记 limited（服务端权威，备忘只是省请求 + 给出人话）。
+    if variant == QoderVariant::Global {
+        if let Some(claim) = crate::modules::ledger::read_device_claim(store) {
+            if claim.day == crate::modules::ledger::qoder_day_key() && claim.account_id != account_id {
+                let msg = format!(
+                    "本机今日国际版额度已由「{}」领取（Qoder 每台设备每天限领一个国际版账号）",
+                    claim.display_name()
+                );
+                crate::modules::ledger::record_checkin_log(store, account_id, &email, variant, "limited", None);
+                return json!({ "result": "limited", "limited": true, "message": msg });
+            }
+        }
+    }
+
+    let base = api_base(variant);
     let client = http_client_with_proxy(proxy.as_deref());
-    let headers = build_headers(&token);
+    let (headers, risk_error) = build_campaign_headers(roots, store, &token, variant, &uid);
     let camp_url = format!("{base}/sash/api/v1/me/campaigns?clientType=10");
 
     let mut req = client.get(&camp_url);
@@ -544,8 +706,14 @@ pub async fn checkin(
     }
 
     // 官方未开放签到活动：不写成功日志、不计入失败重试。前端据此弹「未开放」而非「已签到」。
+    // 国际版下「没有活动」常常就是风控拒绝/设备名额问题的对外表现：把风控降级
+    // 信息如实带上，别让用户以为只是官方没开活动。
     if !has_benefit {
-        return json!({ "result": "inactive", "inactive": true, "message": "官方未开放签到活动" });
+        let mut out = json!({ "result": "inactive", "inactive": true, "message": "官方未开放签到活动" });
+        if let Some(re) = &risk_error {
+            out["riskError"] = json!(re);
+        }
+        return out;
     }
 
     if claimable_ids.is_empty() {
@@ -555,11 +723,15 @@ pub async fn checkin(
             crate::modules::ledger::record_checkin_log(store, account_id, &email, variant, "already", None);
             return json!({ "result": "already", "message": "今日已签到" });
         }
-        return json!({
+        let mut out = json!({
             "result": "inactive",
             "inactive": true,
             "message": "当前没有可领取的签到奖励（活动状态未知或已结束）"
         });
+        if let Some(re) = &risk_error {
+            out["riskError"] = json!(re);
+        }
+        return out;
     }
 
     let mut total_claimed = 0f64;
@@ -598,12 +770,29 @@ pub async fn checkin(
         return json!({ "result": "error", "error": e });
     }
 
+    // 国际版：领取成功即占用本机今日名额，写备忘让后续账号直接判 limited，
+    // 不再徒劳打 claim（服务端的权威判定仍在，备忘只是客户端的省请求账本）。
+    if variant == QoderVariant::Global {
+        crate::modules::ledger::write_device_claim(
+            store,
+            &crate::modules::ledger::DeviceClaim {
+                day: crate::modules::ledger::qoder_day_key(),
+                account_id: account_id.to_string(),
+                email: email.clone(),
+            },
+        );
+    }
+
     crate::modules::ledger::record_checkin_log(store, account_id, &email, variant, "success", None);
-    json!({
+    let mut out = json!({
         "result": "success",
         "message": format!("成功领取 {total_claimed} Credits"),
         "claimedAmount": total_claimed
-    })
+    });
+    if let Some(re) = &risk_error {
+        out["riskError"] = json!(re);
+    }
+    out
 }
 
 /// webui 批量接口：一次返回全部桌面账号的今日签到状态，形状对齐前端按 accountId 过滤。
@@ -618,10 +807,9 @@ pub async fn get_checkin_status_all(
         if b.target != QoderTarget::Desktop {
             continue;
         }
-        // 已去掉国际版：批量接口只覆盖国内版；显式传 ai 也返回空（不是漏，是刻意）。
-        if b.variant != QoderVariant::Cn {
-            continue;
-        }
+        // 国际版放开（v0.2 起接入 CreditDaddy 取证的风控签到）：不再按档位过滤，
+        // only_variant 为 None 时覆盖两档；国际版的设备限领语义由 `checkin` 内部
+        // 的备忘处理，批量按 list_all 序即"列表靠前优先"。
         if let Some(v) = only_variant {
             if b.variant != v {
                 continue;
@@ -638,6 +826,9 @@ pub async fn get_checkin_status_all(
         });
         if let Some(err) = res.get("error").and_then(|e| e.as_str()) {
             entry["error"] = json!(err);
+        }
+        if let Some(re) = res.get("riskError").and_then(|e| e.as_str()) {
+            entry["riskError"] = json!(re);
         }
         out.push(entry);
     }
@@ -706,10 +897,8 @@ pub async fn checkin_all(
         if b.target != QoderTarget::Desktop {
             continue;
         }
-        // 已去掉国际版：批量接口只覆盖国内版；显式传 ai 也返回空（不是漏，是刻意）。
-        if b.variant != QoderVariant::Cn {
-            continue;
-        }
+        // 国际版放开：同 get_checkin_status_all；国际版的「每设备每日一领」由
+        // `checkin` 内部的名额备忘处理 —— list_all 序即"列表靠前优先"。
         if let Some(v) = only_variant {
             if b.variant != v {
                 continue;
@@ -726,6 +915,9 @@ pub async fn checkin_all(
         });
         if let Some(err) = res.get("error").and_then(|e| e.as_str()) {
             entry["error"] = json!(err);
+        }
+        if let Some(msg) = res.get("message").and_then(|m| m.as_str()) {
+            entry["message"] = json!(msg);
         }
         out.push(entry);
     }
@@ -879,6 +1071,340 @@ mod tests {
         assert!(!err.contains("已不在账号库中"), "有包就不能说包丢了: {err}");
         assert!(!account_is_missing(&store, "cli-only"), "有 CLI 包不算丢失");
 
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ---------- HTTP mock（零依赖：手写 TcpListener 应答，不加 dev HTTP 框架） ----------
+
+    use std::io::Read as IoRead;
+    use std::io::Write as IoWrite;
+    use std::net::TcpListener;
+
+    /// mock 测试互斥：MOCK_BASE 与 risk 的测试注入都是进程级静态，测试并行会串场。
+    static MOCK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct MockServer {
+        addr: String,
+        requests: std::sync::mpsc::Receiver<(String, Vec<(String, String)>)>,
+    }
+
+    /// 起本地 HTTP 服务，依序回放 canned 响应，并把每个请求（请求行 + 小写化头）
+    /// 发回给测试断言。签到链路的请求都无 body，这里不实现 body 读取。
+    fn start_mock(responses: Vec<(u16, String)>) -> MockServer {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for (code, body) in responses {
+                let Ok((mut stream, _)) = listener.accept() else { break };
+                let mut buf = [0u8; 65536];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let raw = String::from_utf8_lossy(&buf[..n]).to_string();
+                let mut lines = raw.split("\r\n");
+                let request_line = lines.next().unwrap_or("").to_string();
+                let mut headers = Vec::new();
+                for l in lines {
+                    if l.is_empty() {
+                        break;
+                    }
+                    if let Some((k, v)) = l.split_once(':') {
+                        headers.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
+                    }
+                }
+                let _ = tx.send((request_line, headers));
+                let reason = match code {
+                    200 => "OK",
+                    401 => "Unauthorized",
+                    403 => "Forbidden",
+                    _ => "Status",
+                };
+                let resp = format!(
+                    "HTTP/1.1 {code} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        MockServer { addr, requests: rx }
+    }
+
+    impl MockServer {
+        fn last_headers(&self) -> Vec<(String, String)> {
+            let (_, h) = self.requests.recv().expect("mock 服务应收到请求");
+            h
+        }
+    }
+
+    fn campaigns_body(uid: &str, campaigns: Value) -> String {
+        json!({ "uid": uid, "campaigns": campaigns }).to_string()
+    }
+
+    fn claimable(id: &str) -> Value {
+        json!({ "campaignId": id, "campaignKey": "k", "actionType": "CLAIM_BENEFIT", "claimStatus": "CLAIMABLE", "benefit": { "amount": 100.0 } })
+    }
+
+    fn claimed(id: &str) -> Value {
+        json!({ "campaignId": id, "campaignKey": "k", "actionType": "CLAIM_BENEFIT", "claimStatus": "CLAIMED", "benefit": { "amount": 100.0 } })
+    }
+
+    fn temp_store_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("qs-quota-mock-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 造一个**可解密**的桌面包：测试随机密钥 + Local State 以 DPAPI(CurrentUser)
+    /// 封装（与真实布局同构），meta 里带 identity.uid（风控 stdin/缓存键需要）。
+    /// Windows 专属：DPAPI 是 Windows 侧方案。
+    #[cfg(windows)]
+    fn make_decryptable_bundle(
+        store: &Path,
+        account_id: &str,
+        variant: QoderVariant,
+        uid: &str,
+        email: &str,
+    ) {
+        use crate::modules::auth_codec::MasterKey;
+        let a = *uuid::Uuid::new_v4().as_bytes();
+        let b = *uuid::Uuid::new_v4().as_bytes();
+        let mut key = [0u8; 32];
+        key[..16].copy_from_slice(&a);
+        key[16..].copy_from_slice(&b);
+        let dir = bundle::bundle_dir_in(store, account_id, variant, QoderTarget::Desktop);
+        std::fs::create_dir_all(&dir).unwrap();
+        let auth = json!({
+            "schemaVersion": 1,
+            "token": format!("tok-{account_id}-0000000000"),
+            "refreshToken": "rtok-test",
+            "expiresAt": "2099-01-01T00:00:00Z",
+            "user": { "id": uid, "name": "tester", "email": email }
+        });
+        let pt = serde_json::to_vec(&auth).unwrap();
+        let blob = auth_codec::encrypt_blob(&MasterKey::Windows(key), &pt).unwrap();
+        std::fs::write(dir.join("authmain"), &blob).unwrap();
+        std::fs::write(
+            dir.join("localstate"),
+            auth_codec::test_local_state_json(&key).unwrap(),
+        )
+        .unwrap();
+        let vk = if variant == QoderVariant::Cn { "cn" } else { "global" };
+        let meta = json!({
+            "account_id": account_id,
+            "variant": vk,
+            "target": "desktop",
+            "created_at": crate::modules::config::now_ts(),
+            "members": [ {
+                "role": "auth_main", "file_name": "authmain", "sha256": "00",
+                "size": blob.len(), "critical": true
+            } ],
+            "identity": { "uid": uid, "email": email }
+        });
+        std::fs::write(dir.join("bundle.json"), serde_json::to_vec_pretty(&meta).unwrap()).unwrap();
+    }
+
+    fn block<F: std::future::Future>(fut: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(fut)
+    }
+
+    /// 国际版签到全链：CLAIMABLE → claim 成功 → 写设备名额备忘；
+    /// 同机另一账号再签 → 不发任何请求直接 limited。
+    #[test]
+    #[cfg(windows)]
+    fn global_checkin_claims_then_locks_other_accounts_out() {
+        let _g = MOCK_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _rg = risk::RISK_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        risk::clear_risk_cache();
+        // 风控发现链封闭 → 必然降级（下面的头断言验证"无 token 但有 MachineId"）。
+        risk::set_test_install_bases(Some(vec![]));
+        let tmp = temp_store_dir();
+        let roots = PathRoots::sandbox(&tmp);
+        let store = tmp.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        make_decryptable_bundle(&store, "ai-acc-a", QoderVariant::Global, "uid-aaa", "a@x.com");
+        make_decryptable_bundle(&store, "ai-acc-b", QoderVariant::Global, "uid-bbb", "b@x.com");
+
+        let server = start_mock(vec![
+            (200, campaigns_body("uid-aaa", json!([claimable("camp-1")]))),
+            (200, json!({ "benefit": { "amount": 100.0 } }).to_string()),
+        ]);
+        set_mock_base(Some(format!("http://{}", server.addr)));
+
+        let res = block(checkin(&roots, &store, "ai-acc-a", QoderVariant::Global));
+        assert_eq!(res["result"], "success", "{res}");
+        assert_eq!(res["claimedAmount"], 100.0, "{res}");
+        assert!(
+            res.get("riskError").is_some(),
+            "风控降级必须如实标注: {res}"
+        );
+
+        // 备忘落盘：当日、账号 A。
+        let claim = crate::modules::ledger::read_device_claim(&store).expect("成功领取应写名额备忘");
+        assert_eq!(claim.day, crate::modules::ledger::qoder_day_key());
+        assert_eq!(claim.account_id, "ai-acc-a");
+
+        // 账号 B 再签：不发请求直接 limited（mock 已无 canned 响应，若发了请求会挂起/失败）。
+        let res_b = block(checkin(&roots, &store, "ai-acc-b", QoderVariant::Global));
+        assert_eq!(res_b["result"], "limited", "{res_b}");
+        assert!(
+            res_b["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("a@x.com"),
+            "limited 提示要点名占用者: {res_b}"
+        );
+        // mock 收到的请求应恰好是 A 的两个（campaigns + claim）：B 的 limited
+        // 是名额备忘的本地判定，不得再发任何网络请求。
+        let mut seen = 0;
+        while server.requests.try_recv().is_ok() {
+            seen += 1;
+        }
+        assert_eq!(seen, 2, "B 的 limited 分支不得发请求，A 恰好两个请求");
+
+        // 签到日志：A success / B limited，都是 ai 档。
+        let logs = crate::modules::ledger::read_checkin_logs(&store)["logs"]
+            .as_array()
+            .cloned()
+            .unwrap();
+        assert_eq!(logs.len(), 2, "{logs:?}");
+        assert_eq!(logs[0]["result"], "limited");
+        assert_eq!(logs[0]["variant"], "ai");
+        assert_eq!(logs[1]["result"], "success");
+
+        set_mock_base(None);
+        risk::clear_risk_cache();
+        risk::set_test_install_bases(None);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 请求头契约：CN 保持既有最小头集（不叠风控头）；Global 叠加客户端身份
+    /// （真实版本号回退 0.3.3、架构_平台口径的 MachineOS、MachineId），风控
+    /// 降级时不带 Cosy-MachineToken。
+    #[test]
+    #[cfg(windows)]
+    fn campaign_headers_cn_stays_minimal_and_global_gets_overlay() {
+        let _g = MOCK_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _rg = risk::RISK_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        risk::clear_risk_cache();
+        risk::set_test_install_bases(Some(vec![]));
+        let tmp = temp_store_dir();
+        let roots = PathRoots::sandbox(&tmp);
+        let store = tmp.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        make_decryptable_bundle(&store, "cn-acc", QoderVariant::Cn, "uid-cn", "cn@x.com");
+        make_decryptable_bundle(&store, "ai-acc", QoderVariant::Global, "uid-g", "g@x.com");
+
+        // CN：campaigns 一发即走，头应保持最小集。
+        let server = start_mock(vec![(200, campaigns_body("uid-cn", json!([])))]);
+        set_mock_base(Some(format!("http://{}", server.addr)));
+        let res = block(get_checkin_status(&roots, &store, "cn-acc", QoderVariant::Cn));
+        assert_eq!(res["ok"], true, "{res}");
+        let _ = server.last_headers(); // 消费掉这次请求
+        set_mock_base(None);
+
+        // Global：同一路由，头应有叠加、无风控 token、带 riskError 说明。
+        let server = start_mock(vec![(200, campaigns_body("uid-g", json!([])))]);
+        set_mock_base(Some(format!("http://{}", server.addr)));
+        let res = block(get_checkin_status(&roots, &store, "ai-acc", QoderVariant::Global));
+        assert_eq!(res["ok"], true, "{res}");
+        assert!(res.get("riskError").is_some(), "{res}");
+        let headers = server.last_headers();
+        let get = |name: &str| {
+            headers
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(get("cosy-version").as_deref(), Some("0.3.3"), "无 build-manifest 时回退 0.3.3");
+        assert_eq!(get("cosy-machineos").as_deref(), Some(machine_os_tag_overlay()));
+        assert!(get("cosy-machineid").is_some(), "Global 必须带 MachineId");
+        assert!(get("cosy-machinetoken").is_none(), "风控降级时不得带 token 头");
+        set_mock_base(None);
+        risk::clear_risk_cache();
+        risk::set_test_install_bases(None);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 状态机形状：CLAIMED-only → already；无 CLAIM_BENEFIT → inactive（国际版带
+    /// 风控降级说明）；campaigns 401 → error。
+    #[test]
+    #[cfg(windows)]
+    fn checkin_result_shapes_are_honest() {
+        let _g = MOCK_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _rg = risk::RISK_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        risk::clear_risk_cache();
+        risk::set_test_install_bases(Some(vec![]));
+        let tmp = temp_store_dir();
+        let roots = PathRoots::sandbox(&tmp);
+        let store = tmp.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        make_decryptable_bundle(&store, "ai-acc", QoderVariant::Global, "uid-s", "s@x.com");
+
+        // CLAIMED-only → already。
+        let server = start_mock(vec![(200, campaigns_body("uid-s", json!([claimed("c1")])))]);
+        set_mock_base(Some(format!("http://{}", server.addr)));
+        let res = block(checkin(&roots, &store, "ai-acc", QoderVariant::Global));
+        assert_eq!(res["result"], "already", "{res}");
+        set_mock_base(None);
+
+        // 无 CLAIM_BENEFIT → inactive + riskError（降级说明必须让人看懂）。
+        let server = start_mock(vec![(200, campaigns_body("uid-s", json!([])))]);
+        set_mock_base(Some(format!("http://{}", server.addr)));
+        let res = block(checkin(&roots, &store, "ai-acc", QoderVariant::Global));
+        assert_eq!(res["result"], "inactive", "{res}");
+        assert!(res.get("riskError").is_some(), "{res}");
+        set_mock_base(None);
+
+        // 401 → error，文案指明重新登录。
+        let server = start_mock(vec![(401, json!({ "error": "unauthorized" }).to_string())]);
+        set_mock_base(Some(format!("http://{}", server.addr)));
+        let res = block(checkin(&roots, &store, "ai-acc", QoderVariant::Global));
+        assert_eq!(res["result"], "error", "{res}");
+        assert!(
+            res["error"].as_str().unwrap_or("").contains("401"),
+            "{res}"
+        );
+        set_mock_base(None);
+        risk::clear_risk_cache();
+        risk::set_test_install_bases(None);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 档位自愈：包在哪个档位就解析出哪个档位；显式档位优先；找不到回 Cn
+    /// （保持既有"local 现场账号"语义）。
+    #[test]
+    fn resolve_variant_for_account_derives_from_bundle() {
+        let tmp = temp_store_dir();
+        let store = tmp.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        #[cfg(windows)]
+        {
+            make_decryptable_bundle(&store, "acc-global", QoderVariant::Global, "u1", "g@x.com");
+            make_decryptable_bundle(&store, "acc-cn", QoderVariant::Cn, "u2", "c@x.com");
+            assert_eq!(
+                resolve_variant_for_account(&store, "acc-global", None),
+                QoderVariant::Global
+            );
+            assert_eq!(
+                resolve_variant_for_account(&store, "acc-cn", None),
+                QoderVariant::Cn
+            );
+            // 显式档位优先（尊重调用方）。
+            assert_eq!(
+                resolve_variant_for_account(&store, "acc-global", Some(QoderVariant::Cn)),
+                QoderVariant::Cn
+            );
+        }
+        // 任何档位都没有 → 回 Cn（local 现场账号路径的既有缺省）。
+        assert_eq!(
+            resolve_variant_for_account(&store, "local-cn", None),
+            QoderVariant::Cn
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

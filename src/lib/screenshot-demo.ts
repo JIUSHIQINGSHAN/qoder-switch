@@ -364,19 +364,19 @@ function rateLimits(): RateLimitsPayload {
 }
 
 function rotateConfig(): AutoRotateConfig {
-  return { enabled: true, check_interval_minutes: 15, cooldown_minutes: 120, min_gap_hours: 24, min_urgency_hours: 72, active_guard_minutes: 30, min_remaining_credits: 50 };
+  return { enabled: true, check_interval_minutes: 15, cooldown_minutes: 120, min_gap_hours: 24, min_urgency_hours: 72, active_guard_minutes: 30 };
 }
 
 /** 限额 hook 演示状态：三处配置都显示为已安装。 */
 function rateLimitHookStatus(): RateLimitHookStatus {
-  const base = "/demo/.wb-switch";
+  const base = "/demo/.qs-switch";
   return {
     scriptPath: `${base}/hook.sh`,
     scriptExists: true,
     eventsPath: `${base}/hook-events.jsonl`,
     installed: true,
     lastEventAt: Date.now() - 4 * 60_000,
-    targets: ["codebuddy", "workbuddy", "workbuddy-ai"].map((label) => ({
+    targets: ["codebuddy", "qoder", "qoder-ai"].map((label) => ({
       label,
       path: `/demo/.${label}/settings.json`,
       exists: true,
@@ -413,8 +413,8 @@ function demoTokenSession(key: string, title: string, project: string, input: nu
 function demoTokenRequests(scale: number): TokenStatsRequestRow[] {
   const models = ["deepseek-v4-flash", "deepseek-v4-flash", "kimi-k3-1", "deepseek-v4-flash", "glm-5.2"];
   const sessions = [
-    { project: "wb-switch-rust", sessionId: "token-stats-dashboard", title: "完善 Token 统计仪表盘与本地用量分析" },
-    { project: "wb-switch-rust", sessionId: "account-card-redesign", title: "统一账号卡片视觉和交互" },
+    { project: "qs-switch", sessionId: "token-stats-dashboard", title: "完善 Token 统计仪表盘与本地用量分析" },
+    { project: "qs-switch", sessionId: "account-card-redesign", title: "统一账号卡片视觉和交互" },
     { project: "my-code-teams", sessionId: "settings-agent-acp", title: "设计 Agent 与 ACP 管理设置" },
     { project: "LetterTotTown", sessionId: "character-audio", title: "补全角色成语双音频" },
   ];
@@ -461,7 +461,7 @@ function demoTokenSource(source: TokenStatsSource["source"], scale: number): Tok
     return demoTokenGroup(`${day}-${hour}`, Math.round(720_000 * active * scale), Math.round(41_000 * active * scale), Math.round(610_000 * active * scale), 0, Math.max(1, Math.round(6 * active * scale)));
   });
   const projects = [
-    demoTokenGroup("wb-switch-rust", 42_800_000 * scale, 2_400_000 * scale, 37_100_000 * scale, 420_000 * scale, Math.round(148 * scale)),
+    demoTokenGroup("qs-switch", 42_800_000 * scale, 2_400_000 * scale, 37_100_000 * scale, 420_000 * scale, Math.round(148 * scale)),
     demoTokenGroup("my-code-teams", 25_600_000 * scale, 1_650_000 * scale, 21_900_000 * scale, 260_000 * scale, Math.round(96 * scale)),
     demoTokenGroup("LetterTotTown", 11_900_000 * scale, 920_000 * scale, 9_700_000 * scale, 110_000 * scale, Math.round(51 * scale)),
   ];
@@ -471,15 +471,15 @@ function demoTokenSource(source: TokenStatsSource["source"], scale: number): Tok
     demoTokenGroup("glm-5.2", 6_600_000 * scale, 630_000 * scale, 5_400_000 * scale, 80_000 * scale, Math.round(24 * scale)),
   ];
   const sessions = [
-    demoTokenSession("wb-switch-rust · token-stats-dashboard", "完善 Token 统计仪表盘与本地用量分析", "wb-switch-rust", 18_700_000 * scale, 1_050_000 * scale, 16_100_000 * scale, 160_000 * scale, Math.round(72 * scale)),
+    demoTokenSession("qs-switch · token-stats-dashboard", "完善 Token 统计仪表盘与本地用量分析", "qs-switch", 18_700_000 * scale, 1_050_000 * scale, 16_100_000 * scale, 160_000 * scale, Math.round(72 * scale)),
     demoTokenSession("my-code-teams · settings-agent-acp", "设计 Agent 与 ACP 管理设置", "my-code-teams", 13_200_000 * scale, 890_000 * scale, 11_300_000 * scale, 120_000 * scale, Math.round(55 * scale)),
     demoTokenSession("LetterTotTown · character-audio", "补全角色成语双音频", "LetterTotTown", 8_600_000 * scale, 640_000 * scale, 7_200_000 * scale, 80_000 * scale, Math.round(38 * scale)),
-    demoTokenSession("wb-switch-rust · account-card-redesign", "统一账号卡片视觉和交互", "wb-switch-rust", 6_300_000 * scale, 410_000 * scale, 5_400_000 * scale, 50_000 * scale, Math.round(29 * scale)),
+    demoTokenSession("qs-switch · account-card-redesign", "统一账号卡片视觉和交互", "qs-switch", 6_300_000 * scale, 410_000 * scale, 5_400_000 * scale, 50_000 * scale, Math.round(29 * scale)),
   ];
   const now = Date.now();
   return {
     source, summary, models, projects, sessions, daily, hours,
-    filesScanned: source === "workbuddy" ? 63 : source === "codebuddy-ide" ? 17 : 41,
+    filesScanned: source === "qoder" ? 63 : source === "codebuddy-ide" ? 17 : 41,
     parseErrors: 0,
     coverageStartAt: now - 13 * 86_400_000,
     coverageEndAt: now,
@@ -504,7 +504,7 @@ function emptyTokenSource(source: TokenStatsSource["source"]): TokenStatsSource 
 }
 
 function demoTokenStatistics(days?: number): TokenStatistics {
-  return { generatedAt: Date.now(), rangeDays: days ?? null, sources: [demoTokenSource("workbuddy", 1), emptyTokenSource("workbuddy-ai"), demoTokenSource("codebuddy-cli", 0.58), demoTokenSource("codebuddy-ide", 0.36)] };
+  return { generatedAt: Date.now(), rangeDays: days ?? null, sources: [demoTokenSource("qoder", 1), emptyTokenSource("qoder-ai"), demoTokenSource("codebuddy-cli", 0.58), demoTokenSource("codebuddy-ide", 0.36)] };
 }
 
 /** Read-only demo response provider. It never reads or mutates real user data. */
@@ -516,7 +516,7 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
   const cliStatus: CodeBuddyCliStatus = { configured: true, settingsPresent: true, helperPresent: true, helperSupportsAccountIds: true, activeIndex, activeAccountId: activeAccount.id, activeAccountName: activeAccount.nickname, activeAccountVariant: accountVariant(activeAccount), accountCount: demoAccounts.length, statePath: "/demo/codebuddy-cli-state.json" };
   const config = rotateConfig();
   const rotateStatus: RotateStatus = { config, cliConfigured: true, activeAccountId: demoAccounts[0].id, activeAccountName: demoAccounts[0].nickname, lastCheckAt: atLocalTime(0, 9, 30), lastSwitchAt: atLocalTime(1, 16, 20) };
-  const githubConfig: GithubConfig = { owner: "zhangjia", repo: "wb-switch", proxy: "" };
+  const githubConfig: GithubConfig = { owner: "JIUSHIQINGSHAN", repo: "qoder-switch", proxy: "" };
   switch (command) {
     // 档位随请求回显：演示数据本身只有国内版账号，国际版展示空状态。
     case "get_status": {
@@ -526,7 +526,7 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
             ...appStatus,
             running: false,
             current: null,
-            authFile: "/demo/workbuddy-ai/auth.json",
+            authFile: "/demo/qoder-ai/auth.json",
             appPath: "/demo/Qoder AI.app",
             variant,
           }

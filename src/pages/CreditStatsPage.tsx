@@ -1344,6 +1344,8 @@ function UnselectedRecentEvents({ events }: { events: CreditStatsEvent[] }) {
 /** 当前会话内共用一份统计数据；只有「刷新统计」才会重新采集。 */
 let cachedStatistics: CreditStatistics | null = null;
 let statisticsInflight: Promise<CreditStatistics> | null = null;
+/** 最近一次真实采集（refresh=true，后端先拉一轮配额再聚合）完成的本地时刻（ms）；不跨应用启动。 */
+let statisticsCollectedAt = 0;
 
 /** 进入统计页时距上次采集超过此时长（ms）则自动重新采集一次 */
 const STATISTICS_AUTO_REFRESH_MS = 30 * 60 * 1000;
@@ -1356,7 +1358,13 @@ function rememberStatistics(next: CreditStatistics): CreditStatistics {
 function loadCachedStatistics(refresh: boolean): Promise<CreditStatistics> {
   if (!refresh && cachedStatistics) return Promise.resolve(cachedStatistics);
   if (!refresh && statisticsInflight) return statisticsInflight;
-  const pending = api.getCreditStatistics(refresh).then(rememberStatistics);
+  const pending = api.getCreditStatistics(refresh).then((next) => {
+    // 只有 refresh=true 才是真实采集（后端会先拉一轮配额），resolve 即采集完成；
+    // 磁盘缓存回读（refresh=false）不记时刻，否则刚打开应用会被误判为
+    // 刚采集过，磁盘缓存哪怕已隔数小时也不会触发自动刷新。
+    if (refresh) statisticsCollectedAt = Date.now();
+    return rememberStatistics(next);
+  });
   statisticsInflight = pending;
   return pending.finally(() => {
     if (statisticsInflight === pending) statisticsInflight = null;
@@ -1413,10 +1421,11 @@ export default function CreditStatsPage() {
       // 先渲染本地缓存（后端只读磁盘，不用等网络）
       await load(false);
       if (api.isDemoMode()) return;
-      // 过期只看后端记录的采集时刻：会话内变量每次启动都归零，判断不出
-      // 「缓存其实是几小时前采的」，所以刚打开应用时不会自动刷新。
-      const collectedAt = cachedStatistics?.officialUsage?.collectedAt ?? 0;
-      if (collectedAt > 0 && Date.now() - collectedAt < STATISTICS_AUTO_REFRESH_MS) return;
+      // 30 分钟内不重复采集：判据是本会话上次真实采集完成的本地时刻（写入点见
+      // loadCachedStatistics）。后端没有持久化的「上次采集时刻」可查——generatedAt
+      // 只是响应生成时间、officialUsage 本产品不提供——且本变量不跨应用启动，
+      // 所以每次启动首次进页都会真实采集一次，之后 30 分钟内重复进页只读会话缓存。
+      if (Date.now() - statisticsCollectedAt < STATISTICS_AUTO_REFRESH_MS) return;
       if (useAccountsStore.getState().accounts.length === 0) return;
       await load(true);
     })();

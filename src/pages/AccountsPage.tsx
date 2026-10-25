@@ -22,8 +22,8 @@ import {
   CodeBuddyAiIdeMark,
   CodeBuddyCnIdeMark,
   CodeBuddyMark,
-  WorkBuddyAiMark,
-  WorkBuddyMark,
+  QoderAiMark,
+  QoderMark,
 } from "@/components/product-marks";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -54,7 +54,7 @@ import {
 
   variantUsesIntlCodebuddyIde,
 } from "@/lib/variant";
-import type { AccountMeta, AppStatus, CheckinConfig, CodeBuddyCliStatus, CodeBuddyCnIdeStatus, CreditExpiry, RateLimitEntry } from "@/lib/types";
+import type { AccountMeta, AppStatus, CheckinConfig, CodeBuddyCliStatus, CodeBuddyCnIdeStatus, CreditExpiry, RateLimitEntry, WbVariant } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useAccountsStore } from "@/stores/accounts";
 
@@ -92,7 +92,7 @@ function creditPriorityRank(credit?: CreditExpiry): number {
   return 2;
 }
 
-function isWorkbuddyCurrent(account: AccountMeta, current: AppStatus["current"] | undefined): boolean {
+function isQoderCurrent(account: AccountMeta, current: AppStatus["current"] | undefined): boolean {
   if (!current) return false;
   return Boolean(
     (current.uid && (account.uid === current.uid || account.id === current.uid)) ||
@@ -104,11 +104,12 @@ function isWorkbuddyCurrent(account: AccountMeta, current: AppStatus["current"] 
 async function fetchTodayCheckinMap(
   accountIds: string[],
   isStale?: () => boolean,
+  variant?: WbVariant,
 ): Promise<Record<string, boolean>> {
   const entries = await Promise.all(
     accountIds.map(async (id) => {
       try {
-        const res = await api.getCheckinStatus(id);
+        const res = await api.getCheckinStatus(id, variant);
         if (isStale?.() || !res.ok) return null;
         return [id, res.todayCheckedIn] as const;
       } catch {
@@ -127,6 +128,7 @@ export default function AccountsPage() {
   const {
     accounts,
     variant,
+    setVariant,
     status,
     backup,
     loading,
@@ -178,13 +180,13 @@ export default function AccountsPage() {
   );
   const appName = variantAppName(variant);
   const checkinAvailable = variantSupportsCheckin(variant);
-  /** 刷新按钮文案：国际版没有签到接口，只刷新积分。 */
+  /** 刷新按钮文案：两档都支持签到。 */
   const refreshCreditsLabel = checkinAvailable ? "签到并刷新全部账号积分" : "刷新全部账号积分";
   const autoCheckinEnabled = autoCheckinConfig?.enabled ?? false;
   /** 紧凑模式：卡片更小、同屏更多列；默认开启，持久化到 localStorage */
   const [compact, setCompact] = useState<boolean>(() => {
     try {
-      return localStorage.getItem("wb-switch.compact") !== "0";
+      return localStorage.getItem("qs-switch.compact") !== "0";
     } catch {
       return true;
     }
@@ -194,7 +196,7 @@ export default function AccountsPage() {
     setCompact((value) => {
       const next = !value;
       try {
-        localStorage.setItem("wb-switch.compact", next ? "1" : "0");
+        localStorage.setItem("qs-switch.compact", next ? "1" : "0");
       } catch {
         /* 存储不可用时静默 */
       }
@@ -272,14 +274,15 @@ export default function AccountsPage() {
     };
   }, [accounts.length, variant]);
 
-  // 当前档位账号列表变化后并行查询各账号今日签到状态
-  // 国际版没有签到接口：不查询状态（后端也不发请求）。
+  // 当前档位账号列表变化后并行查询各账号今日签到状态（两档都查：国际版走
+  // 设备风控签到，后端已按账号包解析档位）。
   useEffect(() => {
     if (!visibleAccounts.length || !checkinAvailable) return;
     let cancelled = false;
     void fetchTodayCheckinMap(
       visibleAccounts.map((account) => account.id),
       () => cancelled,
+      variant,
     ).then((next) => {
       if (!cancelled && Object.keys(next).length > 0) {
         setCheckinMap((prev) => ({ ...prev, ...next }));
@@ -288,7 +291,7 @@ export default function AccountsPage() {
     return () => {
       cancelled = true;
     };
-  }, [visibleAccounts, checkinAvailable]);
+  }, [visibleAccounts, checkinAvailable, variant]);
 
   /**
    * 模型限额台账（后端合并两条通路）：一次返回全部账号，这里转成「账号 id -> 受限模型」。
@@ -434,19 +437,21 @@ export default function AccountsPage() {
 
   async function onCheckin(a: AccountMeta) {
     try {
-      const res = await api.checkin(a.id);
+      const res = await api.checkin(a.id, accountVariant(a));
       const label =
         res.result === "success"
           ? "签到成功"
           : res.result === "already"
             ? "今天已签到"
-            : "签到失败";
-      const description = `${a.nickname || a.email || a.id}${res.error ? `：${res.error}` : ""}`;
+            : res.result === "limited"
+              ? "设备名额已占用"
+              : "签到失败";
+      const description = `${a.nickname || a.email || a.id}${res.error ? `：${res.error}` : ""}${res.message ? `：${res.message}` : ""}`;
       if (res.result === "error") toast.error(label, { description });
       else toast.success(label, { description });
       // 刷新该账号的今日签到状态
       try {
-        const st = await api.getCheckinStatus(a.id);
+        const st = await api.getCheckinStatus(a.id, accountVariant(a));
         if (st.ok) setCheckinMap((prev) => ({ ...prev, [a.id]: st.todayCheckedIn }));
       } catch {
         /* ignore */
@@ -475,8 +480,8 @@ export default function AccountsPage() {
   }
 
   /**
-   * 当前档位的批量签到：后端一次调用完成（保留并发保护），只处理支持签到的
-   * 账号；国际版没有签到接口，不参与批量签到。
+   * 当前档位的批量签到：后端一次调用完成（保留并发保护），两档都参与；
+   * 国际版的设备名额语义由后端名额备忘处理。
    */
   async function runBatchCheckin() {
     const res = await api.checkinAll(variant);
@@ -490,7 +495,7 @@ export default function AccountsPage() {
 
   /**
    * 刷新按钮：先跑一轮当前档位的批量签到并重查今日签到状态，再强制刷新全部积分。
-   * 国际版没有签到接口：跳过整块签到逻辑，只刷新积分。
+   * 两档都支持签到；国际版的"每设备每日一领"由后端名额备忘处理，汇总里如实分列。
    */
   async function onRefreshCredits() {
     if (!visibleAccounts.length || refreshingCredits || checkinAllRunning) return;
@@ -504,24 +509,26 @@ export default function AccountsPage() {
           const already = entries.filter((e) => e.result === "already").length;
           const failed = entries.filter((e) => e.result === "error").length;
           const inactive = entries.filter((e) => e.inactive === true || e.result === "inactive").length;
+          const limited = entries.filter((e) => e.result === "limited").length;
           const parts: string[] = [];
           if (success > 0) parts.push(`${success} 个签到成功`);
           if (already > 0) parts.push(`${already} 个已签到`);
           if (inactive > 0) parts.push(`${inactive} 个未开放签到`);
+          if (limited > 0) parts.push(`${limited} 个设备名额已占用`);
           if (failed > 0) parts.push(`${failed} 个失败`);
           const summary = parts.length > 0 ? parts.join("，") : "无账号需要签到";
           const counted = success + already + failed;
           if (failed > 0 && counted === failed) {
             toast.error("签到失败", { description: summary });
-          } else if (counted === 0 && inactive > 0) {
-            // 全部是 inactive（官方未开放签到活动）：既不算成功也不算失败，
+          } else if (counted === 0 && inactive + limited > 0) {
+            // 全部是 inactive/limited（没有可领的或名额被占）：既不算成功也不算失败，
             // 不得呈现为绿色成功（design D8）。
-            toast.info("签到未开放", { description: summary });
+            toast.info("今日无需签到", { description: summary });
           } else {
             toast.success("签到完成", { description: summary });
           }
           // 批量签到后重查当前档位账号的今日签到状态，无需切换页面即反映最新结果
-          const next = await fetchTodayCheckinMap(ids);
+          const next = await fetchTodayCheckinMap(ids, undefined, variant);
           if (Object.keys(next).length > 0) {
             setCheckinMap((prev) => ({ ...prev, ...next }));
           }
@@ -642,7 +649,7 @@ export default function AccountsPage() {
   const cliSwitchAccountLabel = cliSwitchTarget
     ? cliSwitchTarget.nickname || cliSwitchTarget.email || cliSwitchTarget.id
     : "";
-  const workbuddyCurrentName = current
+  const qoderCurrentName = current
     ? current.nickname || current.email || current.uid || "未知账号"
     : "未登录";
   const codebuddyCurrentName = codebuddyCli?.configured
@@ -673,10 +680,10 @@ export default function AccountsPage() {
                       : "inline-flex rounded-[22%] bg-muted-foreground/30 p-[2px]"
                   }
                 >
-                  {variant === "ai" ? <WorkBuddyAiMark size={28} /> : <WorkBuddyMark size={28} />}
+                  {variant === "ai" ? <QoderAiMark size={28} /> : <QoderMark size={28} />}
                 </span>
                 <span className="pointer-events-none absolute right-0 top-full z-50 mt-2 hidden whitespace-nowrap rounded-md bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-lg ring-1 ring-black/5 group-hover:block">
-                  {appName}：{status?.running ? "运行中" : "未运行"} · 当前账号：{workbuddyCurrentName}
+                  {appName}：{status?.running ? "运行中" : "未运行"} · 当前账号：{qoderCurrentName}
                 </span>
               </span>
               <span className="group relative inline-flex cursor-default">
@@ -820,10 +827,34 @@ export default function AccountsPage() {
             >
               {visibleAccounts.length}
             </Badge>
+            {/* 档位 Tab：v0.2 恢复国际版最小可见性（签到/额度查看）；切换仍仅国内版 */}
+            <div
+              className="ml-1 flex items-center gap-0.5 rounded-lg border border-border bg-muted/40 p-0.5"
+              role="tablist"
+              aria-label="账号档位"
+            >
+              {(["cn", "ai"] as WbVariant[]).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  role="tab"
+                  aria-selected={variant === v}
+                  className={cn(
+                    "h-7 rounded-md px-2.5 text-xs font-medium transition-colors",
+                    variant === v
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                  onClick={() => setVariant(v)}
+                >
+                  {variantLabel(v)}
+                </button>
+              ))}
+            </div>
           </div>
           <TooltipProvider delayDuration={400}>
             <div className="ml-auto flex items-center gap-1">
-              {/* 自动签到仅国内版开放，国际版隐藏入口 */}
+              {/* 自动签到两档都开放（国际版走设备风控签到，每设备每日限领一档） */}
               {checkinAvailable && (
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -952,7 +983,7 @@ export default function AccountsPage() {
                 creditLoading={creditLoadingMap[a.id]}
                 creditUpdatedAt={creditUpdatedAtMap[a.id]}
                 creditPriority={a.id === priorityAccountId}
-                workbuddyActive={isWorkbuddyCurrent(a, current)}
+                qoderActive={isQoderCurrent(a, current)}
                 codebuddyCliConfigured={codebuddyCli?.configured && !codebuddyCli.migrationRequired && !codebuddyCli.syncPending}
                 codebuddyCliActive={a.id === cliCurrentAccountId}
                 codebuddyCliBusy={codebuddyCliSwitchingId !== null}

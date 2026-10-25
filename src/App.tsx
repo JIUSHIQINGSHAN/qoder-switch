@@ -18,7 +18,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { demoModeEnabled, pagesDemoHostingEnabled } from "@/lib/demo-mode";
 import { useCreditAutoRefresh } from "@/lib/use-credit-auto-refresh";
 import { useRotateDeferredNotice } from "@/lib/use-rotate-deferred-notice";
-import { useWorkbuddyStatusRefresh } from "@/lib/use-workbuddy-status-refresh";
+import { useStatusRefresh } from "@/lib/use-status-refresh";
 import { useAccountsStore } from "@/stores/accounts";
 
 function UpdateCenter({ running }: { running: boolean | undefined }) {
@@ -89,7 +89,7 @@ function Layout() {
   const hasUnifiedTitleBar =
     api.isDesktop() && typeof navigator !== "undefined" && navigator.userAgent.includes("Macintosh");
   useCreditAutoRefresh();
-  useWorkbuddyStatusRefresh();
+  useStatusRefresh();
   useRotateDeferredNotice();
 
   return (

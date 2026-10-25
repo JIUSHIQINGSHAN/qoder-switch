@@ -45,9 +45,9 @@ export function accountVariant(account: { variant?: WbVariant } | null | undefin
   return normalizeVariant(account?.variant);
 }
 
-/** 自动签到仅国内版开放；国际版签到接口未开放（后端已按 inactive 归类），不展示入口。 */
-export function variantSupportsCheckin(variant: WbVariant): boolean {
-  return variant !== "ai";
+/** 两档都支持签到：国内版直接领取；国际版走设备风控签到（v0.2 吸取 CreditDaddy 协议）。 */
+export function variantSupportsCheckin(_variant: WbVariant): boolean {
+  return true;
 }
 
 /** 国际版 Tab 切 Qoder.app；国内版 Tab 仍切 Qoder CN。 */

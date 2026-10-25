@@ -390,7 +390,7 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
       : sessionsEmpty
         ? currentUid
           ? "当前账号暂无会话，无法复制"
-          : "未检测到当前登录账号，无法列出会话"
+          : "Qoder 会话不按账号归属，复制会话不适用"
         : "把当前账号勾选的会话复制给目标账号（复制后归属目标账号）；已经复制过的不会重复复制";
 
   // 关联 tab 不可用（国际版能力判定不通过）时回落到复制会话，避免停在空 tab。
@@ -418,7 +418,7 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
         </div>
       ) : sessions.length === 0 ? (
         <p className="py-4 text-center text-sm text-muted-foreground">
-          {currentUid ? "当前账号暂无会话" : "未检测到当前登录账号，无法列出会话"}
+          {currentUid ? "当前账号暂无会话" : "Qoder 会话不按账号归属，复制会话不适用"}
         </p>
       ) : (
         <div className="max-h-[min(22rem,45vh)] overflow-y-auto pr-1">

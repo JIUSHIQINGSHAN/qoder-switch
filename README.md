@@ -239,9 +239,14 @@ macOS 侧 2026-09-23 实跑结果（装了 `Qoder CN.app` 0.3.4 并已登录的�
 - 官方配额与资源包：`GET /api/v2/quota/usage` + `GET /sash/api/v1/me/campaigns?clientType=10`
   （端点来自 10router 取证并实测 200），账号卡显示总容量/剩余/临期资源包
 - 每日签到与 Credits 领取：`POST /sash/api/v1/me/campaigns/{id}/claim`；单账号签到、
-  批量签到、官方未开放签到（无 CLAIM_BENEFIT 活动）判为 `inactive` 而不是谎报"已签到"
+  批量签到、官方未开放签到（无 CLAIM_BENEFIT 活动）判为 `inactive` 而不是谎报"已签到"。
+  国内版直接领取；**国际版**（吸取 CreditDaddy 协议，MIT）额外携带客户端生成的设备
+  风控三头（`Cosy-MachineToken/Code/Type`，由本机 Qoder 客户端的 runtime-info 组件
+  生成、进程内缓存 50 分钟），服务端按设备限「每台设备每日一个国际版账号」，
+  工具按列表序领取，后续账号如实标记 `limited` 而不是徒劳重试
 - 自动签到本机调度：配置持久化在 `checkin-config.json`，两个宿主共用同一条调度线程
-  （启动即核验一次、之后按惰性刷新间隔复查），签到结果落在 `checkin-logs.json`
+  （启动即核验一次、之后按惰性刷新间隔复查），签到结果落在 `checkin-logs.json`，
+  两档账号都参与调度
 - 积分统计：Qoder 无官方用量端点，统计页用本机配额快照（`credit-snapshots.jsonl`，
   按账号 10 分钟节流）聚合日消耗/账号明细/签到事件 —— 真实观察值，不编造
 - OAuth 设备码登录：浏览器授权 + S256 PKCE + `deviceToken/poll`，授权成功即自动采集入库
@@ -250,12 +255,12 @@ macOS 侧 2026-09-23 实跑结果（装了 `Qoder CN.app` 0.3.4 并已登录的�
 
 ## 已知边界
 
-- **只支持国内版**（自 v0.1.5 起隐藏国际版入口）：界面不再有「国内版/国际版」档位切换，
-  账号列表、快捷切换托盘、批量签到、积分统计一律只覆盖国内版。核心 `QoderVariant`
-  枚举与国际版端点/路径仍保留（不触碰切换/凭据这条主链，改动半径最小、可逆），
-  只是没有任何入口会把 `variant=ai` 发出去；库里升级前导入的历史国际版账号包留在磁盘，
-  不再出现在任何界面。需要恢复国际版：放开 `stores/accounts.ts` 的 `onlyDomestic` 过滤、
-  `tray.rs` 的 CN 过滤、`ledger`/`quota` 批量与统计里的 CN 守卫，并重新在账号页加回档位 Tab。
+- **国际版为最小可见性**（v0.2 吸取 CreditDaddy 的风控签到协议后恢复）：账号页有
+  「国内版/国际版」档位 Tab，国际版账号开放**签到与积分/额度查看**（国际版端点
+  按 IP 风控，直连被拦时请在账号卡配置代理）；**切换仍仅国内版** —— 托盘与切换
+  链路不动，国际版卡片上的切换按钮置灰并注明。积分统计页仍只聚合国内版
+  （两档积分口径不可比）。国际版签到的风控凭据依赖本机装有 Qoder 客户端
+  （凭据组件缺失时自动降级为无风控请求，结果会如实标注而不是谎报）。
 - 会话历史不按账号隔离：桌面 `main.sqlite` 的 `chat_sessions` 无 `account_id` 列，
   `~/.qoder*/projects/` 按工作目录命名。换号后两个账号会互见历史，界面上会提示。
 - **托管判定采用 fail-closed**：切换前程序要确认"杀掉目标不会连自己一起杀"
@@ -310,6 +315,11 @@ macOS 侧 2026-09-23 实跑结果（装了 `Qoder CN.app` 0.3.4 并已登录的�
 - **CLI / QoderWork 会跟着换号吗？** 桌面端是登录态权威源。CN 版 CLI 不落盘凭据、
   由桌面端注入；QoderWork 是独立文件。换号对它们的实际影响见 `docs/qoder-endpoints.md`
   与 `docs/upstream-parity.md` 的实测记录。
+
+## 致谢
+
+- [workbuddy-switch](https://github.com/changexbc/workbuddy-switch)（MIT, © changexbc）：本项目的前端与交互蓝本。
+- [CreditDaddy](https://github.com/techysy/CreditDaddy)（MIT, © techysy）：国际版风控签到的协议参考 —— 端点、设备风控凭据（runtime-info 组件）的调用方式、每设备每日限领的业务语义均来自对其实现的静态取证；本项目的 Rust 实现独立重写，未复制其代码。取证落档见 `docs/qoder-endpoints.md` §5。
 
 ## 许可
 

@@ -16,7 +16,7 @@ interface MarkProps {
  * 国内版的图标右上角烤进了 "CN" 字样，再叠 IntlBadge 就会两个角标打架。
  * 档位区分完全交给 IntlBadge。
  */
-export function WorkBuddyMark({ size = 32, className }: MarkProps) {
+export function QoderMark({ size = 32, className }: MarkProps) {
   return (
     <span
       aria-hidden
@@ -34,7 +34,7 @@ export function WorkBuddyMark({ size = 32, className }: MarkProps) {
 
 /**
  * 档位角标：复用官方图标 + 角标区分档位，不新画图形，
- * 保持与既有 Qoder / Qoder 标记同一套圆角与配色。
+ * 保持与既有 Qoder / Qoder IDE 标记同一套圆角与配色。
  * 角标文案为 `INTL`（4 字符，比圆形 badge 宽），故按内容撑成胶囊并收紧字号。
  * Qoder 与 Qoder IDE 的档位标记共用这一份实现。
  */
@@ -51,14 +51,14 @@ function IntlBadge({ size }: { size: number }) {
 }
 
 /** Qoder 国际版标记。 */
-export function WorkBuddyAiMark({ size = 32, className }: MarkProps) {
+export function QoderAiMark({ size = 32, className }: MarkProps) {
   return (
     <span
       aria-hidden
       className={cn("relative inline-flex shrink-0", className)}
       style={{ width: size, height: size }}
     >
-      <WorkBuddyMark size={size} />
+      <QoderMark size={size} />
       <IntlBadge size={size} />
     </span>
   );

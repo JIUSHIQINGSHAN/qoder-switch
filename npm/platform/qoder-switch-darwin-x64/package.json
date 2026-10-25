@@ -1,6 +1,6 @@
 {
   "name": "qoder-switch-darwin-x64",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "qoder-switch platform binary (darwin-x64)：webui 服务端 qs-switch-server（Intel）",
   "os": [
     "darwin"

@@ -5,7 +5,7 @@ import { demoModeEnabled } from "./demo-mode";
 
 /**
  * 应用内通知存档：toast 只存活几秒，事后无法回看；这里把每条提示同步写一份到
- * 后端（最近 100 条，`~/.wb-switch/notifications.json`），供用户与排障者核对
+ * 后端（最近 100 条，`~/.qs-switch/notifications.json`），供用户与排障者核对
  * 「应用当时到底提示了什么」（例如切号成功/失败的具体文案）。
  *
  * 实现方式：包装 sonner 的 `toast.success/error/warning/info`，既有调用点无需改动；

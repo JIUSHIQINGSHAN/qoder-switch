@@ -480,13 +480,24 @@ pub fn unfinished_with_warnings(store: &Path) -> Result<(Vec<Journal>, Vec<Strin
 
 /// 按 journal 记录的备份目录把现场退回。
 ///
+/// 生产入口：以 `PathRoots::real()` 兜底转调 `recover_in`。roots 必须可注入而
+/// 不能在校验体内写死 real() —— 沙箱测试的 item 路径全在临时目录，写死会把
+/// 整单拒掉；与 `bundle::undo_backup_in` 保持同一信任锚语义。
+pub fn recover(store: &Path, j: &Journal) -> Result<Phase> {
+    recover_in(store, j, &PathRoots::real())
+}
+
+/// `recover` 的可注入 roots 内层。
+///
 /// 两条防线（journal 的 backup_dir 可能来自磁盘上被篡改的 json 或前端反序列化）：
 /// 1. 归属校验 —— 只信任 `store/backups/` 一级子目录，且不是符号链接；
 ///    指向库外目录的备份清单等于任意路径写原语。
 /// 2. 清单判定 —— 备份目录存在但 `_restore.json` 不存在 = 备份刚建、还没写过任何
 ///    现场字节（清单先行于写入是 restore 的设计），直接判已完成回滚。此前按
 ///    "目录存在"判定，那个崩溃窗口会让恢复入口永远卡在既成功不了也消不掉。
-pub fn recover(store: &Path, j: &Journal) -> Result<Phase> {
+/// 3. 清单内容 —— 经 `bundle::undo_backup_in` 以 credentials(roots,…) 声明的
+///    凭据路径集合为锚，对每条 item.path 做与上面同级别的三重校验后才写回。
+pub fn recover_in(store: &Path, j: &Journal, roots: &PathRoots) -> Result<Phase> {
     let _gate = SWITCH_GATE.lock().unwrap_or_else(|p| p.into_inner());
     // 恢复同样要跨进程串行：它写现场，与另一个进程正在跑的切换会互相踩。
     let _file_lock = SwitchFileLock::acquire(store)?;
@@ -559,7 +570,7 @@ pub fn recover(store: &Path, j: &Journal) -> Result<Phase> {
         write_journal(store, &done)?;
         return Ok(Phase::RolledBack);
     }
-    bundle::undo_backup(&j.backup_dir)?;
+    bundle::undo_backup_in(&j.backup_dir, roots)?;
     let mut done = j.clone();
     done.phase = Phase::RolledBack;
     write_journal(store, &done)?;
@@ -812,7 +823,9 @@ mod tests {
 
         let list = unfinished(&s.store).unwrap();
         assert_eq!(list.len(), 1, "应只挑出没收尾的那条");
-        assert!(recover(&s.store, &list[0]).unwrap() == Phase::RolledBack);
+        // 沙箱 item 路径必须显式传同一套 roots：real() 兜底会按真实凭据布局
+        // 拒掉整单（undo_backup_in 的信任锚与切换时一致）。
+        assert!(recover_in(&s.store, &list[0], &s.roots).unwrap() == Phase::RolledBack);
         assert_eq!(live(&s.roots), b"authB", "恢复后应退回 B");
         assert!(unfinished(&s.store).unwrap().is_empty(), "恢复后不该再被挑出");
         std::fs::remove_dir_all(s.tmp).ok();
@@ -886,9 +899,22 @@ mod tests {
         let s = sandbox();
         let lock_path = s.store.join("switch.lock");
 
-        // 1. 陈锁：写一个几乎不可能存在的 PID，acquire 应回收并成功。
+        // 1. 陈锁：写一个"合法但不存在"的 PID，acquire 应回收并成功。
+        //    不能再用 4294967290 这类非法数值：pid_alive 的新语义下，非法查询
+        //    （tasklist 退出码 1）是探测失败 Err → 上层保守当活锁不回收（见
+        //    process.rs 阴性二）。崩溃残留锁的真实形态是"合法但已死"的 PID，
+        //    走退出码 0 + 无匹配 → Ok(false)，这里现场找一个当替身（与
+        //    process.rs 阴性一同型）。
         std::fs::create_dir_all(&s.store).unwrap();
-        std::fs::write(&lock_path, "4294967290\n").unwrap();
+        let mut stale_pid = 0u32;
+        for cand in 999_999u32..1_000_050 {
+            if process::pid_alive(cand).ok() == Some(false) {
+                stale_pid = cand;
+                break;
+            }
+        }
+        assert!(stale_pid != 0, "应能找到一个合法且不存在的 PID 当陈锁替身");
+        std::fs::write(&lock_path, format!("{stale_pid}\n")).unwrap();
         let held = SwitchFileLock::acquire(&s.store).expect("陈锁应被回收后取得");
         assert!(lock_path.is_file(), "取得锁后锁文件该存在");
 

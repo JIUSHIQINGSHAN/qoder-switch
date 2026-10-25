@@ -5,10 +5,10 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import * as api from "@/lib/api";
 import { useAccountsStore } from "@/stores/accounts";
 
-export const WORKBUDDY_STATUS_REFRESH_INTERVAL_MS = 60 * 1000;
+export const STATUS_REFRESH_INTERVAL_MS = 60 * 1000;
 
 /** Refresh Qoder status only while the main window is visible and focused. */
-export function useWorkbuddyStatusRefresh() {
+export function useStatusRefresh() {
   const activeRef = useRef(false);
   const timerRef = useRef<number | undefined>(undefined);
   const abortControllerRef = useRef<AbortController | undefined>(undefined);
@@ -37,7 +37,7 @@ export function useWorkbuddyStatusRefresh() {
 
     function startTimer() {
       stopTimer();
-      timerRef.current = window.setInterval(refreshStatus, WORKBUDDY_STATUS_REFRESH_INTERVAL_MS);
+      timerRef.current = window.setInterval(refreshStatus, STATUS_REFRESH_INTERVAL_MS);
     }
 
     function syncActiveState() {

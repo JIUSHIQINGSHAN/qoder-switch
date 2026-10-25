@@ -7,6 +7,7 @@ pub mod notifications;
 pub mod oauth;
 pub mod process;
 pub mod quota;
+pub mod risk;
 pub mod rotate;
 pub mod snapshot;
 pub mod switch;

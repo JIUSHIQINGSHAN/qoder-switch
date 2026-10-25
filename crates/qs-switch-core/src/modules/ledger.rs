@@ -72,8 +72,10 @@ pub fn write_checkin_config(store: &Path, patch: &Value) -> crate::Result<Value>
     Ok(cur)
 }
 
-/// 一条签到日志。`result` 只会是 success / already / error；inactive（官方未开放）
-/// 什么都没发生，不记 —— 否则自动签到的每次轮询都会刷出一条噪声。
+/// 一条签到日志。`result` 只会是 success / already / error / limited；
+/// inactive（官方未开放）什么都没发生，不记 —— 否则自动签到的每次轮询都会
+/// 刷出一条噪声。limited（国际版设备名额被同机其它账号占用）要记：它每天
+/// 至多一条，且用户需要知道"为什么这个号没领"。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CheckinLogEntry {
     pub ts: i64,
@@ -132,6 +134,56 @@ pub fn record_checkin_log(
 /// 前端 `get_checkin_logs` 契约：`{ logs: [...] }`。
 pub fn read_checkin_logs(store: &Path) -> Value {
     json!({ "logs": read_logs_raw(store) })
+}
+
+/// 国际版设备名额备忘：Qoder 服务端按设备风控身份限「每台设备每日领一个国际版
+/// 账号」，这里是客户端的省请求账本 —— 首个领取成功的账号占住当日名额，后续
+/// 账号直接判 limited，不再徒劳打 claim。服务端判定仍是权威：备忘只影响我们
+/// 主动尝试的次数，不影响结果语义。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DeviceClaim {
+    /// 业务日（Qoder 每日 10:00 UTC+8 放出/重置资格，见 `qoder_day_key`）。
+    pub day: String,
+    pub account_id: String,
+    #[serde(default)]
+    pub email: String,
+}
+
+impl DeviceClaim {
+    /// 提示文案里的人话名：有邮箱用邮箱，否则账号 id。
+    pub fn display_name(&self) -> &str {
+        if self.email.is_empty() {
+            &self.account_id
+        } else {
+            &self.email
+        }
+    }
+}
+
+fn device_claim_path(store: &Path) -> PathBuf {
+    store.join("checkin-device-claim.json")
+}
+
+pub fn read_device_claim(store: &Path) -> Option<DeviceClaim> {
+    std::fs::read(device_claim_path(store))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+}
+
+pub fn write_device_claim(store: &Path, claim: &DeviceClaim) {
+    let _gate = LEDGER_GATE.lock().unwrap_or_else(|p| p.into_inner());
+    if let Ok(text) = serde_json::to_vec_pretty(claim) {
+        let _ = atomic_write_bytes(&device_claim_path(store), &text);
+    }
+}
+
+/// Qoder 的业务日键：每日 **10:00 (UTC+8)** 放出/重置领取资格，所以 0–10 点间
+/// 的"今天"在名额语义上仍是昨天 —— `now_utc - 2h` 取 UTC 日期即业务日
+/// （CreditDaddy 同款口径：`(now + (8-10)h)` 的 UTC 日期）。
+pub fn qoder_day_key() -> String {
+    (chrono::Utc::now() - chrono::Duration::hours(2))
+        .format("%Y-%m-%d")
+        .to_string()
 }
 
 /// 一条配额快照（jsonl 行）。
@@ -482,11 +534,24 @@ pub fn run_auto_checkin_once(roots: &PathRoots, store: &Path) -> Value {
         return json!({ "status": "disabled" });
     }
     let mut checked = 0u32;
-    let (mut success, mut already, mut inactive, mut error) = (0u32, 0u32, 0u32, 0u32);
+    let (mut success, mut already, mut inactive, mut limited, mut error) = (0u32, 0u32, 0u32, 0u32, 0u32);
     for b in bundle::list_all(store) {
-        // 已去掉国际版：自动签到只碰国内版账号包。
-        if b.target != QoderTarget::Desktop || b.variant != QoderVariant::Cn {
+        // 两档都签：国内版直接领；国际版走风控签到，"每设备每日一领"的名额
+        // 语义在 quota::checkin 内部处理（首个成功占用名额，后续账号判 limited），
+        // 这里的遍历序（list_all）就是"列表靠前优先"。
+        if b.target != QoderTarget::Desktop {
             continue;
+        }
+        // 国际版且名额当日已被同机其它账号占用：静默计入 limited，不联网、
+        // 不写日志 —— 自动调度每轮都会路过这里，记日志就是把台账刷成噪声。
+        // （手动签到仍走 quota::checkin，那次会如实记录。）
+        if b.variant == QoderVariant::Global {
+            if let Some(claim) = read_device_claim(store) {
+                if claim.day == qoder_day_key() && claim.account_id != b.account_id {
+                    limited += 1;
+                    continue;
+                }
+            }
         }
         let st = quota::get_checkin_status_sync(roots, store, &b.account_id, b.variant);
         if st.get("ok").and_then(|x| x.as_bool()) != Some(true) {
@@ -506,6 +571,7 @@ pub fn run_auto_checkin_once(roots: &PathRoots, store: &Path) -> Value {
             "success" => success += 1,
             "already" => already += 1,
             "inactive" => inactive += 1,
+            "limited" => limited += 1,
             _ => error += 1,
         }
     }
@@ -515,6 +581,7 @@ pub fn run_auto_checkin_once(roots: &PathRoots, store: &Path) -> Value {
         "success": success,
         "already": already,
         "inactive": inactive,
+        "limited": limited,
         "error": error,
     })
 }

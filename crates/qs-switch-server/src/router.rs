@@ -104,6 +104,16 @@ pub fn dispatch_in(roots: &PathRoots, store: &Path, cmd: &str, query: &str, body
         }
     };
 
+    // 破坏性端点的知情门（顶层路径）。compat 只接管 OWNED 名单里的命令，capture、
+    // recover 这类 legacy 端点不在 OWNED、直接落进下面的 match —— 不在这里拦一次，
+    // compat 那份 DESTRUCTIVE 对它们就是死配置。名单与判定复用 compat 同一份，
+    // 两个入口一个标准。
+    if compat::DESTRUCTIVE.contains(&cmd) && !compat::is_confirmed(cmd, query, &input) {
+        return Response::err(format!(
+            "{cmd} 是破坏性操作，必须带 ?confirm={cmd}（query）或 {{\"confirm\":\"{cmd}\"}}（body）表示知情"
+        ));
+    }
+
     match cmd {
         "status" => {
             // 读取失败的 journal 不能折叠成"没有未完成切换"：那会把半换号现场
@@ -439,11 +449,13 @@ mod tests {
     #[test]
     fn bad_variant_and_missing_target_are_reported() {
         let dir = TempDir::new("bad_variant");
-        let r = dispatch_in(&PathRoots::real(), &dir.0, "capture", "", r#"{"account_id":"x","variant":"eu","target":"desktop"}"#);
+        // capture 已入知情门，三个用例都带 confirm 走 body 通道（前端 POST 同款），
+        // 才能到达真正要测的参数校验。
+        let r = dispatch_in(&PathRoots::real(), &dir.0, "capture", "", r#"{"account_id":"x","variant":"eu","target":"desktop","confirm":"capture"}"#);
         assert!(r.body.contains("未知版本"), "{}", r.body);
-        let r = dispatch_in(&PathRoots::real(), &dir.0, "capture", "", r#"{"account_id":"x","variant":"cn"}"#);
+        let r = dispatch_in(&PathRoots::real(), &dir.0, "capture", "", r#"{"account_id":"x","variant":"cn","confirm":"capture"}"#);
         assert!(r.body.contains("缺 target"), "{}", r.body);
-        let r = dispatch_in(&PathRoots::real(), &dir.0, "capture", "", "{}");
+        let r = dispatch_in(&PathRoots::real(), &dir.0, "capture", "", r#"{"confirm":"capture"}"#);
         assert!(r.body.contains("account_id"), "{}", r.body);
     }
 
@@ -726,10 +738,13 @@ mod compat {
     /// **破坏性端点**：会删凭据、覆盖登录态或改动现场的操作。统一在 `dispatch_in` 入口
     /// 校验知情标记，不再逐端点手写（`switch` 曾单独写过，`delete` 就漏了）。
     ///
+    /// 名单同时被顶层 `dispatch_in` 复用：`capture`/`recover` 不在 OWNED、直接落顶层
+    /// match，顶层入口不拦同一份名单的话，在这里加项对它们就是死配置。
+    ///
     /// 标记通道有两条：query 的 `?confirm=<cmd>`（脚本/curl 用）与 body 的
     /// `{"confirm":"<cmd>"}`（前端 `httpCall` 对 POST 不拼 query，body 是唯一通道）。
     /// 跨站表单发不出 application/json body，防护理由与头门一致。
-    const DESTRUCTIVE: &[&str] = &[
+    pub(super) const DESTRUCTIVE: &[&str] = &[
         "delete",
         "switch",
         "import",
@@ -738,9 +753,13 @@ mod compat {
         "notifications/clear",
         "checkin",
         "checkin/all",
+        // legacy 端点同样是"改动现场"：capture 把当前登录态认领进账号库，recover
+        // 按日志回滚现场，误触发都会动真实凭据，一并进入口知情门。
+        "capture",
+        "recover",
     ];
 
-    fn is_confirmed(cmd: &str, query: &str, input: &Value) -> bool {
+    pub(super) fn is_confirmed(cmd: &str, query: &str, input: &Value) -> bool {
         let by_body = input.get("confirm").and_then(|x| x.as_str()) == Some(cmd);
         let needle = format!("confirm={cmd}");
         let by_query = query.split('&').any(|p| p == needle);
@@ -995,7 +1014,16 @@ mod compat {
                 // 缺省覆盖两档：webui 的按账号查询会过滤这个返回，缺省锁死 CN 会把
                 // 国际版账号漏成"未找到账号"。
                 match input.get("accountId").or_else(|| input.get("account_id")).and_then(|x| x.as_str()) {
-                    Some(id) => Ok(qs_switch_core::modules::quota::get_checkin_status_sync(roots, store, id, v)),
+                    Some(id) => {
+                        // 单账号的档位自愈：请求没带 variant 时按账号包解析，根除
+                        // "缺省 Cn → 打错域名/找错包"的陷阱（桌面端 compat 同修）。
+                        let resolved = qs_switch_core::modules::quota::resolve_variant_for_account(
+                            store,
+                            id,
+                            variant.map(|s| view::variant_from_key(Some(s))),
+                        );
+                        Ok(qs_switch_core::modules::quota::get_checkin_status_sync(roots, store, id, resolved))
+                    }
                     None => {
                         let only = input
                             .get("variant")
@@ -1014,7 +1042,13 @@ mod compat {
             },
             "checkin" => {
                 let id = account_id(&input)?;
-                Ok(qs_switch_core::modules::quota::checkin_sync(roots, store, &id, v))
+                // 档位自愈：与 checkin/status 单账号分支同一策略。
+                let resolved = qs_switch_core::modules::quota::resolve_variant_for_account(
+                    store,
+                    &id,
+                    variant.map(|s| view::variant_from_key(Some(s))),
+                );
+                Ok(qs_switch_core::modules::quota::checkin_sync(roots, store, &id, resolved))
             }
             "checkin/all" => {
                 // 带 variant 只处理该档；不带覆盖全部档位。

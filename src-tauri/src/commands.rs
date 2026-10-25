@@ -87,25 +87,45 @@ pub async fn probe_all() -> Result<Vec<AxisStatus>, String> {
     .await
 }
 
+/// 列出账号库里的全部分片。阻塞读盘挪出主线程（同 probe_all）。
+///
+/// list_all 对 read_dir 失败静默回空（bundle.rs 既有契约，12 处调用方不归本轮改），
+/// 这里先用账号根目录的存在性把「空库」与「真读失败」分开：目录不存在（还没认领过
+/// 任何账号）按空列表返回，其余读取失败照实报 Err，不吞错。
 #[tauri::command]
-pub fn list_accounts() -> Vec<bundle::Bundle> {
-    bundle::list_all(&switch_root())
+pub async fn list_accounts() -> Result<Vec<bundle::Bundle>, String> {
+    off_main(|| {
+        let store = switch_root();
+        let root = bundle::accounts_root_in(&store);
+        match std::fs::metadata(&root) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(format!("读取账号目录 {} 失败: {e}", root.display())),
+            Ok(_) => Ok(bundle::list_all(&store)),
+        }
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn capture(account_id: String, variant: QoderVariant, target: QoderTarget) -> Result<bundle::Bundle, String> {
-    let roots = PathRoots::real();
-    bundle::capture(&roots, &switch_root(), account_id.trim(), variant, target)
+pub async fn capture(account_id: String, variant: QoderVariant, target: QoderTarget) -> Result<bundle::Bundle, String> {
+    off_main(move || {
+        let roots = PathRoots::real();
+        bundle::capture(&roots, &switch_root(), account_id.trim(), variant, target)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn preview(account_id: String, variant: QoderVariant, target: QoderTarget) -> Result<switch::Preview, String> {
-    let roots = PathRoots::real();
-    switch::preview(
-        &roots,
-        &switch_root(),
-        &switch::Request { account_id, variant, target, restart: true },
-    )
+pub async fn preview(account_id: String, variant: QoderVariant, target: QoderTarget) -> Result<switch::Preview, String> {
+    off_main(move || {
+        let roots = PathRoots::real();
+        switch::preview(
+            &roots,
+            &switch_root(),
+            &switch::Request { account_id, variant, target, restart: true },
+        )
+    })
+    .await
 }
 
 /// 执行切换。阻塞在 spawn_blocking 里跑，过程经 `switch-progress` 事件回流。
@@ -133,36 +153,45 @@ pub async fn switch_now(
 }
 
 #[tauri::command]
-pub fn unfinished() -> Result<Vec<switch::Journal>, String> {
-    switch::unfinished(&switch_root())
+pub async fn unfinished() -> Result<Vec<switch::Journal>, String> {
+    off_main(|| switch::unfinished(&switch_root())).await
 }
 
 /// 带告警的未收尾查询：读取失败的 journal 会出现在 `warnings` 里。
 /// 设置页的「未完成的切换」卡片用这个 —— 只报列表会把"读不出来的那条"藏掉，
 /// 而那条可能正记着一次半换号。
 #[tauri::command]
-pub fn unfinished_report() -> Result<serde_json::Value, String> {
-    let (journals, warnings) = switch::unfinished_with_warnings(&switch_root())?;
-    Ok(serde_json::json!({ "journals": journals, "warnings": warnings }))
-}
-
-#[tauri::command]
-pub fn recover(journal: switch::Journal) -> Result<String, String> {
-    let store = switch_root();
-    switch::recover(&store, &journal).map(|p| format!("{p:?}"))
-}
-
-#[tauri::command]
-pub fn snapshot_now() -> Result<SnapshotReport, String> {
-    let previous = snapshot::Snapshot::latest().map_err(|e| e.to_string())?;
-    let now = snapshot::Snapshot::take();
-    let path = now.save().map_err(|e| e.to_string())?;
-    let changes = previous.map(|p| p.diff(&now)).unwrap_or_default();
-    Ok(SnapshotReport {
-        taken_at: now.taken_at.clone(),
-        path: path.display().to_string(),
-        changes,
+pub async fn unfinished_report() -> Result<serde_json::Value, String> {
+    off_main(|| {
+        let (journals, warnings) = switch::unfinished_with_warnings(&switch_root())?;
+        Ok(serde_json::json!({ "journals": journals, "warnings": warnings }))
     })
+    .await
+}
+
+#[tauri::command]
+pub async fn recover(journal: switch::Journal) -> Result<String, String> {
+    off_main(move || {
+        let store = switch_root();
+        switch::recover(&store, &journal).map(|p| format!("{p:?}"))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn snapshot_now() -> Result<SnapshotReport, String> {
+    off_main(|| {
+        let previous = snapshot::Snapshot::latest().map_err(|e| e.to_string())?;
+        let now = snapshot::Snapshot::take();
+        let path = now.save().map_err(|e| e.to_string())?;
+        let changes = previous.map(|p| p.diff(&now)).unwrap_or_default();
+        Ok(SnapshotReport {
+            taken_at: now.taken_at.clone(),
+            path: path.display().to_string(),
+            changes,
+        })
+    })
+    .await
 }
 
 #[tauri::command]
@@ -173,10 +202,13 @@ pub fn store_dir() -> String {
 /// 导出为可直接粘贴的 JSON 文本。副本是真实凭据的密文文件，只应在同一 Windows
 /// 用户内搬运 —— 跨机器导入会静默变成未登录，这点由界面负责讲清楚。
 #[tauri::command]
-pub fn export_account_text(account_id: String) -> Result<String, String> {
-    let e = export_import::export_account(&switch_root(), account_id.trim())?;
-    let bytes = export_import::to_bytes(&e)?;
-    String::from_utf8(bytes).map_err(|e| format!("导出结果不是合法 UTF-8: {e}"))
+pub async fn export_account_text(account_id: String) -> Result<String, String> {
+    off_main(move || {
+        let e = export_import::export_account(&switch_root(), account_id.trim())?;
+        let bytes = export_import::to_bytes(&e)?;
+        String::from_utf8(bytes).map_err(|e| format!("导出结果不是合法 UTF-8: {e}"))
+    })
+    .await
 }
 
 #[derive(Debug, Serialize)]
@@ -186,16 +218,19 @@ pub struct ImportResult {
 }
 
 #[tauri::command]
-pub fn import_account_text(text: String, overwrite: bool) -> Result<ImportResult, String> {
-    let rep = export_import::import(&switch_root(), text.as_bytes(), overwrite)?;
-    Ok(ImportResult {
-        written: rep
-            .written
-            .into_iter()
-            .map(|(id, v, t, n)| format!("{id} · {} · {} · {n} 个文件", v.label(), t.label()))
-            .collect(),
-        skipped: rep.skipped,
+pub async fn import_account_text(text: String, overwrite: bool) -> Result<ImportResult, String> {
+    off_main(move || {
+        let rep = export_import::import(&switch_root(), text.as_bytes(), overwrite)?;
+        Ok(ImportResult {
+            written: rep
+                .written
+                .into_iter()
+                .map(|(id, v, t, n)| format!("{id} · {} · {} · {n} 个文件", v.label(), t.label()))
+                .collect(),
+            skipped: rep.skipped,
+        })
     })
+    .await
 }
 
 #[derive(Serialize)]
@@ -204,25 +239,33 @@ pub struct RotationView {
     pub state: rotate::RotateState,
 }
 
-/// 轮换建议。只读：不写产品目录、不动进程。
+/// 轮换建议。只读：不写产品目录、不动进程。suggest 要探父进程链（PowerShell，
+/// 实测约 1.4s），照 switch_now 的先例挪进 spawn_blocking。
 #[tauri::command]
-pub fn rotation_suggestion(variant: QoderVariant) -> Result<RotationView, String> {
-    let roots = PathRoots::real();
-    let store = switch_root();
-    let cfg = rotate::RotateConfig::default();
-    Ok(RotationView {
-        suggestion: rotate::suggest(&roots, &store, variant, &cfg)?,
-        state: rotate::read_state(&store).unwrap_or_default(),
+pub async fn rotation_suggestion(variant: QoderVariant) -> Result<RotationView, String> {
+    off_main(move || {
+        let roots = PathRoots::real();
+        let store = switch_root();
+        let cfg = rotate::RotateConfig::default();
+        Ok(RotationView {
+            suggestion: rotate::suggest(&roots, &store, variant, &cfg)?,
+            state: rotate::read_state(&store).unwrap_or_default(),
+        })
     })
+    .await
 }
 
 /// 执行建议。走的就是普通切换路径，托管判定与备份回滚一个都不绕过。
+/// apply 内含关进程等待（可达 20s+），必须挪出主线程，否则窗口整段假死。
 #[tauri::command]
-pub fn apply_rotation(variant: QoderVariant, restart: bool) -> Result<switch::Journal, String> {
-    let roots = PathRoots::real();
-    let store = switch_root();
-    let s = rotate::suggest(&roots, &store, variant, &rotate::RotateConfig::default())?;
-    rotate::apply(&roots, &store, &s, restart)
+pub async fn apply_rotation(variant: QoderVariant, restart: bool) -> Result<switch::Journal, String> {
+    off_main(move || {
+        let roots = PathRoots::real();
+        let store = switch_root();
+        let s = rotate::suggest(&roots, &store, variant, &rotate::RotateConfig::default())?;
+        rotate::apply(&roots, &store, &s, restart)
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +275,10 @@ pub fn apply_rotation(variant: QoderVariant, restart: bool) -> Result<switch::Jo
 /// 查询系统当前的开机自启注册状态。
 ///
 /// 以 tauri-plugin-autostart 的 OS 状态为唯一事实来源，不另存本地布尔值。
+///
+/// 刻意保持同步：autostart 的查询/开关只是对单个注册表键的读写（毫秒级，
+/// 无文件/进程 IO），与 compat::switch_progress 同理，为它走 spawn_blocking
+/// 反而每次都要跨线程调度，得不偿失。要挪出主线程的是有阻塞 IO 的命令（见上）。
 #[tauri::command]
 pub fn get_launch_at_login_enabled(_app: AppHandle) -> Result<bool, String> {
     #[cfg(desktop)]
@@ -252,6 +299,9 @@ pub fn get_launch_at_login_enabled(_app: AppHandle) -> Result<bool, String> {
 /// 注册 / 移除系统开机自启，并回读权威状态。
 ///
 /// 回读结果与请求值不一致时按失败处理并返回当前真实状态，避免假装设置成功。
+///
+/// 刻意保持同步：enable/disable 只写一个注册表键（毫秒级），理由同
+/// get_launch_at_login_enabled；真正要挪出主线程的是有阻塞 IO 的命令（见上）。
 #[tauri::command]
 pub fn set_launch_at_login_enabled(_app: AppHandle, enabled: bool) -> Result<bool, String> {
     #[cfg(desktop)]

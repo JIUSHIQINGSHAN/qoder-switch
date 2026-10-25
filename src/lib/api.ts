@@ -45,7 +45,7 @@ import { screenshotDemoResponse } from "./screenshot-demo";
  * - webui（浏览器）：HTTP fetch 调用本地 qs-switch-server 服务（127.0.0.1）
  */
 // 本项目的 HTTP 宿主（qs-switch-server）默认 57891；刻意与参考实现的 57890 错开，
-// 因为本机可能同时装着 workbuddy-switch 的 webui。
+// 因为本机可能同时装着参考实现的 webui。
 const API_BASE =
   (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_API_BASE) ||
   "http://127.0.0.1:57891";
@@ -316,6 +316,10 @@ const CONFIRM_COMMANDS = new Set([
   "checkin_all",
   "run_rotate",
   "clear_notifications",
+  // legacy "recover"（recoverSwitch 专用）：后端已把它列入 DESTRUCTIVE 知情门，
+  // 不注入 confirm 会被门拦下；confirmToken 默认分支恰好返回后端短名 "recover"。
+  // legacy "capture" 前端零调用，不入列。
+  "recover",
 ]);
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -627,13 +631,18 @@ export function revealAppInFinder(): Promise<void> {
 // 阶段 3：签到 + token 刷新
 // ---------------------------------------------------------------------------
 
-export async function getCheckinStatus(accountId: string): Promise<{
+export async function getCheckinStatus(
+  accountId: string,
+  variant?: WbVariant,
+): Promise<{
   ok: boolean;
   todayCheckedIn: boolean;
   error?: string;
   raw?: unknown;
   /** 该行所属档位（档位取账号自身）；缺省按国内版处理。 */
   variant?: WbVariant;
+  /** 国际版：设备风控凭据不可用时的如实说明（服务端可能因此不发放每日积分活动）。 */
+  riskError?: string;
 }> {
   if (demoModeEnabled) {
     return screenshotDemoResponse("get_checkin_status", { accountId }) as {
@@ -654,6 +663,7 @@ export async function getCheckinStatus(accountId: string): Promise<{
         error?: string;
         raw?: unknown;
         variant?: WbVariant;
+        riskError?: string;
       }[];
     }>("get_checkin_status");
     // 批量形状缺 `accounts` 时不能直接 .find —— 会 TypeError，而调用方（账号页的
@@ -666,10 +676,12 @@ export async function getCheckinStatus(accountId: string): Promise<{
           error: one.error,
           raw: one.raw,
           variant: one.variant,
+          riskError: one.riskError,
         }
       : { ok: false, todayCheckedIn: false, error: "未找到账号" };
   }
-  return call("get_checkin_status", { accountId });
+  // 后端已按账号包解析档位，这里补发 variant 只是双保险（老后端按它分流）。
+  return call("get_checkin_status", { accountId, ...variantArgs(variant) });
 }
 
 export function getCreditExpiry(accountId: string): Promise<CreditExpiry> {
@@ -718,8 +730,8 @@ export function saveRateLimitConfig(config: RateLimitConfig): Promise<RateLimitC
   });
 }
 
-export function checkin(accountId: string): Promise<CheckinResult> {
-  return call("checkin", { accountId });
+export function checkin(accountId: string, variant?: WbVariant): Promise<CheckinResult> {
+  return call("checkin", { accountId, ...variantArgs(variant) });
 }
 
 /**

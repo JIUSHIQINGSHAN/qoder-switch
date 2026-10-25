@@ -82,7 +82,8 @@ pub fn run() -> i32 {
 
     let mut accounts = Vec::new();
     r.step("list_accounts", || {
-        accounts = commands::list_accounts();
+        // 命令改 async 后这里与 probe_all（上方 59 行）一样用 block_on 直调。
+        accounts = tauri::async_runtime::block_on(commands::list_accounts())?;
         if accounts.is_empty() {
             return Ok("（空，先在客户端登录一个账号再认领）".to_string());
         }
@@ -100,7 +101,7 @@ pub fn run() -> i32 {
     if let Some(b) = accounts.first() {
         let (id, v, t) = (b.account_id.clone(), b.variant, b.target);
         r.step("preview", || {
-            let pv = commands::preview(id.clone(), v, t)?;
+            let pv = tauri::async_runtime::block_on(commands::preview(id.clone(), v, t))?;
             Ok(json!({
                 "writes": pv.writes,
                 "running": pv.running_pids.len(),
@@ -109,11 +110,11 @@ pub fn run() -> i32 {
             .to_string())
         });
         r.step("export+格式门", || {
-            let text = commands::export_account_text(id.clone())?;
-            match commands::import_account_text(
+            let text = tauri::async_runtime::block_on(commands::export_account_text(id.clone()))?;
+            match tauri::async_runtime::block_on(commands::import_account_text(
                 "{\"format\":999,\"exported_at\":\"\",\"bundles\":[]}".into(),
                 false,
-            ) {
+            )) {
                 Ok(got) => Err(format!("假版本号的导入居然成功了: {got:?}")),
                 Err(e) if e.contains("格式版本") => Ok(format!(
                     "导出 {} 字节，导入侧格式门生效",
@@ -162,10 +163,13 @@ pub fn run() -> i32 {
     });
 
     r.step("unfinished", || {
-        Ok(format!("{} 条未收尾切换", commands::unfinished()?.len()))
+        Ok(format!(
+            "{} 条未收尾切换",
+            tauri::async_runtime::block_on(commands::unfinished())?.len()
+        ))
     });
     r.step("snapshot_now", || {
-        let s = commands::snapshot_now()?;
+        let s = tauri::async_runtime::block_on(commands::snapshot_now())?;
         Ok(format!("{} 检出 {} 项变化", s.taken_at, s.changes.len()))
     });
 

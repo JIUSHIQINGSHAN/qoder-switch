@@ -264,12 +264,17 @@ fn handle(mut stream: TcpStream, dist: &Path) -> std::io::Result<()> {
 /// 因为把 woff2/png 塞进 String 会按 UTF-8 重编码并毁掉文件。
 fn write(stream: &mut TcpStream, r: &Response) -> std::io::Result<()> {
     let payload: &[u8] = r.bytes.as_deref().unwrap_or(r.body.as_bytes());
+    // 反点击劫持：/api 的头门挡不住同源 iframe，静态路由更是完全不设防，任意网页
+    // 都能把整个 webui 套进 iframe 诱导点击。本函数是唯一响应出口，在这里统一声明
+    // 禁止被嵌（XFO 老、CSP frame-ancestors 新，两个都发是为了覆盖不同代浏览器）。
     let head = format!(
         "HTTP/1.1 {code} {why}\r\n\
          Content-Type: {ct}\r\n\
          Content-Length: {len}\r\n\
          Cache-Control: no-store\r\n\
          X-Content-Type-Options: nosniff\r\n\
+         X-Frame-Options: DENY\r\n\
+         Content-Security-Policy: frame-ancestors 'none'\r\n\
          Connection: close\r\n\r\n",
         code = r.status,
         why = reason(r.status),

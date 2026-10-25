@@ -405,7 +405,13 @@ pub async fn get_credit_expiry(account_id: String, variant: Option<String>) -> V
 pub async fn get_checkin_status(account_id: String, variant: Option<String>) -> Value {
     let roots = PathRoots::real();
     let store = switch_root();
-    let v = variant_of(variant.as_deref());
+    // 档位自愈：请求没带 variant 时按账号包解析，根除"缺省 Cn → 打错域名/找错包"
+    // 的陷阱（webui router 同修）。
+    let v = qs_switch_core::modules::quota::resolve_variant_for_account(
+        &store,
+        &account_id,
+        variant.as_deref().map(|s| variant_of(Some(s))),
+    );
     qs_switch_core::modules::quota::get_checkin_status(&roots, &store, &account_id, v).await
 }
 
@@ -413,7 +419,12 @@ pub async fn get_checkin_status(account_id: String, variant: Option<String>) -> 
 pub async fn checkin(account_id: String, variant: Option<String>) -> Value {
     let roots = PathRoots::real();
     let store = switch_root();
-    let v = variant_of(variant.as_deref());
+    // 档位自愈：与 get_checkin_status 同一策略。
+    let v = qs_switch_core::modules::quota::resolve_variant_for_account(
+        &store,
+        &account_id,
+        variant.as_deref().map(|s| variant_of(Some(s))),
+    );
     qs_switch_core::modules::quota::checkin(&roots, &store, &account_id, v).await
 }
 

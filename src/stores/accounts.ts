@@ -1,16 +1,13 @@
 import { create } from "zustand";
 import * as api from "@/lib/api";
-import { DEFAULT_VARIANT, accountVariant, normalizeVariant } from "@/lib/variant";
+import { DEFAULT_VARIANT, normalizeVariant } from "@/lib/variant";
 import type { AccountMeta, AppStatus, BackupStatus, CreditExpiry, WbVariant } from "@/lib/types";
 
 /**
- * 已去掉国际版：账号列表面向 UI 的唯一闸口。库里若还留着历史国际版包
- * （升级前导入的 `local-ai` 等），在这里被滤掉，不渲染、不参与切换/签到；
- * 文件仍在磁盘（不物理删凭据），需要恢复国际版时放开此过滤即可。
+ * v0.2 起国际版恢复最小可见性：列表展示两档账号（页面按档位 Tab 过滤），
+ * 签到对国际版开放（带设备风控凭据）；切换仍仅国内版（托盘与切换入口不动）。
+ * 账号列表本身不再按档位过滤 —— 谁可见由页面的当前档位 Tab 决定。
  */
-function onlyDomestic(accounts: AccountMeta[]): AccountMeta[] {
-  return accounts.filter((a) => accountVariant(a) === "cn");
-}
 
 /** In-flight credit fetches, shared so a remount does not start a second round. */
 const creditInflight = new Set<string>();
@@ -113,7 +110,7 @@ export const useAccountsStore = create<AccountsState>((set, get) => ({
       ]);
       // 迟到结果不得覆盖已切换档位的状态。
       if (get().variant !== variant) return;
-      set({ status, accounts: onlyDomestic(accounts), backup, loading: false });
+      set({ status, accounts, backup, loading: false });
     } catch (e) {
       if (get().variant !== variant) return;
       set({ error: api.asError(e), loading: false });
@@ -185,7 +182,7 @@ export const useAccountsStore = create<AccountsState>((set, get) => ({
     // 账号列表与备份现状一起刷新：认领/导入都会立刻产生一份新备份，
     // 提示条的状态必须跟着走。
     const [{ accounts }, backup] = await Promise.all([api.getAccounts(), fetchBackupStatus()]);
-    set({ accounts: onlyDomestic(accounts), backup });
+    set({ accounts, backup });
   },
 }));
 

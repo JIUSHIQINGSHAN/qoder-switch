@@ -501,7 +501,7 @@ pub fn auth_permission_probe(roots: &PathRoots, v: QoderVariant) -> Value {
         Ok(()) => {
             // 探针写完即删；删除失败不影响"可写"这个结论，但要记下来。
             let rm = std::fs::remove_file(&probe);
-            let mut message = if rm.is_ok() {
+            let message = if rm.is_ok() {
                 "认证目录可写，权限正常".to_string()
             } else {
                 "认证目录可写（探针清理失败，不影响切换）".to_string()
@@ -554,8 +554,8 @@ pub fn capabilities() -> Value {
             "应用内通知存档（本机 notifications.json）",
             "应用内更新（签名 latest.json，tag 触发 CI 发版）",
             "官方配额与资源包查询（基于 10router 取证端点）",
-            "每日签到与 Credits 领取（基于 10router 取证端点）",
-            "自动签到本机调度与签到日志（checkin-config / checkin-logs）",
+            "每日签到与 Credits 领取（国内版直接领取；国际版带设备风控三头，见 docs/qoder-endpoints.md §5）",
+            "自动签到本机调度与签到日志（checkin-config / checkin-logs，两档都覆盖；国际版每设备每日限领一档）",
             "积分统计本机快照聚合（credit-snapshots，无官方用量端点）",
             "OAuth 设备码登录（基于 10router 取证端点）",
             if cfg!(target_os = "macos") {

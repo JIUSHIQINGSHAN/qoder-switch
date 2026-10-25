@@ -16,7 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { CodeBuddyCnIdeMark, CodeBuddyMark, WorkBuddyMark } from "@/components/product-marks";
+import { CodeBuddyCnIdeMark, CodeBuddyMark, QoderMark } from "@/components/product-marks";
 import { useAccountsStore } from "@/stores/accounts";
 import { cn } from "@/lib/utils";
 import { creditResourceName } from "@/lib/credit-package-names";
@@ -212,7 +212,7 @@ interface Props {
   /** 该账号积分最近一次查询完成时间（时间戳） */
   creditUpdatedAt?: number;
   creditPriority?: boolean;
-  workbuddyActive?: boolean;
+  qoderActive?: boolean;
   codebuddyCliConfigured?: boolean;
   codebuddyCliActive?: boolean;
   /** 任一 Qoder CLI 账号切换正在进行，用于阻止并发切换。 */
@@ -231,9 +231,9 @@ interface Props {
   compact?: boolean;
 }
 
-function ProductCurrentState({ product, compact = false }: { product: "workbuddy" | "codebuddy" | "codebuddy-cn"; compact?: boolean }) {
+function ProductCurrentState({ product, compact = false }: { product: "qoder" | "codebuddy" | "codebuddy-cn"; compact?: boolean }) {
   const title =
-    product === "workbuddy"
+    product === "qoder"
       ? "Qoder 当前账号"
       : product === "codebuddy-cn"
         ? "Qoder IDE 当前账号"
@@ -248,8 +248,8 @@ function ProductCurrentState({ product, compact = false }: { product: "workbuddy
         compact ? "h-7 text-xs" : "h-9",
       )}
     >
-      {product === "workbuddy" ? (
-        <WorkBuddyMark size={compact ? 18 : 22} />
+      {product === "qoder" ? (
+        <QoderMark size={compact ? 18 : 22} />
       ) : product === "codebuddy-cn" ? (
         <CodeBuddyCnIdeMark size={compact ? 18 : 22} />
       ) : (
@@ -305,7 +305,7 @@ function CreditResourceRow({ resource, compact, placeholderLabel }: { resource?:
   );
 }
 
-export function AccountCard({ account, onDelete, onCheckin, onSwitch, todayCheckedIn, rateLimits, credit, creditLoading, creditUpdatedAt, creditPriority, workbuddyActive, codebuddyCliConfigured, codebuddyCliActive, codebuddyCliBusy, onSwitchCodebuddyCli, codebuddyCliLoading, codebuddyCnIdeAvailable, codebuddyCnIdeActive, codebuddyCnIdeBusy, codebuddyCnIdeLoading, onSwitchCodebuddyCnIde, featuresDisabled = true, compact = false }: Props) {
+export function AccountCard({ account, onDelete, onCheckin, onSwitch, todayCheckedIn, rateLimits, credit, creditLoading, creditUpdatedAt, creditPriority, qoderActive, codebuddyCliConfigured, codebuddyCliActive, codebuddyCliBusy, onSwitchCodebuddyCli, codebuddyCliLoading, codebuddyCnIdeAvailable, codebuddyCnIdeActive, codebuddyCnIdeBusy, codebuddyCnIdeLoading, onSwitchCodebuddyCnIde, featuresDisabled = true, compact = false }: Props) {
   const [resourcesOpen, setResourcesOpen] = useState(false);
   const [proxyOpen, setProxyOpen] = useState(false);
   const [proxyInput, setProxyInput] = useState(account.proxy || "");
@@ -314,6 +314,9 @@ export function AccountCard({ account, onDelete, onCheckin, onSwitch, todayCheck
   // 记录打开时的原值，只有用户真的改过才提交。
   const [proxyInitial, setProxyInitial] = useState(account.proxy || "");
   const [proxySaving, setProxySaving] = useState(false);
+  // 国际版账号：v0.2 恢复最小可见性（签到/额度查看开放），切换暂不开放 ——
+  // 卡片上的切换按钮置灰，托盘与切换链路本就只覆盖国内版。
+  const switchDisabled = accountVariant(account) === "ai";
   const [now, setNow] = useState(() => Date.now());
   /**
    * 限额图标要随官方恢复时刻自动消失（AC3），所以本地每秒走一次时钟。
@@ -341,7 +344,7 @@ export function AccountCard({ account, onDelete, onCheckin, onSwitch, todayCheck
     })
     .map(({ resource }) => resource);
 
-  const activeProductCount = [workbuddyActive, codebuddyCliActive, codebuddyCnIdeActive].filter(Boolean).length;
+  const activeProductCount = [qoderActive, codebuddyCliActive, codebuddyCnIdeActive].filter(Boolean).length;
 
   const statusChips = (
     <>
@@ -394,7 +397,7 @@ export function AccountCard({ account, onDelete, onCheckin, onSwitch, todayCheck
              多个产品同时选中时取优先级最高者；具体哪几个产品在使用由 header 的标记+勾选角标表达。
              Qoder IDE 的紫是产品专属色：主题里没有对应语义 token，故用 Tailwind 的 violet-500
              （本文件 AVATAR_TONES 已在用同一调色板），透明度与 Qoder 的 /5、/15 保持同一强度。 */
-          workbuddyActive ? "bg-primary/5" : codebuddyCnIdeActive ? "bg-violet-500/5" : codebuddyCliActive ? "bg-muted/60" : "bg-muted/30",
+          qoderActive ? "bg-primary/5" : codebuddyCnIdeActive ? "bg-violet-500/5" : codebuddyCliActive ? "bg-muted/60" : "bg-muted/30",
         )}
       >
         <div className="pointer-events-none absolute inset-0 overflow-hidden">
@@ -402,16 +405,16 @@ export function AccountCard({ account, onDelete, onCheckin, onSwitch, todayCheck
             className={cn(
               "absolute -right-10 -top-16 rounded-full blur-2xl",
               compact ? "size-20" : "size-24",
-              workbuddyActive ? "bg-primary/15" : codebuddyCnIdeActive ? "bg-violet-500/15" : codebuddyCliActive ? "bg-muted/50" : "bg-muted/30",
+              qoderActive ? "bg-primary/15" : codebuddyCnIdeActive ? "bg-violet-500/15" : codebuddyCliActive ? "bg-muted/50" : "bg-muted/30",
             )}
           />
-          {workbuddyActive && (
+          {qoderActive && (
             <div className={cn("absolute top-[64%] -translate-y-1/2 opacity-[0.075] saturate-50 grayscale-[10%]", codebuddyCliActive ? "right-[68px] rotate-[8deg]" : "right-5 rotate-[7deg]")}>
-              <WorkBuddyMark size={compact ? 40 : 56} />
+              <QoderMark size={compact ? 40 : 56} />
             </div>
           )}
           {codebuddyCliActive && (
-            <div className={cn("absolute top-[63%] -translate-y-1/2 opacity-[0.065] saturate-50 grayscale-[18%]", workbuddyActive ? "right-1 -rotate-[8deg]" : "right-5 -rotate-[7deg]")}>
+            <div className={cn("absolute top-[63%] -translate-y-1/2 opacity-[0.065] saturate-50 grayscale-[18%]", qoderActive ? "right-1 -rotate-[8deg]" : "right-5 -rotate-[7deg]")}>
               <CodeBuddyMark size={compact ? 38 : 54} />
             </div>
           )}
@@ -420,7 +423,7 @@ export function AccountCard({ account, onDelete, onCheckin, onSwitch, todayCheck
                放大到水印尺寸会是一块模糊方块。位置与旋转与 Qoder 水印相同 —— 两者同时选中时
                完全重合，因此无需再引入第三套偏移规则。 */
             <div className={cn("absolute top-[64%] -translate-y-1/2 opacity-[0.075] saturate-50 grayscale-[10%]", codebuddyCliActive ? "right-[68px] rotate-[8deg]" : "right-5 rotate-[7deg]")}>
-              <WorkBuddyMark size={compact ? 40 : 56} />
+              <QoderMark size={compact ? 40 : 56} />
             </div>
           )}
         </div>
@@ -466,11 +469,11 @@ export function AccountCard({ account, onDelete, onCheckin, onSwitch, todayCheck
             <h3 className="min-w-0 flex-1 truncate text-[13px] font-semibold leading-5" title={name}>{name}</h3>
             <div className="hidden shrink-0 items-center gap-1 min-[420px]:flex">{statusChips}</div>
             <div className="ml-auto flex shrink-0 items-center gap-1">
-              {workbuddyActive ? (
+              {qoderActive ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <span className="relative inline-flex size-7 items-center justify-center rounded-lg border border-primary/25 bg-primary/10 text-primary">
-                      <WorkBuddyMark size={15} />
+                      <QoderMark size={15} />
                       <span className="absolute -right-1 -top-1 flex size-3.5 items-center justify-center rounded-full bg-primary text-primary-foreground">
                         <Check className="size-2.5" strokeWidth={3} />
                       </span>
@@ -481,17 +484,17 @@ export function AccountCard({ account, onDelete, onCheckin, onSwitch, todayCheck
               ) : demoModeEnabled ? (
                 <DemoAction>
                   <Button variant="outline" size="icon" className="size-7 rounded-lg" aria-label="设为 Qoder 当前账号">
-                    <WorkBuddyMark size={15} />
+                    <QoderMark size={15} />
                   </Button>
                 </DemoAction>
               ) : (
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Button variant="outline" size="icon" className="size-7 rounded-lg" disabled={featuresDisabled || !onSwitch} onClick={() => onSwitch?.(account)} aria-label="设为 Qoder 当前账号">
-                      <WorkBuddyMark size={15} />
+                    <Button variant="outline" size="icon" className="size-7 rounded-lg" disabled={featuresDisabled || switchDisabled || !onSwitch} onClick={() => onSwitch?.(account)} aria-label="设为 Qoder 当前账号">
+                      <QoderMark size={15} />
                     </Button>
                   </TooltipTrigger>
-                  <TooltipContent side="top">设为 Qoder 当前账号（会重启 Qoder）</TooltipContent>
+                  <TooltipContent side="top">{switchDisabled ? "国际版账号仅支持签到与额度查看（切换暂不开放）" : "设为 Qoder 当前账号（会重启 Qoder）"}</TooltipContent>
                 </Tooltip>
               )}
               {codebuddyCnIdeActive ? (
@@ -541,7 +544,7 @@ export function AccountCard({ account, onDelete, onCheckin, onSwitch, todayCheck
             </div>
           </div>
         ) : (
-          <div className={cn("relative z-10 flex w-full min-w-0 items-center gap-3", workbuddyActive || codebuddyCliActive ? "pr-[112px]" : "pr-10")}>
+          <div className={cn("relative z-10 flex w-full min-w-0 items-center gap-3", qoderActive || codebuddyCliActive ? "pr-[112px]" : "pr-10")}>
             <div className={cn("flex size-12 shrink-0 items-center justify-center rounded-full text-base font-semibold ring-4 ring-white/65", avatarClass)}>{name.charAt(0).toUpperCase()}</div>
             <div className="min-w-0 flex-1">
               <h3 className="truncate text-sm font-semibold leading-5" title={name}>{name}</h3>
@@ -630,20 +633,20 @@ export function AccountCard({ account, onDelete, onCheckin, onSwitch, todayCheck
 
       {!compact && (
         <footer className="flex flex-wrap items-center gap-2.5 border-t px-5 py-2.5">
-          {workbuddyActive ? <ProductCurrentState product="workbuddy" compact /> : demoModeEnabled ? (
+          {qoderActive ? <ProductCurrentState product="qoder" compact /> : demoModeEnabled ? (
             <DemoAction>
               <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" aria-label="设为 Qoder 当前账号">
-                <WorkBuddyMark size={18} /><span>设为当前</span>
+                <QoderMark size={18} /><span>设为当前</span>
               </Button>
             </DemoAction>
           ) : (
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" disabled={featuresDisabled || !onSwitch} onClick={() => onSwitch?.(account)} aria-label="设为 Qoder 当前账号">
-                  <WorkBuddyMark size={18} /><span>设为当前</span>
+                <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" disabled={featuresDisabled || switchDisabled || !onSwitch} onClick={() => onSwitch?.(account)} aria-label="设为 Qoder 当前账号">
+                  <QoderMark size={18} /><span>设为当前</span>
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="top">设为 Qoder 当前账号（会重启 Qoder）</TooltipContent>
+              <TooltipContent side="top">{switchDisabled ? "国际版账号仅支持签到与额度查看（切换暂不开放）" : "设为 Qoder 当前账号（会重启 Qoder）"}</TooltipContent>
             </Tooltip>
           )}
           {codebuddyCnIdeActive ? <ProductCurrentState product="codebuddy-cn" compact /> : (

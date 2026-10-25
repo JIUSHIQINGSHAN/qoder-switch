@@ -1,4 +1,4 @@
-// 与 Rust 后端命令返回结构对齐的类型定义（对照 server.py 各 API 响应）
+// 与 Rust 后端命令返回结构对齐的类型定义（对照 src-tauri command 与 qs-switch-server compat 路由的响应）
 
 /**
  * Qoder 客户端档位：国内版（cn）/ 国际版（ai）。
@@ -350,6 +350,12 @@ export interface CheckinResult {
   error?: string;
   /** 国际版签到活动未开放时的业务判定；不写成功日志、不计入失败重试。 */
   inactive?: boolean;
+  /** 国际版：本机当日名额已被其它账号占用（每台设备每日限领一个国际版账号）。 */
+  limited?: boolean;
+  /** 人话说明（limited 时点名占用者）。 */
+  message?: string;
+  /** 国际版：设备风控凭据不可用时的如实说明（服务端可能因此不发放每日积分活动）。 */
+  riskError?: string;
 }
 
 /** 单个受限模型；`model` 为 null 表示日志里归因不到模型（显示「未知模型」，不猜测）。 */
@@ -380,7 +386,7 @@ export interface RateLimitsPayload {
 
 /** 一处客户端 hook 配置的安装状态。 */
 export interface RateLimitHookTarget {
-  /** 备份标签（codebuddy / workbuddy / workbuddy-ai）。 */
+  /** 备份标签（codebuddy / qoder / qoder-ai）。 */
   label: string;
   /** `settings.json` 路径。 */
   path: string;
@@ -405,7 +411,7 @@ export interface RateLimitHookStatus {
   targets: RateLimitHookTarget[];
 }
 
-/** 限额监听开关（`~/.wb-switch/rate_limit_config.json`）。 */
+/** 限额监听开关（`~/.qs-switch/rate_limit_config.json`）。 */
 export interface RateLimitConfig {
   enabled: boolean;
   /** 用户点过「卸载 hook」→ 启动时不再自动接入；重新点「接入 hook」清除。 */
@@ -426,7 +432,6 @@ export interface AutoRotateConfig {
   min_urgency_hours: number;
   /** 配置键兼容保留：轮换已改用「会话存活门控」，该值不再参与决策，设置页也不再展示。 */
   active_guard_minutes: number;
-  min_remaining_credits: number;
 }
 
 export interface RotateLog {
@@ -625,8 +630,8 @@ export interface TokenStatsTotals { total: number; input: number; output: number
 export interface TokenStatsGroup extends TokenStatsTotals { key: string; title?: string | null; project?: string; sessionId?: string; }
 /** 一次模型调用的明细行；`total = input + output + cacheWrite`，`uncachedInput = max(0, input - cacheRead)`，`thinking` 是 `output` 中思考过程的 token 数（回复内容 = max(0, output - thinking)），均与聚合口径一致。 */
 export interface TokenStatsRequestRow { timestamp: number; model: string; project: string; sessionId: string; title?: string | null; input: number; output: number; cacheRead: number; cacheWrite: number; uncachedInput: number; thinking: number; total: number; }
-/** `workbuddy-ai` 为国际版本地数据源，与国内版分开统计，数据源缺失时为空集。 */
-export interface TokenStatsSource { source: "workbuddy" | "workbuddy-ai" | "codebuddy-cli" | "codebuddy-ide"; summary: TokenStatsTotals; models: TokenStatsGroup[]; projects: TokenStatsGroup[]; sessions: TokenStatsGroup[]; daily: TokenStatsGroup[]; /** Optional model-specific daily series for trend filtering. */ dailyByModel?: Record<string, TokenStatsGroup[]>; /** 仅 Qoder CLI 来源返回的最近请求明细；旧后端或缺失时按空数组处理。 */ requests?: TokenStatsRequestRow[]; hours: TokenStatsGroup[]; filesScanned: number; parseErrors: number; coverageStartAt?: number | null; coverageEndAt?: number | null; }
+/** `qoder-ai` 为国际版本地数据源，与国内版分开统计，数据源缺失时为空集。 */
+export interface TokenStatsSource { source: "qoder" | "qoder-ai" | "codebuddy-cli" | "codebuddy-ide"; summary: TokenStatsTotals; models: TokenStatsGroup[]; projects: TokenStatsGroup[]; sessions: TokenStatsGroup[]; daily: TokenStatsGroup[]; /** Optional model-specific daily series for trend filtering. */ dailyByModel?: Record<string, TokenStatsGroup[]>; /** 仅 Qoder CLI 来源返回的最近请求明细；旧后端或缺失时按空数组处理。 */ requests?: TokenStatsRequestRow[]; hours: TokenStatsGroup[]; filesScanned: number; parseErrors: number; coverageStartAt?: number | null; coverageEndAt?: number | null; }
 export interface TokenStatistics { generatedAt: number; rangeDays?: number | null; sources: TokenStatsSource[]; }
 
 export interface CodeBuddyCliStatus {

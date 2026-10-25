@@ -118,6 +118,12 @@ function logLabel(result: string): { text: string; tone: "success" | "warning" |
       return { text: "签到成功", tone: "success" };
     case "already":
       return { text: "已签到", tone: "warning" };
+    case "inactive":
+      // 国际版/国内版都可能出现：官方没开放活动。不是失败，不该染红。
+      return { text: "未开放活动", tone: "warning" };
+    case "limited":
+      // 国际版：当日名额被同机其它账号占用（每设备每日限领一个）。
+      return { text: "设备名额已占用", tone: "warning" };
     default:
       return { text: "失败", tone: "error" };
   }
@@ -438,7 +444,7 @@ function AutoRotateCard() {
           <>
             <SettingsFieldRow
               label="启用自动轮换"
-              description="开启后按下方间隔自动检查并切换 Qoder CLI 账号"
+              description="开启后到点检查并给出建议/提醒，绝不自动切换，切换仍需用户确认"
               htmlFor="ar-enabled"
               operational
             >
@@ -493,18 +499,8 @@ function AutoRotateCard() {
                 onChange={(e) => setNum("min_urgency_hours", e.target.value)}
               />
             </SettingsFieldRow>
-            <SettingsFieldRow label="最小剩余积分" description="低于此值时不切换" htmlFor="ar-min" operational>
-              <Input
-                id="ar-min"
-                className="w-full sm:w-48"
-                type="number"
-                min={0}
-                value={cfg.min_remaining_credits}
-                onChange={(e) => setNum("min_remaining_credits", e.target.value)}
-              />
-            </SettingsFieldRow>
             <p className="border-b border-border/60 px-4 py-3 text-[13px] leading-5 text-muted-foreground sm:px-5">
-              切换时机：目标账号剩余到期时间少于「紧迫阈值」且比当前账号早超过「差异阈值」，且目标剩余积分不低于「最小剩余积分」。检测到有 Qoder CLI 会话在运行时，本次轮换会跳过并在当日最多提示 5 次；重启 CLI 后新账号才会生效。
+              建议时机：目标账号剩余到期时间少于「到期紧迫阈值」且比当前账号早超过「到期差异阈值」时，检查会给出换号建议并附原因，其余情况只说明不切的理由；检测到 Qoder 客户端正在运行时，建议会注明执行将重启客户端。本功能绝不自动切换，采纳建议请到账号页手动执行切换。
             </p>
 
             <div className="flex flex-wrap gap-2 border-b-0 border-border/60 px-4 py-3 sm:px-5">

@@ -1,7 +1,6 @@
 export type ThemePreference = "system" | "light" | "dark";
 
-const THEME_STORAGE_KEY = "wb-switch.theme";
-const LEGACY_DARK_STORAGE_KEY = "wb-switch.dark";
+const THEME_STORAGE_KEY = "qs-switch.theme";
 
 function isThemePreference(value: string | null): value is ThemePreference {
   return value === "system" || value === "light" || value === "dark";
@@ -11,10 +10,6 @@ export function getThemePreference(): ThemePreference {
   try {
     const stored = localStorage.getItem(THEME_STORAGE_KEY);
     if (isThemePreference(stored)) return stored;
-
-    const legacyDark = localStorage.getItem(LEGACY_DARK_STORAGE_KEY);
-    if (legacyDark === "1") return "dark";
-    if (legacyDark === "0") return "light";
   } catch {
     // 存储不可用时仍可跟随系统主题。
   }
@@ -32,7 +27,6 @@ export function applyTheme(preference: ThemePreference) {
 export function setThemePreference(preference: ThemePreference) {
   try {
     localStorage.setItem(THEME_STORAGE_KEY, preference);
-    localStorage.removeItem(LEGACY_DARK_STORAGE_KEY);
   } catch {
     // 存储不可用时仍立即应用当前选择。
   }

@@ -1,6 +1,6 @@
 {
   "name": "qoder-switch",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "Qoder 多账号切换工具：本地 webui（浏览器操作）+ 桌面 App（安装后运行 qoder-switch）",
   "bin": {
     "qoder-switch": "bin/qoder-switch.js"
@@ -11,9 +11,9 @@
     "webui_dist"
   ],
   "optionalDependencies": {
-    "qoder-switch-win32-x64": "0.1.6",
-    "qoder-switch-darwin-arm64": "0.1.6",
-    "qoder-switch-darwin-x64": "0.1.6"
+    "qoder-switch-win32-x64": "0.2.0",
+    "qoder-switch-darwin-arm64": "0.2.0",
+    "qoder-switch-darwin-x64": "0.2.0"
   },
   "scripts": {
     "postinstall": "node scripts/install.js"

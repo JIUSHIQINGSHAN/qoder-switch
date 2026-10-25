@@ -173,22 +173,44 @@ pub fn is_running(variant: QoderVariant, target: QoderTarget) -> bool {
 
 /// 某个 PID 是否仍然存在。用于清理陈锁（跨进程切换锁记录的是持有者 PID）。
 ///
-/// 注意 tasklist 的两种"查不到"：PID 数值非法时退出码 **1** 并打印"无效查询"，
-/// PID 合法但不存在时退出码 0 并打印"没有运行的任务"。两者都表示**该进程不在了**，
-/// 必须返回 `Ok(false)` —— 若把非零退出码一律当 Err，崩溃残留的锁（PID 已失效）
-/// 就永远回收不掉，跨进程锁会退化成永久死锁。
+/// 返回值直接决定上层敢不敢删别人的锁（switch.rs 的 `holder_is_alive` 对 Err
+/// 保守当"还活着"），所以这里与 [`running_pids`] 同一取向 fail-closed，只有
+/// **可信的"无匹配"证据**才判死：
+///
+/// - 退出码非零（PID 数值非法时实测为退出码 1 + "无效查询"）、或退出码 0 但
+///   stdout 为空（被策略拦截但进程能启动时的形态）→ `Err`，上层不删锁。
+///   探测失败折算成 `Ok(false)` 等于把别人的活锁当陈锁删掉。
+/// - 退出码 0 且 stdout 非空才可信：CSV 行命中 PID → `Ok(true)`；本地化的
+///   "没有运行的任务"提示（非 CSV）解析不出行 → `Ok(false)`。
+///
+/// 崩溃残留锁不受影响：残留 PID 当初是活进程写下的合法数值，对它的查询走
+/// 退出码 0 无匹配路径，照样返回 `Ok(false)`，陈锁回收得掉，不会死锁。
 #[cfg(windows)]
 pub fn pid_alive(pid: u32) -> std::result::Result<bool, String> {
     let mut cmd = std::process::Command::new("tasklist");
     cmd.args(["/nh", "/fo", "csv", "/fi", &format!("PID eq {pid}")]);
     hide_console(&mut cmd);
     let out = match cmd.output() {
-        // 退出码非零在这里语义是"查无此进程"，不是探测失败。
-        Ok(o) => o.stdout,
+        Ok(o) => o,
         Err(e) => return Err(format!("tasklist 无法启动: {e}")),
     };
-    // 只认真正的 CSV 行：无匹配时 tasklist 打印本地化提示（非 CSV）。
-    Ok(String::from_utf8_lossy(&out).lines().any(|line| {
+    if !out.status.success() {
+        // 退出码非零（含 PID 非法的"无效查询"）：结果不可信，宁可让上层保守当
+        // "还活着"，也绝不能折算成"不在"。
+        return Err(format!(
+            "tasklist 退出码 {:?}（被策略阻止？）",
+            out.status.code()
+        ));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    if text.trim().is_empty() {
+        // 退出码 0 但 stdout 全空白：与"没有运行的任务"的本地化提示（非空）形状
+        // 不符，视为输出不可信 —— 这正是被策略拦截却仍能启动进程的缝隙形态。
+        return Err("tasklist 退出码 0 但 stdout 为空（被策略拦截？）".into());
+    }
+    // 只认真正的 CSV 行：PID 列能解析且等于目标才算命中；非 CSV 的本地化提示
+    // 解析不出行，自然落到"无匹配"。
+    Ok(text.lines().any(|line| {
         let mut cols = line.split("\",\"");
         let _name = cols.next();
         cols.next().and_then(|s| s.trim().trim_matches('"').parse::<u32>().ok()) == Some(pid)
@@ -197,6 +219,9 @@ pub fn pid_alive(pid: u32) -> std::result::Result<bool, String> {
 
 /// 非 Windows：`/proc/<pid>` 存在即视为存活（本项目的发布目标只有 Windows，
 /// 这里只是让测试/开发机可编译）。
+///
+/// 注：macOS 没有 /proc，这里恒返回 `Ok(false)` —— 探测不到被折叠成"不在"，
+/// 本就是 fail-open，属既有问题、不在本次修复范围，仅在此点出。
 #[cfg(not(windows))]
 pub fn pid_alive(pid: u32) -> std::result::Result<bool, String> {
     Ok(std::path::Path::new(&format!("/proc/{pid}")).exists())
@@ -626,6 +651,8 @@ mod tests {
         }
 
         // 阴性一：合法但不存在的 PID → 必须是 Ok(false)，不能是 Err。
+        // 这正是崩溃残留锁的形态：残留 PID 当初是活进程写下的合法数值，tasklist
+        // 对它的查询走退出码 0 + 本地化"没有运行的任务"，必须判死，陈锁才回收得掉。
         let mut free = 0u32;
         for cand in 999_999u32..1_000_050 {
             if pid_alive(cand).ok() == Some(false) {
@@ -635,12 +662,14 @@ mod tests {
         }
         assert!(free != 0, "应能找到一个不存在但合法的 PID 并判定为 false");
 
-        // 阴性二：PID 数值非法（tasklist 退出码 1）同样必须收敛成 Ok(false) ——
-        // 这条正是崩溃残留锁的形态，若返回 Err 就永远回收不掉。
-        assert_eq!(
-            pid_alive(4_294_967_290).ok(),
-            Some(false),
-            "非法 PID 必须判为不存在，否则陈锁无法回收"
+        // 阴性二：PID 数值非法（tasklist 退出码 1 + "无效查询"）在新语义下是
+        // **探测失败**，必须 Err —— 上层 unwrap_or(true) 保守不删锁。它不再是
+        // 崩溃残留锁的形态：真实残留的 PID 是合法查询，走退出码 0 无匹配路径
+        // （阴性一路已覆盖）；把退出码 1 折算成 Ok(false) 反而会让被策略拦截
+        // 的 tasklist 把别人的活锁当陈锁删掉。
+        assert!(
+            pid_alive(4_294_967_290).is_err(),
+            "非法 PID（退出码 1）必须判为探测失败，不能折算成 Ok(false)"
         );
     }
 

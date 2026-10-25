@@ -70,26 +70,26 @@ type RangeKey = "30d" | "today" | "7d" | "month";
 type OverviewRangeKey = "today" | "7d" | "30d" | "total";
 type DistributionKey = "projects" | "models";
 
-const TOKEN_SOURCE_STORAGE_KEY = "wb-switch:token-stats:source";
+const TOKEN_SOURCE_STORAGE_KEY = "qs-switch:token-stats:source";
 const RANKING_LIMIT = 10;
 const REQUEST_PAGE_SIZE = 50;
 
 function isSourceKey(value: unknown): value is SourceKey {
   return (
-    value === "workbuddy" ||
-    value === "workbuddy-ai" ||
+    value === "qoder" ||
+    value === "qoder-ai" ||
     value === "codebuddy-cli" ||
     value === "codebuddy-ide"
   );
 }
 
 function readPreferredTokenSource(): SourceKey {
-  if (typeof window === "undefined") return "workbuddy";
+  if (typeof window === "undefined") return "qoder";
   try {
     const stored = window.localStorage.getItem(TOKEN_SOURCE_STORAGE_KEY);
-    return isSourceKey(stored) ? stored : "workbuddy";
+    return isSourceKey(stored) ? stored : "qoder";
   } catch {
-    return "workbuddy";
+    return "qoder";
   }
 }
 
@@ -1403,7 +1403,7 @@ function Dashboard({ source }: { source: TokenStatsSource }) {
             ? `已扫描 ${exact.format(source.filesScanned)} 个会话文件，但没有可用的 usage。`
             : "尚未发现该来源的本地会话日志。"}
         </div>
-        {source.source === "workbuddy-ai" && (
+        {source.source === "qoder-ai" && (
           <div className="mt-2 text-xs leading-5">
             国际版数据源为空：本机可能未安装 Qoder 国际版客户端，或尚未产生本地会话日志；
             国际版数据与国内版分开统计，不参与国内版用量。
@@ -1580,8 +1580,8 @@ export default function TokenStatsPage() {
     const available = stats.sources.map((item) => item.source);
     const next = available.includes(active)
       ? active
-      : available.includes("workbuddy")
-        ? "workbuddy"
+      : available.includes("qoder")
+        ? "qoder"
         : available[0];
     if (!next) return;
     if (next !== active) setActive(next);
@@ -1651,15 +1651,15 @@ export default function TokenStatsPage() {
           <TabsList className="h-auto max-w-full flex-wrap" aria-label="Token 数据来源">
             <TabsTrigger
               className="max-w-full whitespace-normal"
-              value="workbuddy"
-              disabled={Boolean(stats && !stats.sources.some((item) => item.source === "workbuddy"))}
+              value="qoder"
+              disabled={Boolean(stats && !stats.sources.some((item) => item.source === "qoder"))}
             >
               Qoder
             </TabsTrigger>
             <TabsTrigger
               className="max-w-full whitespace-normal"
-              value="workbuddy-ai"
-              disabled={Boolean(stats && !stats.sources.some((item) => item.source === "workbuddy-ai"))}
+              value="qoder-ai"
+              disabled={Boolean(stats && !stats.sources.some((item) => item.source === "qoder-ai"))}
             >
               Qoder 国际版
             </TabsTrigger>
